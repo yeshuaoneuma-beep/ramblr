@@ -56,6 +56,7 @@ object TranscriptionChain {
         success || !hasNextCandidate(candidateIndex, candidateCount)
 
     const val CLOUD_STT_STAGE_BUDGET_MS = 180_000L
+    const val LOCAL_STT_BUDGET_MS = 180_000L
     const val CLOUD_STT_ATTEMPT_CAP_COMPRESSED_MS = 60_000L
     const val CLOUD_STT_ATTEMPT_CAP_WAV_MS = 75_000L
     const val CLOUD_STT_RETRY_BACKOFF_MS = 1_000L
@@ -90,7 +91,10 @@ object TranscriptionChain {
             val timeoutMs: Long,
         ) : Step()
 
-        data class RunLocal(val entry: ProviderChainEntry) : Step()
+        data class RunLocal(
+            val entry: ProviderChainEntry,
+            val budgetMs: Long = LOCAL_STT_BUDGET_MS,
+        ) : Step()
 
         data class Exhausted(val lastError: String?) : Step()
     }
@@ -111,6 +115,7 @@ object TranscriptionChain {
         cloudBudgetMs: Long = CLOUD_STT_STAGE_BUDGET_MS,
         private val backoffMs: Long = CLOUD_STT_RETRY_BACKOFF_MS,
         private val singleCloudMaxAttempts: Int = SINGLE_CLOUD_MAX_ATTEMPTS,
+        private val localBudgetMs: Long = LOCAL_STT_BUDGET_MS,
     ) {
         val cloudDeadlineAtMs: Long = startedAtMs + cloudBudgetMs
 
@@ -137,7 +142,7 @@ object TranscriptionChain {
             }
             if (localCandidate != null && !localAttempted) {
                 localAttempted = true
-                return Step.RunLocal(localCandidate).also { pendingStep = it }
+                return Step.RunLocal(localCandidate, localBudgetMs).also { pendingStep = it }
             }
             return Step.Exhausted(lastError)
         }

@@ -2,9 +2,14 @@ package com.trevornk.ramblr
 
 import android.Manifest
 import android.app.Application
+import android.content.Context
 import android.os.Looper
 import java.io.File
 import java.time.Duration
+import mockwebserver3.Dispatcher
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
+import mockwebserver3.RecordedRequest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -71,9 +76,9 @@ class BackgroundDictationRuntimeTest {
         }
         override fun awaitTeardown(timeoutMs: Long): Boolean = true
         override fun isReaderTeardownPending(): Boolean = false
-        fun finish(pcm: File?) {
+        fun finish(pcm: File?, stopReason: StopReason = StopReason.USER) {
             sm.tryStartTranscribing()
-            onFinished!!(Result(pcm, pcm?.length() ?: 0L, discarded = false, stopReason = StopReason.USER))
+            onFinished!!(Result(pcm, pcm?.length() ?: 0L, discarded = false, stopReason = stopReason))
         }
     }
 
@@ -120,7 +125,7 @@ class BackgroundDictationRuntimeTest {
         runtime.handleTranscriptionResult("  ", token = 1) // no speech
         idle()
         runtime.onTap(); runtime.onTap()
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(401))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(811))
         assertEquals(0, work.begins)
     }
 
@@ -236,14 +241,141 @@ class BackgroundDictationRuntimeTest {
         assertEquals(0, work.held)
     }
 
-    @Test fun `the 400s watchdog reports TIMED_OUT and releases the hold`() {
+    @Test fun `the 810s watchdog reports TIMED_OUT and releases the hold`() {
+        assertEquals(810_000L, DictationRuntime.WATCHDOG_TIMEOUT_MS)
         runtime.onTap()
         runtime.onTap()
         runtime.holdForLeavingHost()
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(401))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(809))
+        assertEquals(RecordingStateMachine.State.TRANSCRIBING, runtime.currentState())
+        assertTrue(listener.failures.isEmpty())
+
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
         assertEquals(listOf(BackgroundFailure.TIMED_OUT), listener.failures)
         assertEquals(0, work.held)
+        assertEquals(0L, runtime.postRecordingDeadlineAtElapsedMs)
         assertEquals(RecordingStateMachine.State.IDLE, runtime.currentState())
+    }
+
+    @Test fun `post-recording deadline is anchored once at stop and never extended on hold or cleanup`() {
+        val server = MockWebServer().apply { start() }
+        val releaseCleanup = java.util.concurrent.CountDownLatch(1)
+        try {
+            val base = server.url("/v1").toString().trimEnd('/')
+            val openAi = ProviderChainEntry(ProviderKind.OPENAI, "gpt-5.4-mini", baseUrlOverride = base, id = "oai")
+            ProviderChainStore.save(app, ProviderChain(listOf(openAi)))
+            ProviderCredentialStore.set(app, "oai", "key")
+            PostProcessingToggle.setEnabled(app, true)
+            val cleanupCalled = java.util.concurrent.CountDownLatch(1)
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    cleanupCalled.countDown()
+                    releaseCleanup.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                    return MockResponse.Builder().code(503).body("{}").build()
+                }
+            }
+
+            var fakeElapsed = 50_000L
+            val rt = DictationRuntime(
+                app,
+                listener,
+                InMemoryDictationSessionLeaseRegistry(),
+                backgroundWork = work,
+                elapsedRealtimeMs = { fakeElapsed },
+                engineFactory = { dir, sm -> FakeEngine(dir, sm).also { engines += it } },
+            )
+            rt.onTap()
+            rt.onTap()
+            val anchoredDeadline = rt.postRecordingDeadlineAtElapsedMs
+            assertEquals(50_000L + 810_000L, anchoredDeadline)
+
+            fakeElapsed += 400_000L
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(400))
+            rt.holdForLeavingHost()
+            rt.holdForLeavingHost()
+            assertEquals("holdForLeavingHost must not reset deadline", anchoredDeadline, rt.postRecordingDeadlineAtElapsedMs)
+
+            // Transitioning into cleanup stage must not reset or extend the single deadline either.
+            kotlin.concurrent.thread { rt.handleTranscriptionResult("raw transcript words", token = 1) }
+            assertTrue(cleanupCalled.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals("cleanup stage must not extend post-recording deadline", anchoredDeadline, rt.postRecordingDeadlineAtElapsedMs)
+
+            fakeElapsed += 409_000L
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(409))
+            assertEquals(RecordingStateMachine.State.TRANSCRIBING, rt.currentState())
+
+            fakeElapsed += 2_000L
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
+            assertEquals(listOf(BackgroundFailure.TIMED_OUT), listener.failures)
+            assertEquals(0, work.held)
+            assertEquals(0L, rt.postRecordingDeadlineAtElapsedMs)
+            assertEquals(RecordingStateMachine.State.IDLE, rt.currentState())
+            rt.shutdown()
+        } finally {
+            releaseCleanup.countDown()
+            server.close()
+        }
+    }
+
+    @Test fun `max-duration stop anchors single postRecordingDeadlineAtElapsedMs for 810s`() {
+        val server = MockWebServer().apply { start() }
+        val releaseStt = java.util.concurrent.CountDownLatch(1)
+        try {
+            val base = server.url("/v1").toString().trimEnd('/')
+            val openAi = ProviderChainEntry(
+                ProviderKind.OPENAI,
+                "gpt-5.4-mini",
+                baseUrlOverride = base,
+                transcriptionModel = "gpt-transcribe",
+                id = "oai",
+            )
+            ProviderChainStore.save(app, ProviderChain(listOf(openAi)))
+            ProviderCredentialStore.set(app, "oai", "key")
+            app.getSharedPreferences("ramblr", Context.MODE_PRIVATE).edit().putBoolean("use_local", false).commit()
+            PostProcessingToggle.setEnabled(app, false)
+            val sttCalled = java.util.concurrent.CountDownLatch(1)
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    sttCalled.countDown()
+                    releaseStt.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                    return MockResponse.Builder().code(503).body("{}").build()
+                }
+            }
+
+            var fakeElapsed = 20_000L
+            val rt = DictationRuntime(
+                app,
+                listener,
+                InMemoryDictationSessionLeaseRegistry(),
+                backgroundWork = work,
+                elapsedRealtimeMs = { fakeElapsed },
+                engineFactory = { dir, sm -> FakeEngine(dir, sm).also { engines += it } },
+            )
+            rt.onTap()
+            engines.single().finish(pcm(), stopReason = RecordingEngine.StopReason.MAX_DURATION)
+            idle()
+            assertTrue(sttCalled.await(3, java.util.concurrent.TimeUnit.SECONDS))
+
+            val anchoredDeadline = rt.postRecordingDeadlineAtElapsedMs
+            assertEquals(20_000L + 810_000L, anchoredDeadline)
+            rt.holdForLeavingHost()
+            assertEquals(anchoredDeadline, rt.postRecordingDeadlineAtElapsedMs)
+
+            fakeElapsed += 809_000L
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(809))
+            assertEquals(RecordingStateMachine.State.TRANSCRIBING, rt.currentState())
+
+            fakeElapsed += 2_000L
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
+            assertEquals(listOf(BackgroundFailure.TIMED_OUT), listener.failures)
+            assertEquals(0, work.held)
+            assertEquals(0L, rt.postRecordingDeadlineAtElapsedMs)
+            assertEquals(RecordingStateMachine.State.IDLE, rt.currentState())
+            rt.shutdown()
+        } finally {
+            releaseStt.countDown()
+            server.close()
+        }
     }
 
     @Test fun `a successful dictation reports nothing`() {

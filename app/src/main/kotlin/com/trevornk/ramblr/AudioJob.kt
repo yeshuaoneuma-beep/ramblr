@@ -2,6 +2,10 @@ package com.trevornk.ramblr
 
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * #285: one audio-file transcription job, from "the user handed us a file" (or "recorded a note to
@@ -60,6 +64,8 @@ data class AudioJob(
     val sourceUri: String? = null,
     /** Whether the audio now lives in app storage (see [AudioJobFiles.sourceFile]). */
     val hasLocalAudio: Boolean = false,
+    /** Whether a durable Stage 1 raw-transcript checkpoint is on disk ([AudioJobFiles.rawCheckpointFile]). */
+    val hasRawCheckpoint: Boolean = false,
     val durationMs: Long = 0L,
     val chunkIndex: Int = 0,
     val chunkTotal: Int = 0,
@@ -134,9 +140,11 @@ object AudioJobMachine {
             is JobEvent.ChunkDone ->
                 if (s == JobStatus.TRANSCRIBING) job.copy(chunkIndex = (event.index + 1).coerceAtMost(job.chunkTotal)) else job
             JobEvent.CleaningStarted ->
-                if (s == JobStatus.TRANSCRIBING) job.copy(status = JobStatus.CLEANING) else job
+                if (s == JobStatus.TRANSCRIBING || (s == JobStatus.QUEUED && job.hasRawCheckpoint)) {
+                    job.copy(status = JobStatus.CLEANING)
+                } else job
             is JobEvent.Completed ->
-                if (s == JobStatus.TRANSCRIBING || s == JobStatus.CLEANING) job.copy(
+                if (s == JobStatus.TRANSCRIBING || s == JobStatus.CLEANING || (s == JobStatus.QUEUED && job.hasRawCheckpoint)) job.copy(
                     status = JobStatus.DONE,
                     historyTimestamp = event.historyTimestamp,
                     cleanupFailed = event.cleanupFailed,
@@ -144,6 +152,7 @@ object AudioJobMachine {
                     cleanupSectionsTotal = event.sectionsTotal,
                     copiedInsteadOfSaved = event.copied,
                     hasLocalAudio = false,
+                    hasRawCheckpoint = false,
                     failure = null,
                 ) else job
             is JobEvent.Failed ->
@@ -154,33 +163,106 @@ object AudioJobMachine {
                     // A recording is the user's only copy: cancelling its transcription returns it to
                     // the list, it does not destroy it.
                     job.kind == JobKind.RECORDED && job.hasLocalAudio -> job.copy(status = JobStatus.SAVED, chunkIndex = 0, chunkTotal = 0)
-                    else -> job.copy(status = JobStatus.CANCELLED, hasLocalAudio = false)
+                    else -> job.copy(status = JobStatus.CANCELLED, hasLocalAudio = false, hasRawCheckpoint = false)
                 }
             JobEvent.Interrupted ->
-                // A QUEUED job that already has its audio on disk just waits for the next run; one
-                // whose only copy is a (now dead) share grant can never run.
-                if (s.isActive && (s != JobStatus.QUEUED || !job.hasLocalAudio)) job.copy(status = JobStatus.FAILED, failure = JobFailure.INTERRUPTED) else job
+                // A QUEUED job that already has its audio or raw checkpoint on disk just waits for
+                // the next run; one whose only copy is a (now dead) share grant can never run.
+                if (s.isActive && (s != JobStatus.QUEUED || (!job.hasLocalAudio && !job.hasRawCheckpoint))) {
+                    job.copy(status = JobStatus.FAILED, failure = JobFailure.INTERRUPTED)
+                } else job
             JobEvent.Retry ->
-                // Only possible while the audio still exists: an import that never got copied has
-                // lost its (short-lived) source grant, and a finished job has deleted its audio.
-                if (s == JobStatus.FAILED && job.hasLocalAudio) job.copy(
+                // Only possible while audio or a raw checkpoint still exists: an import that never
+                // got copied has lost its (short-lived) source grant, and a finished job deleted both.
+                if (s == JobStatus.FAILED && (job.hasLocalAudio || job.hasRawCheckpoint)) job.copy(
                     status = JobStatus.QUEUED, failure = null, chunkIndex = 0, chunkTotal = 0, decodePercent = 0,
                 ) else job
         }
     }
 
     /** Whether the user can retry this job. */
-    fun canRetry(job: AudioJob): Boolean = job.status == JobStatus.FAILED && job.hasLocalAudio
+    fun canRetry(job: AudioJob): Boolean = job.status == JobStatus.FAILED && (job.hasLocalAudio || job.hasRawCheckpoint)
 
     /** Whether [job] should keep its audio file on disk. */
     fun keepsAudio(job: AudioJob): Boolean = job.hasLocalAudio && job.status != JobStatus.DONE && job.status != JobStatus.CANCELLED
+
+    /** Whether [job] should keep its raw-transcript checkpoint on disk. */
+    fun keepsRawCheckpoint(job: AudioJob): Boolean =
+        job.hasRawCheckpoint && job.status != JobStatus.DONE && job.status != JobStatus.CANCELLED
 }
 
-/** On-disk layout for job audio. */
+data class RawTranscriptCheckpoint(
+    val rawText: String,
+    val historyTimestamp: Long? = null,
+)
+
+/** On-disk layout for job audio and durable raw-transcript checkpoints. */
 object AudioJobFiles {
     fun dir(filesDir: File): File = File(filesDir, "audio_jobs").apply { mkdirs() }
     fun sourceFile(filesDir: File, id: String): File = File(dir(filesDir), "$id.src")
+    fun rawCheckpointFile(filesDir: File, id: String): File = File(dir(filesDir), "$id.raw.json")
     fun workDir(cacheDir: File): File = File(cacheDir, "audio_jobs").apply { mkdirs() }
+
+    /** Writes [rawText] (and optional [historyTimestamp]) to a temp sibling, fsyncs, and
+     *  atomically renames over [rawCheckpointFile] so a crash mid-write never corrupts it. */
+    fun writeRawCheckpointAtomically(
+        filesDir: File,
+        id: String,
+        rawText: String,
+        historyTimestamp: Long? = null,
+    ): File {
+        val target = rawCheckpointFile(filesDir, id)
+        target.parentFile?.mkdirs()
+        val payload = JSONObject().apply {
+            put("rawText", rawText)
+            put("historyTimestamp", historyTimestamp ?: JSONObject.NULL)
+        }.toString()
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        try {
+            FileOutputStream(tmp).use { fos ->
+                fos.write(payload.toByteArray(Charsets.UTF_8))
+                fos.flush()
+                fos.fd.sync()
+            }
+            try {
+                Files.move(
+                    tmp.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                if (!tmp.renameTo(target)) {
+                    Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
+            }
+            return target
+        } catch (t: Throwable) {
+            tmp.delete()
+            throw t
+        }
+    }
+
+    fun readRawCheckpoint(filesDir: File, id: String): RawTranscriptCheckpoint? {
+        val file = rawCheckpointFile(filesDir, id)
+        if (!file.exists()) return null
+        val content = runCatching { file.readText(Charsets.UTF_8) }.getOrNull() ?: return null
+        if (content.isBlank()) return null
+        return runCatching {
+            val o = JSONObject(content)
+            val raw = o.optString("rawText", "").takeIf { it.isNotBlank() } ?: return null
+            val ts = if (o.isNull("historyTimestamp")) null else o.getLong("historyTimestamp")
+            RawTranscriptCheckpoint(rawText = raw, historyTimestamp = ts)
+        }.getOrElse {
+            RawTranscriptCheckpoint(rawText = content, historyTimestamp = null)
+        }
+    }
+
+    fun deleteRawCheckpoint(filesDir: File, id: String) {
+        val target = rawCheckpointFile(filesDir, id)
+        target.delete()
+        File(target.parentFile, "${target.name}.tmp").delete()
+    }
 }
 
 /**
@@ -293,6 +375,7 @@ class AudioJobStore(private val file: File) {
         put("createdAt", j.createdAt)
         put("sourceUri", j.sourceUri ?: JSONObject.NULL)
         put("hasLocalAudio", j.hasLocalAudio)
+        put("hasRawCheckpoint", j.hasRawCheckpoint)
         put("durationMs", j.durationMs)
         put("chunkIndex", j.chunkIndex)
         put("chunkTotal", j.chunkTotal)
@@ -315,6 +398,7 @@ class AudioJobStore(private val file: File) {
             createdAt = o.getLong("createdAt"),
             sourceUri = if (o.isNull("sourceUri")) null else o.getString("sourceUri"),
             hasLocalAudio = o.optBoolean("hasLocalAudio", false),
+            hasRawCheckpoint = o.optBoolean("hasRawCheckpoint", false),
             durationMs = o.optLong("durationMs", 0L),
             chunkIndex = o.optInt("chunkIndex", 0),
             chunkTotal = o.optInt("chunkTotal", 0),

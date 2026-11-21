@@ -1,5 +1,6 @@
 package com.trevornk.ramblr
 
+import android.Manifest
 import android.app.Application
 import android.app.Notification
 import android.app.NotificationChannel
@@ -9,6 +10,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Looper
+import java.io.File
+import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -78,16 +81,123 @@ class BackgroundTranscriptionServiceTest {
         work.end(); work.end(); work.end()
     }
 
-    @Test fun `a hold taken on a live instance refreshes its hard cap instead of starting a second service`() {
+    @Test fun `a hold taken on a live instance uses single non-resetting 840s cap instead of starting a second service`() {
+        assertEquals(840_000L, BackgroundTranscriptionService.MAX_RUN_MS)
+        assertEquals(30_000L, BackgroundTranscriptionService.MAX_RUN_MS - DictationRuntime.WATCHDOG_TIMEOUT_MS)
+
+        var fakeElapsed = 10_000L
+        BackgroundTranscriptionService.elapsedRealtimeMs = { fakeElapsed }
         val work = BackgroundTranscriptionService.work(app)
         work.begin()
+        val expectedDeadline = 10_000L + 840_000L
+        assertEquals(expectedDeadline, BackgroundTranscriptionService.activeRunDeadlineAtElapsedMs)
+
         val ctrl = Robolectric.buildService(BackgroundTranscriptionService::class.java, Intent(app, BackgroundTranscriptionService::class.java))
-        ctrl.create().startCommand(0, 1)
+        val svc = ctrl.create().startCommand(0, 1).get()
         startedServices()
+
+        fakeElapsed += 500_000L
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500_000L))
+        assertFalse(shadowOf(svc).isStoppedBySelf)
+
+        // Repeated acquire / startIfStillWanted / armSelfCap must not reset the 840s cap.
         work.begin()
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(0, startedServices().size)
-        work.end(); work.end()
+        assertEquals(expectedDeadline, BackgroundTranscriptionService.activeRunDeadlineAtElapsedMs)
+
+        fakeElapsed += 339_000L
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(339_000L))
+        assertFalse("service must still be alive 1s before the original 840s deadline", shadowOf(svc).isStoppedBySelf)
+
+        fakeElapsed += 2_000L
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(2_000L))
+        assertTrue("repeated acquire must not extend self-cap past 840s from first hold", shadowOf(svc).isStoppedBySelf)
+
+        work.end()
+        assertEquals(expectedDeadline, BackgroundTranscriptionService.activeRunDeadlineAtElapsedMs)
+        work.end()
+        assertEquals(0L, BackgroundTranscriptionService.activeRunDeadlineAtElapsedMs)
+
+        // After all holds release, a fresh run anchors a new 840s deadline.
+        work.begin()
+        assertEquals(fakeElapsed + 840_000L, BackgroundTranscriptionService.activeRunDeadlineAtElapsedMs)
+        work.end()
+    }
+
+    @Test fun `ongoing notification has Cancel action wired to cancel the active dictation session`() {
+        val n = BackgroundDictationNotifications.ongoing(app)
+        val actions = n.actions.orEmpty()
+        assertEquals(1, actions.size)
+        assertEquals("Cancel", actions.single().title.toString())
+        val savedIntent = shadowOf(actions.single().actionIntent).savedIntent
+        assertEquals(BackgroundTranscriptionService::class.java.name, savedIntent.component?.className)
+        assertEquals(BackgroundTranscriptionService.ACTION_CANCEL, savedIntent.action)
+    }
+
+    @Test fun `cancel notification action safely cancels the active runtime session and stops service`() {
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        val failures = mutableListOf<BackgroundFailure>()
+        var idleCalls = 0
+        val listener = object : RuntimeListener {
+            override fun onRecordingStartRequested() {}
+            override fun onRecordingStartFailed() {}
+            override fun onRecordingStarted() {}
+            override fun onEnterTranscribingUi() {}
+            override fun onIdleUi() { idleCalls++ }
+            override fun onStreamingTeardown() {}
+            override fun onStreamingPartial(text: String) {}
+            override fun deliverText(
+                text: String,
+                rawText: String?,
+                paidFallbackGroup: CleanupStepGroup?,
+                cleanupError: String?,
+                feedbackDurationMs: Long,
+            ) {}
+            override fun foregroundPackageName(): String? = null
+            override fun onDictationFailed(failure: BackgroundFailure) { failures += failure }
+        }
+        val leaseRegistry = InMemoryDictationSessionLeaseRegistry()
+        val rt = DictationRuntime(
+            app,
+            listener,
+            leaseRegistry,
+            backgroundWork = BackgroundTranscriptionService.work(app),
+            engineFactory = { dir, sm ->
+                object : RecordingEngine(dir, sm) {
+                    override fun start(onFinished: (Result) -> Unit, onChunk: (ByteArray, Int) -> Unit): Boolean =
+                        sm.tryStartRecording()
+                    override fun awaitTeardown(timeoutMs: Long): Boolean = true
+                    override fun isReaderTeardownPending(): Boolean = false
+                }
+            },
+        )
+        rt.onTap()
+        rt.onTap()
+        rt.holdForLeavingHost()
+        assertEquals(1, BackgroundTranscriptionService.heldCount())
+
+        val startSvc = Robolectric.buildService(
+            BackgroundTranscriptionService::class.java,
+            Intent(app, BackgroundTranscriptionService::class.java),
+        ).create().startCommand(0, 1).get()
+        startedServices()
+
+        val cancelIntent = Intent(app, BackgroundTranscriptionService::class.java)
+            .setAction(BackgroundTranscriptionService.ACTION_CANCEL)
+        startSvc.onStartCommand(cancelIntent, 0, 2)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(RecordingStateMachine.State.IDLE, rt.currentState())
+        assertEquals(0, BackgroundTranscriptionService.heldCount())
+        assertEquals(0L, BackgroundTranscriptionService.activeRunDeadlineAtElapsedMs)
+        assertTrue(failures.isEmpty())
+        assertEquals(1, idleCalls)
+        assertTrue(shadowOf(startSvc).isStoppedBySelf)
+        // Confirm lease was released so a new recording can start immediately.
+        rt.onTap()
+        assertEquals(RecordingStateMachine.State.RECORDING, rt.currentState())
+        rt.shutdown()
     }
 
     @Test fun `manifest declares the service non-exported with the dataSync type and its permission`() {

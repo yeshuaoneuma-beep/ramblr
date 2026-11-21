@@ -5,6 +5,14 @@ import android.util.Log
 import com.k2fsa.sherpa.onnx.*
 import java.io.File
 
+class LocalTranscriptionTimeoutException(
+    message: String = "Local transcription timed out after ${TranscriptionChain.LOCAL_STT_BUDGET_MS / 1000}s",
+) : RuntimeException(message)
+
+class LocalTranscriptionCancelledException(
+    message: String = "Local transcription cancelled",
+) : RuntimeException(message)
+
 /**
  * Local on-device transcription via sherpa-onnx.
  * Models are loaded from the app's external files dir.
@@ -40,15 +48,50 @@ class LocalTranscriber private constructor(private val recognizer: OfflineRecogn
         vad: VadHandle,
         sampleRate: Int = 16000,
         chunkSamples: Int = SEGMENT_READ_CHUNK_SAMPLES,
-    ): String {
-        val results = mutableListOf<String>()
-        val segmenter = SpeechSegmenter(vad)
-        val onSegment: (FloatArray) -> Unit = { segment -> results += transcribe(segment, sampleRate) }
+        deadlineAtMs: Long? = null,
+        nowMs: () -> Long = { System.currentTimeMillis() },
+        isCancelled: () -> Boolean = { false },
+    ): String = transcribeFileSegmented(
+        file = file,
+        vad = vad,
+        sampleRate = sampleRate,
+        chunkSamples = chunkSamples,
+        deadlineAtMs = deadlineAtMs,
+        nowMs = nowMs,
+        isCancelled = isCancelled,
+    ) { segment, rate, remainingMs ->
+        if (remainingMs != null) {
+            decodeWithDeadline(remainingMs) { transcribe(segment, rate) }
+        } else {
+            transcribe(segment, rate)
+        }
+    }
 
-        PcmFileBuffer.forEachChunk(file, chunkSamples) { chunk -> segmenter.accept(chunk, onSegment) }
-        segmenter.finish(onSegment)
-
-        return SegmentedTranscript.join(results)
+    /**
+     * Transcribes a PCM file without VAD by splitting it into 25-second chunks (matching
+     * [AudioTranscriptionRoutes.LOCAL_UNSEGMENTED_CHUNK_SAMPLES]) so the stage deadline is checked
+     * between chunks and each native decode call is bounded by [BoundedBlockingCall.runWithDeadline].
+     */
+    fun transcribeUnsegmentedChunked(
+        file: File,
+        sampleRate: Int = 16000,
+        chunkSamples: Int = UNSEGMENTED_CHUNK_SAMPLES,
+        deadlineAtMs: Long? = null,
+        nowMs: () -> Long = { System.currentTimeMillis() },
+        isCancelled: () -> Boolean = { false },
+    ): String = transcribeFileUnsegmentedChunked(
+        file = file,
+        sampleRate = sampleRate,
+        chunkSamples = chunkSamples,
+        deadlineAtMs = deadlineAtMs,
+        nowMs = nowMs,
+        isCancelled = isCancelled,
+    ) { chunk, rate, remainingMs ->
+        if (remainingMs != null) {
+            decodeWithDeadline(remainingMs) { transcribe(chunk, rate) }
+        } else {
+            transcribe(chunk, rate)
+        }
     }
 
     /** Release the native recognizer. Call once no in-flight [transcribe] can still be using it. */
@@ -57,9 +100,92 @@ class LocalTranscriber private constructor(private val recognizer: OfflineRecogn
     companion object {
         private const val TAG = "LocalTranscriber"
 
+        const val LOCAL_STT_BUDGET_MS = TranscriptionChain.LOCAL_STT_BUDGET_MS
+
         /** ~1s of 16kHz audio per read in [transcribeSegmented] — small enough to keep the read
          *  side flat, large enough not to churn one allocation per 512-sample VAD window. */
         const val SEGMENT_READ_CHUNK_SAMPLES = 16000
+
+        /** 25s of 16kHz audio per chunk when Silero VAD is absent. */
+        val UNSEGMENTED_CHUNK_SAMPLES = AudioTranscriptionRoutes.LOCAL_UNSEGMENTED_CHUNK_SAMPLES.toInt()
+
+        /** Dedicated single-thread daemon executor for bounded Sherpa-ONNX JNI calls so a hung
+         *  local STT call cannot wedge llama.cpp cleanup on [BoundedBlockingCall]'s executor. */
+        internal val sttExecutor: java.util.concurrent.ExecutorService by lazy {
+            java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+                Thread(r, "local-stt-inference").apply { isDaemon = true }
+            }
+        }
+
+        internal fun <R> decodeWithDeadline(remainingMs: Long, block: () -> R): R {
+            if (remainingMs <= 0L) throw LocalTranscriptionTimeoutException()
+            val deadlineAtWallMs = System.currentTimeMillis() + remainingMs
+            return BoundedBlockingCall.runWithDeadline(
+                deadlineAtMs = deadlineAtWallMs,
+                executor = sttExecutor,
+                block = block,
+            ) ?: throw LocalTranscriptionTimeoutException()
+        }
+
+        internal fun transcribeFileSegmented(
+            file: File,
+            vad: VadHandle,
+            sampleRate: Int = 16000,
+            chunkSamples: Int = SEGMENT_READ_CHUNK_SAMPLES,
+            deadlineAtMs: Long? = null,
+            nowMs: () -> Long = { System.currentTimeMillis() },
+            isCancelled: () -> Boolean = { false },
+            decodeSegment: (samples: FloatArray, sampleRate: Int, remainingMs: Long?) -> String,
+        ): String {
+            fun remainingOrThrow(): Long? {
+                if (isCancelled()) throw LocalTranscriptionCancelledException()
+                if (deadlineAtMs == null) return null
+                val remaining = deadlineAtMs - nowMs()
+                if (remaining <= 0L) throw LocalTranscriptionTimeoutException()
+                return remaining
+            }
+
+            val results = mutableListOf<String>()
+            val segmenter = SpeechSegmenter(vad)
+            val onSegment: (FloatArray) -> Unit = { segment ->
+                val remaining = remainingOrThrow()
+                results += decodeSegment(segment, sampleRate, remaining)
+            }
+
+            PcmFileBuffer.forEachChunk(file, chunkSamples) { chunk ->
+                remainingOrThrow()
+                segmenter.accept(chunk, onSegment)
+            }
+            remainingOrThrow()
+            segmenter.finish(onSegment)
+
+            return SegmentedTranscript.join(results)
+        }
+
+        internal fun transcribeFileUnsegmentedChunked(
+            file: File,
+            sampleRate: Int = 16000,
+            chunkSamples: Int = UNSEGMENTED_CHUNK_SAMPLES,
+            deadlineAtMs: Long? = null,
+            nowMs: () -> Long = { System.currentTimeMillis() },
+            isCancelled: () -> Boolean = { false },
+            decodeChunk: (samples: FloatArray, sampleRate: Int, remainingMs: Long?) -> String,
+        ): String {
+            fun remainingOrThrow(): Long? {
+                if (isCancelled()) throw LocalTranscriptionCancelledException()
+                if (deadlineAtMs == null) return null
+                val remaining = deadlineAtMs - nowMs()
+                if (remaining <= 0L) throw LocalTranscriptionTimeoutException()
+                return remaining
+            }
+
+            val results = mutableListOf<String>()
+            PcmFileBuffer.forEachChunk(file, chunkSamples) { chunk ->
+                val remaining = remainingOrThrow()
+                results += decodeChunk(chunk, sampleRate, remaining)
+            }
+            return SegmentedTranscript.join(results)
+        }
 
         /** Find fully-installed model dirs under the app's files/models/ dir. Filters on the
          *  same `.complete` marker [ModelDownloader.isInstalledDir] requires (#88): a marker-less

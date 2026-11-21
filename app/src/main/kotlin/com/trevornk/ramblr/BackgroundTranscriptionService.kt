@@ -29,8 +29,8 @@ import androidx.core.app.ServiceCompat
  * start because the app is still the current input method -- and stopped the moment the pipeline
  * reaches a terminal state. A dictation that stays in its field never starts it, so the daily path
  * has no notification, status icon or active-apps entry. It also stops itself [MAX_RUN_MS] after
- * the latest hold was requested (just past the runtime's own 400 s watchdog) and when the OS fires
- * [onTimeout], so it can never linger. The accessibility host does not use it at all.
+ * the active run's first hold was requested (just past the runtime's own 810 s watchdog) and when
+ * the OS fires [onTimeout], so it can never linger. The accessibility host does not use it at all.
  *
  * Type: `dataSync` (already declared for the model-download worker; the permission is already
  * held). It is the closest honest fit for "process/transfer a user-initiated payload" and, unlike
@@ -47,6 +47,11 @@ class BackgroundTranscriptionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_CANCEL) {
+            Companion.cancelActiveSession()
+            stopNow()
+            return START_NOT_STICKY
+        }
         // startForeground MUST run once for every startForegroundService, even when we are about
         // to stop again, or the platform kills the process for not honoring the contract.
         if (!enterForeground()) {
@@ -80,12 +85,18 @@ class BackgroundTranscriptionService : Service() {
         super.onDestroy()
     }
 
-    /** (Re)starts the hard cap. Called on start and again whenever another dictation takes a hold
-     *  on this live instance, so a hold taken late in an earlier hold's window still gets the full
-     *  window instead of being cut off by a cap that started for someone else. */
+    /** Arms the hard cap anchored to [activeRunDeadlineAtElapsedMs] so repeated acquires /
+     *  [startIfStillWanted] calls never extend or reset the cap beyond [MAX_RUN_MS] from the
+     *  first hold in the active run. */
     internal fun armSelfCap() {
         handler.removeCallbacks(selfTimeout)
-        handler.postDelayed(selfTimeout, MAX_RUN_MS)
+        val deadline = Companion.activeRunDeadlineAtElapsedMs
+        val remainingMs = if (deadline != 0L) {
+            (deadline - Companion.elapsedRealtimeMs()).coerceAtLeast(0L)
+        } else {
+            MAX_RUN_MS
+        }
+        handler.postDelayed(selfTimeout, remainingMs)
     }
 
     internal fun stopNow() {
@@ -123,8 +134,10 @@ class BackgroundTranscriptionService : Service() {
     companion object {
         private const val TAG = "BgTranscription"
 
-        /** Just past [DictationRuntime]'s 400 s watchdog, which is the pipeline's own hard cap. */
-        internal const val MAX_RUN_MS = 430_000L
+        internal const val ACTION_CANCEL = "com.trevornk.ramblr.action.BG_DICTATION_CANCEL"
+
+        /** 30s above [DictationRuntime.WATCHDOG_TIMEOUT_MS] (810s), which is the pipeline's own hard cap. */
+        internal const val MAX_RUN_MS = 840_000L
 
         private val main = Handler(Looper.getMainLooper())
 
@@ -139,9 +152,27 @@ class BackgroundTranscriptionService : Service() {
         private var startRequestedAtMs = 0L
         private const val START_GRACE_MS = 10_000L
 
+        @Volatile internal var elapsedRealtimeMs: () -> Long = { android.os.SystemClock.elapsedRealtime() }
+
+        /** Single monotonic deadline for the active run: anchored when the first hold is acquired
+         *  and cleared only when all holds release (or [resetForTest]). */
+        @Volatile internal var activeRunDeadlineAtElapsedMs: Long = 0L
+            private set
+
+        private val cancelHandlersLock = Any()
+        private val activeCancelHandlers = mutableListOf<() -> Unit>()
+
         private val holds = BackgroundWorkHolds(
-            onAcquire = { onMain { startIfStillWanted() } },
-            onLastRelease = { onMain { stopIfNotWanted() } },
+            onAcquire = {
+                if (activeRunDeadlineAtElapsedMs == 0L) {
+                    activeRunDeadlineAtElapsedMs = elapsedRealtimeMs() + MAX_RUN_MS
+                }
+                onMain { startIfStillWanted() }
+            },
+            onLastRelease = {
+                activeRunDeadlineAtElapsedMs = 0L
+                onMain { stopIfNotWanted() }
+            },
         )
 
         internal fun heldCount(): Int = holds.held()
@@ -152,13 +183,34 @@ class BackgroundTranscriptionService : Service() {
         internal fun work(context: Context): BackgroundWork {
             val app = context.applicationContext
             return object : BackgroundWork {
-                override fun begin() {
+                private val localCancels = ArrayDeque<() -> Unit>()
+
+                override fun begin() = begin {}
+
+                override fun begin(onCancel: () -> Unit) {
                     appContext = app
+                    synchronized(cancelHandlersLock) {
+                        localCancels.addLast(onCancel)
+                        activeCancelHandlers.add(onCancel)
+                    }
                     holds.acquire()
                 }
 
                 override fun end() {
+                    synchronized(cancelHandlersLock) {
+                        val removed = if (localCancels.isNotEmpty()) localCancels.removeLast() else null
+                        if (removed != null) activeCancelHandlers.remove(removed)
+                    }
                     holds.release()
+                }
+            }
+        }
+
+        internal fun cancelActiveSession() {
+            val handlers = synchronized(cancelHandlersLock) { activeCancelHandlers.toList() }
+            onMain {
+                handlers.forEach { cancel ->
+                    runCatching { cancel() }.onFailure { Log.w(TAG, "Cancel handler threw", it) }
                 }
             }
         }
@@ -167,13 +219,13 @@ class BackgroundTranscriptionService : Service() {
             if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
         }
 
-        /** Runs on every acquire and is idempotent: with a live instance it just refreshes that
-         *  instance's cap; otherwise it requests exactly one start (a pending request suppresses
-         *  duplicates for [START_GRACE_MS]). */
+        /** Runs on every acquire and is idempotent: with a live instance it ensures its cap is
+         *  armed to the active run's single deadline; otherwise it requests exactly one start (a
+         *  pending request suppresses duplicates for [START_GRACE_MS]). */
         private fun startIfStillWanted() {
             if (holds.held() == 0) return
             instance?.let { it.armSelfCap(); return }
-            val now = android.os.SystemClock.elapsedRealtime()
+            val now = elapsedRealtimeMs()
             if (startRequestedAtMs != 0L && now - startRequestedAtMs < START_GRACE_MS) return
             val ctx = appContext ?: return
             startRequestedAtMs = now
@@ -214,6 +266,9 @@ class BackgroundTranscriptionService : Service() {
             holds.resetForTest()
             instance = null
             startRequestedAtMs = 0L
+            activeRunDeadlineAtElapsedMs = 0L
+            elapsedRealtimeMs = { android.os.SystemClock.elapsedRealtime() }
+            synchronized(cancelHandlersLock) { activeCancelHandlers.clear() }
         }
     }
 }
@@ -262,6 +317,13 @@ internal object BackgroundDictationNotifications {
         )
     }
 
+    private fun cancelIntent(ctx: Context): PendingIntent = PendingIntent.getService(
+        ctx,
+        2,
+        Intent(ctx, BackgroundTranscriptionService::class.java).setAction(BackgroundTranscriptionService.ACTION_CANCEL),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
     fun ongoing(ctx: Context): Notification = NotificationCompat.Builder(ctx, WORK_CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_mic)
         .setContentTitle("Ramblr is transcribing")
@@ -274,6 +336,7 @@ internal object BackgroundDictationNotifications {
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
         .setProgress(0, 0, true)
         .setContentIntent(contentIntent(ctx, opensHistory = false))
+        .addAction(0, ctx.getString(R.string.audio_action_cancel), cancelIntent(ctx))
         .build()
 
     fun result(ctx: Context, notice: BackgroundNotice): Notification =

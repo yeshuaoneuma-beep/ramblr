@@ -119,9 +119,9 @@ class LocalChunkedCleanupTest {
         assertTrue(LocalCleanupChunkBudget.MIN_BUDGET_MS >= 20_000L)
         assertTrue(LocalCleanupChunkBudget.MIN_BUDGET_MS > TERMINAL_LOCAL_LLM_STEP_BUDGET_MS)
         assertTrue(LocalCleanupChunkBudget.INITIAL_BUDGET_MS in LocalCleanupChunkBudget.MIN_BUDGET_MS..LocalCleanupChunkBudget.MAX_BUDGET_MS)
-        // One stuck chunk can never use the whole step, and both stay under the 400 s watchdog.
+        // One stuck chunk can never use the whole step, and both stay under the 810 s watchdog.
         assertTrue(LocalCleanupChunkBudget.MAX_BUDGET_MS < LOCAL_CHUNKED_TOTAL_BUDGET_MS)
-        assertTrue(LOCAL_CHUNKED_TOTAL_BUDGET_MS < 400_000L)
+        assertTrue(LOCAL_CHUNKED_TOTAL_BUDGET_MS < DictationRuntime.WATCHDOG_TIMEOUT_MS)
     }
 
     @Test fun `paragraph breaks in the transcript survive chunked cleanup`() {

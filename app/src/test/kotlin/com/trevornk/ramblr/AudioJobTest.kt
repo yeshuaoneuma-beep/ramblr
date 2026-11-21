@@ -120,6 +120,37 @@ class AudioJobMachineTest {
         assertEquals(100, AudioJobMachine.apply(job(JobStatus.DECODING), JobEvent.DecodeProgress(900)).decodePercent)
     }
 
+    @Test fun `hasRawCheckpoint allows retry without local audio and clears on completion or import cancel`() {
+        val interrupted = AudioJobMachine.apply(
+            job(JobStatus.CLEANING, audio = true).copy(hasRawCheckpoint = true),
+            JobEvent.Interrupted,
+        )
+        assertEquals(JobStatus.FAILED, interrupted.status)
+        assertEquals(JobFailure.INTERRUPTED, interrupted.failure)
+        assertTrue(AudioJobMachine.canRetry(interrupted))
+        assertTrue(AudioJobMachine.keepsRawCheckpoint(interrupted))
+
+        val retried = AudioJobMachine.apply(interrupted, JobEvent.Retry)
+        assertEquals(JobStatus.QUEUED, retried.status)
+        assertTrue(retried.hasRawCheckpoint)
+
+        val cleaning = AudioJobMachine.apply(retried, JobEvent.CleaningStarted)
+        assertEquals(JobStatus.CLEANING, cleaning.status)
+
+        val completed = AudioJobMachine.apply(cleaning, JobEvent.Completed(99L, cleanupFailed = false, copied = false))
+        assertEquals(JobStatus.DONE, completed.status)
+        assertFalse(completed.hasLocalAudio)
+        assertFalse(completed.hasRawCheckpoint)
+        assertFalse(AudioJobMachine.keepsRawCheckpoint(completed))
+
+        val checkpointOnly = job(JobStatus.FAILED, audio = false).copy(hasRawCheckpoint = true)
+        assertTrue(AudioJobMachine.canRetry(checkpointOnly))
+        val cancelledImport = AudioJobMachine.apply(AudioJobMachine.apply(checkpointOnly, JobEvent.Retry), JobEvent.Cancel)
+        assertEquals(JobStatus.CANCELLED, cancelledImport.status)
+        assertFalse(cancelledImport.hasRawCheckpoint)
+        assertFalse(AudioJobMachine.keepsRawCheckpoint(cancelledImport))
+    }
+
     @Test fun `notice policy`() {
         val base = job(JobStatus.DONE).copy(historyTimestamp = 1)
         assertEquals(AudioNoticeKind.DONE, audioNoticeFor(base))
@@ -143,7 +174,7 @@ class AudioJobStoreTest {
     @Test fun `round trips every field`() {
         val s = AudioJobStore(tmp())
         val j = job("a").copy(durationMs = 5, chunkIndex = 1, chunkTotal = 3, decodePercent = 7, failure = JobFailure.STORAGE,
-            cleanupFailed = true, historyTimestamp = 99, copiedInsteadOfSaved = true, status = JobStatus.FAILED)
+            hasRawCheckpoint = true, cleanupFailed = true, historyTimestamp = 99, copiedInsteadOfSaved = true, status = JobStatus.FAILED)
         s.upsert(j)
         assertEquals(j, s.get("a"))
     }

@@ -258,6 +258,10 @@ internal interface BackgroundWork {
     /** Called on the main thread, at most once per dictation. Must never throw. */
     fun begin()
 
+    /** Variant carrying a cancel callback triggered if the user taps Cancel on the ongoing
+     *  background-dictation notification. Defaults to [begin] for fakes/no-op implementations. */
+    fun begin(onCancel: () -> Unit) = begin()
+
     /** Called when the pipeline reaches any terminal state. Idempotent per [begin]. Must never throw. */
     fun end()
 

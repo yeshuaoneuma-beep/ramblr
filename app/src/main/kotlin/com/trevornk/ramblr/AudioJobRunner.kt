@@ -25,6 +25,14 @@ internal class AudioJobRunner(
     private val isCancelled: (String) -> Boolean,
     private val onStatus: (AudioJob) -> Unit,
     private val maxImportBytes: Long = MAX_IMPORT_BYTES,
+    private val decodeAudio: (source: File, pcm: File, isCancelled: () -> Boolean, onProgress: (Float) -> Unit) -> AudioFileDecoder.Result = { source, pcm, cancelled, progress ->
+        AudioFileDecoder.decode(source, pcm, cancelled, progress)
+    },
+    private val runStage1Stt: ((id: String, pcm: File, decoded: AudioFileDecoder.Result, workDir: File) -> String)? = null,
+    private val runCleanup: ((id: String, raw: String) -> CleanupOutcome)? = null,
+    private val persistHistory: (DictationHistoryEntry) -> Unit = { entry ->
+        DictationHistoryStore.forContext(context).upsert(entry)
+    },
 ) {
     private val filesDir: File get() = context.filesDir
     private val inFlight = InFlightCall()
@@ -38,28 +46,107 @@ internal class AudioJobRunner(
         val id = initial.id
         val workDir = AudioJobFiles.workDir(context.cacheDir)
         val pcm = File(workDir, "$id.pcm")
-        var local: LocalTranscriber? = null
         inFlight.beginWork()
         try {
             if (isCancelled(id)) throw Stop(null)
-            if (!initial.hasLocalAudio) importSource(initial)
+            val prefs = context.getSharedPreferences("ramblr", Context.MODE_PRIVATE)
+            val historyOn = prefs.getBoolean("dictation_history_enabled", true)
 
-            val source = AudioJobFiles.sourceFile(filesDir, id)
-            if (!source.exists()) throw Stop(JobFailure.UNREADABLE)
-
-            event(id, JobEvent.DecodeStarted)
-            var lastPercent = -1
-            val decoded = try {
-                AudioFileDecoder.decode(source, pcm, { isCancelled(id) }) { f ->
-                    val p = (f * 100).toInt()
-                    if (p != lastPercent) { lastPercent = p; event(id, JobEvent.DecodeProgress(p)) }
+            val existingCheckpoint = AudioJobFiles.readRawCheckpoint(filesDir, id)
+            val checkpoint = if (existingCheckpoint != null) {
+                if (!initial.hasRawCheckpoint) {
+                    store.mutate(id) { it.copy(hasRawCheckpoint = true) }
                 }
-            } catch (e: AudioDecodeException) {
-                if (isCancelled(id)) throw Stop(null)
-                throw Stop(if (e.cause is IOException && isNoSpace(e.cause)) JobFailure.STORAGE else JobFailure.UNREADABLE)
-            }
-            if (isBelowMinimumDuration(decoded.pcmBytes, AudioChunkPlanner.SAMPLE_RATE)) throw Stop(JobFailure.NO_SPEECH)
+                existingCheckpoint
+            } else {
+                if (!initial.hasLocalAudio) importSource(initial)
 
+                val source = AudioJobFiles.sourceFile(filesDir, id)
+                if (!source.exists()) throw Stop(JobFailure.UNREADABLE)
+
+                event(id, JobEvent.DecodeStarted)
+                var lastPercent = -1
+                val decoded = try {
+                    decodeAudio(source, pcm, { isCancelled(id) }) { f ->
+                        val p = (f * 100).toInt()
+                        if (p != lastPercent) { lastPercent = p; event(id, JobEvent.DecodeProgress(p)) }
+                    }
+                } catch (e: AudioDecodeException) {
+                    if (isCancelled(id)) throw Stop(null)
+                    throw Stop(if (e.cause is IOException && isNoSpace(e.cause)) JobFailure.STORAGE else JobFailure.UNREADABLE)
+                }
+                if (isBelowMinimumDuration(decoded.pcmBytes, AudioChunkPlanner.SAMPLE_RATE)) throw Stop(JobFailure.NO_SPEECH)
+
+                val raw = if (runStage1Stt != null) {
+                    event(id, JobEvent.TranscribeStarted(1, decoded.durationMs))
+                    runStage1Stt.invoke(id, pcm, decoded, workDir)
+                } else {
+                    transcribeStage1(id, pcm, decoded, workDir)
+                }
+                pcm.delete()
+                if (raw.isBlank() || isJunkTranscript(raw)) throw Stop(JobFailure.NO_SPEECH)
+                if (isCancelled(id)) throw Stop(null)
+
+                val checkpointTs = if (historyOn) System.currentTimeMillis() else null
+                try {
+                    AudioJobFiles.writeRawCheckpointAtomically(filesDir, id, raw, checkpointTs)
+                } catch (e: IOException) {
+                    throw Stop(if (isNoSpace(e)) JobFailure.STORAGE else JobFailure.TRANSCRIPTION_FAILED)
+                }
+                store.mutate(id) { it.copy(hasRawCheckpoint = true) }
+                if (historyOn && checkpointTs != null) {
+                    persistHistory(DictationHistoryEntry(checkpointTs, raw, cleanedText = null))
+                }
+                RawTranscriptCheckpoint(raw, checkpointTs)
+            }
+            if (isCancelled(id)) throw Stop(null)
+
+            // ---- cleanup ------------------------------------------------------------------------
+            val cleanup = if (runCleanup != null) {
+                event(id, JobEvent.CleaningStarted)
+                runCleanup.invoke(id, checkpoint.rawText)
+            } else {
+                cleanUp(id, checkpoint.rawText)
+            }
+
+            // ---- deliver ------------------------------------------------------------------------
+            val finalText = cleanup.cleaned ?: checkpoint.rawText
+            val finalTimestamp = checkpoint.historyTimestamp ?: System.currentTimeMillis()
+            if (historyOn) {
+                persistHistory(DictationHistoryEntry(finalTimestamp, checkpoint.rawText, cleanup.cleaned))
+            } else {
+                // History is the one place a job's text lives; with it off, hand the text over now.
+                ClipboardUtil.copy(context, finalText)
+            }
+            val done = store.update(id, JobEvent.Completed(
+                if (historyOn) finalTimestamp else null, cleanup.failed, copied = !historyOn,
+                sectionsCleaned = if (cleanup.tally.partlyCleaned) cleanup.tally.cleaned else 0,
+                sectionsTotal = if (cleanup.tally.partlyCleaned) cleanup.tally.total else 0,
+            ))
+            if (done?.status == JobStatus.DONE) {
+                AudioJobFiles.deleteRawCheckpoint(filesDir, id)
+                deleteAudio(id)
+            }
+            done?.let { onStatus(it) }
+        } catch (s: Stop) {
+            fail(id, s.failure)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Audio job crashed: ${e.javaClass.simpleName}")
+            fail(id, JobFailure.TRANSCRIPTION_FAILED)
+        } finally {
+            pcm.delete()
+            File(workDir, "$id.tmp").delete()
+        }
+    }
+
+    private fun transcribeStage1(
+        id: String,
+        pcm: File,
+        decoded: AudioFileDecoder.Result,
+        workDir: File,
+    ): String {
+        var local: LocalTranscriber? = null
+        try {
             // ---- routes ------------------------------------------------------------------------
             val prefs = context.getSharedPreferences("ramblr", Context.MODE_PRIVATE)
             val chain = ProviderChainStore.load(context)
@@ -124,41 +211,9 @@ internal class AudioJobRunner(
             }
             // Free the (large) on-device ASR model before cleanup can load a local LLM.
             local?.release(); local = null
-            pcm.delete()
-
-            val raw = SegmentedTranscript.join(texts)
-            if (raw.isBlank() || isJunkTranscript(raw)) throw Stop(JobFailure.NO_SPEECH)
-            if (isCancelled(id)) throw Stop(null)
-
-            // ---- cleanup ------------------------------------------------------------------------
-            val cleanup = cleanUp(id, raw)
-
-            // ---- deliver ------------------------------------------------------------------------
-            val finalText = cleanup.cleaned ?: raw
-            val timestamp = System.currentTimeMillis()
-            val historyOn = prefs.getBoolean("dictation_history_enabled", true)
-            if (historyOn) {
-                DictationHistoryStore.forContext(context).upsert(DictationHistoryEntry(timestamp, raw, cleanup.cleaned))
-            } else {
-                // History is the one place a job's text lives; with it off, hand the text over now.
-                ClipboardUtil.copy(context, finalText)
-            }
-            val done = store.update(id, JobEvent.Completed(
-                if (historyOn) timestamp else null, cleanup.failed, copied = !historyOn,
-                sectionsCleaned = if (cleanup.tally.partlyCleaned) cleanup.tally.cleaned else 0,
-                sectionsTotal = if (cleanup.tally.partlyCleaned) cleanup.tally.total else 0,
-            ))
-            deleteAudio(id)
-            done?.let { onStatus(it) }
-        } catch (s: Stop) {
-            fail(id, s.failure)
-        } catch (e: Throwable) {
-            Log.e(TAG, "Audio job crashed: ${e.javaClass.simpleName}")
-            fail(id, JobFailure.TRANSCRIPTION_FAILED)
+            return SegmentedTranscript.join(texts)
         } finally {
             runCatching { local?.release() }
-            pcm.delete()
-            File(workDir, "$id.tmp").delete()
         }
     }
 
@@ -168,6 +223,9 @@ internal class AudioJobRunner(
             // A cancelled import/decode of a user's own file leaves nothing behind; a recorded
             // note went back to SAVED (its audio is the only copy) and is kept.
             if (cancelled != null && !AudioJobMachine.keepsAudio(cancelled)) deleteAudio(id)
+            if (cancelled != null && !AudioJobMachine.keepsRawCheckpoint(cancelled)) {
+                AudioJobFiles.deleteRawCheckpoint(filesDir, id)
+            }
             cancelled
         } else {
             store.update(id, JobEvent.Failed(failure))
@@ -317,7 +375,7 @@ internal class AudioJobRunner(
 
     // ---- cleanup --------------------------------------------------------------------------------
 
-    private class CleanupOutcome(val cleaned: String?, val failed: Boolean, val tally: CleanupSectionTally = CleanupSectionTally())
+    internal class CleanupOutcome(val cleaned: String?, val failed: Boolean, val tally: CleanupSectionTally = CleanupSectionTally())
 
     /** Same toggle, chain, prompt and vocabulary as live dictation; applied piece by piece because
      *  a long transcript is far beyond a cleanup model's context window. */

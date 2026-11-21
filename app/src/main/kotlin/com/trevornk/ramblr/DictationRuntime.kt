@@ -142,6 +142,7 @@ internal class TranscriberHooks(
     /** Unsegmented batch decode (#310: lets a test prove a lazily loaded recognizer is the one
      *  that actually transcribes; the real [LocalTranscriber] needs a native model). */
     val decodeLocal: (LocalTranscriber, FloatArray, Int) -> String = { t, samples, rate -> t.transcribe(samples, rate) },
+    val openVad: ((Context) -> VadHandle?)? = null,
     val createStreaming: (Context, Model) -> StreamingTranscriber? = { ctx, model -> StreamingTranscriber.create(ctx, model) },
     val releaseStreaming: (StreamingTranscriber) -> Unit = { it.release() },
     val runOffMain: (() -> Unit) -> Unit = { work -> thread { work() } },
@@ -213,6 +214,8 @@ class DictationRuntime internal constructor(
     private val haptics: HapticFeedback = DictationHaptics.forContext(context),
     private val nowMs: () -> Long = { System.currentTimeMillis() },
     private val transcriptionRetryBackoffMs: Long = TranscriptionChain.CLOUD_STT_RETRY_BACKOFF_MS,
+    private val localSttBudgetMs: Long = TranscriptionChain.LOCAL_STT_BUDGET_MS,
+    private val elapsedRealtimeMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
     /** Test seam: lets host-side unit tests substitute a fake engine at the capture boundary.
      *  The default is exactly the pre-extraction construction. */
     private val engineFactory: (File, RecordingStateMachine) -> RecordingEngine =
@@ -225,9 +228,8 @@ class DictationRuntime internal constructor(
         const val BUSY_MESSAGE = "Ramblr is already dictating from another input surface"
         private const val NO_SPEECH_MESSAGE = "No speech detected"
 
-        /** Backstop: two 180s callTimeouts (transcription + cleanup) plus 40s margin.
-         * Connect timeouts are included in each whole-call budget (#363). */
-        private const val WATCHDOG_TIMEOUT_MS = 400_000L
+        /** Backstop: 180s Cloud STT + 180s Local STT + 120s Cloud Cleanup + 300s Local Cleanup + 30s margin. */
+        internal const val WATCHDOG_TIMEOUT_MS = 810_000L
         private const val CLOUD_LIVE_FINAL_WAIT_MS = 2_500L
 
         private val transcriptionRetryScheduler = Executors.newSingleThreadScheduledExecutor { r ->
@@ -309,11 +311,10 @@ class DictationRuntime internal constructor(
      */
     private var transcriptionWakeLock: android.os.PowerManager.WakeLock? = null
 
-    /** Leak backstop for [transcriptionWakeLock]: recording caps at 10 min and a worst-case
-     *  local decode adds multi-minute tail, so 20 min comfortably covers one dictation while
-     *  guaranteeing the OS drops the lock even if every release path were somehow missed. Each
-     *  [acquireTranscriptionWakeLock] refreshes this window for the new dictation. */
-    private val TRANSCRIPTION_WAKELOCK_TIMEOUT_MS = 20 * 60 * 1000L
+    /** Leak backstop for [transcriptionWakeLock]: recording caps at 10 min and worst-case
+     *  post-recording pipeline caps at 810 s (13.5 min), so 25 min comfortably covers one
+     *  dictation while guaranteeing the OS drops the lock even if every release path were missed. */
+    private val TRANSCRIPTION_WAKELOCK_TIMEOUT_MS = 25 * 60 * 1000L
 
     /** Acquires (or refreshes) the bounded partial wakelock for a dictation that just started
      *  recording. Main thread only (called from [startRecording]). Any failure is swallowed:
@@ -353,7 +354,12 @@ class DictationRuntime internal constructor(
     fun holdForLeavingHost() {
         if (stateMachine.current() != RecordingStateMachine.State.TRANSCRIBING) return
         if (!backgroundHeld.compareAndSet(false, true)) return
-        runCatching { backgroundWork.begin() }.onFailure { Log.w(TAG, "Couldn't begin background hold", it) }
+        runCatching {
+            backgroundWork.begin {
+                if (Looper.myLooper() == Looper.getMainLooper()) cancelTranscription()
+                else handler.post { cancelTranscription() }
+            }
+        }.onFailure { Log.w(TAG, "Couldn't begin background hold", it) }
     }
 
     /** Idempotent: safe from every terminal path. */
@@ -414,6 +420,12 @@ class DictationRuntime internal constructor(
     /** The currently-armed transcription watchdog (#L14), held so it can be removed on normal
      *  completion/teardown instead of one accumulating in the handler queue per dictation. */
     private var watchdogRunnable: Runnable? = null
+
+    /** Single monotonic post-recording deadline anchored once when recording stops (normal stop
+     *  or max-duration stop). Never extended/reset on [holdForLeavingHost] or stage transitions;
+     *  cleared on [resetToIdle] / [beginShutdown]. */
+    @Volatile internal var postRecordingDeadlineAtElapsedMs: Long = 0L
+        private set
 
     // Local transcription engine (loaded lazily)
     private val transcriberSlot = TranscriberSlot<LocalTranscriber> { transcriberHooks.releaseLocal(it) }
@@ -915,11 +927,13 @@ class DictationRuntime internal constructor(
         // just a stop tap. Shutdown / keyboard dismissal mid-recording deliberately gives no tick.
         haptics.onRecordingStopped()
         activeToken = guard.start()
+        val deadline = elapsedRealtimeMs() + WATCHDOG_TIMEOUT_MS
+        postRecordingDeadlineAtElapsedMs = deadline
         cloudLiveAttempt?.takeIf { it.lease === lease }?.let { attempt ->
             runCatching { attempt.session?.endActivity() }
         }
         pipelineTiming.start(PipelineTiming(stopTapAtMs = System.currentTimeMillis(), correlationId = correlationIdFor(activeToken)))
-        armWatchdog(activeToken, lease)
+        armWatchdog(activeToken, lease, deadline)
         listener.onEnterTranscribingUi()
     }
 
@@ -1002,12 +1016,17 @@ class DictationRuntime internal constructor(
     }
 
     /** Backstop for a callback that never arrives (stalled socket, hung local model, etc). See #20. */
-    private fun armWatchdog(token: Int, lease: DictationSessionLease) {
-        // Remove any previously-armed watchdog so a fresh arm (e.g. the transcribe->cleanup handoff
-        // arms a second one) doesn't leave the first runnable sitting in the handler queue for its
-        // full 400s (L14). The runnable is held so resetToIdle/shutdown can remove it on normal
-        // completion instead of letting one accumulate per dictation.
+    private fun armWatchdog(
+        token: Int,
+        lease: DictationSessionLease,
+        deadlineAtElapsedMs: Long = postRecordingDeadlineAtElapsedMs,
+    ) {
         cancelWatchdog()
+        val delayMs = if (deadlineAtElapsedMs != 0L) {
+            (deadlineAtElapsedMs - elapsedRealtimeMs()).coerceAtLeast(0L)
+        } else {
+            WATCHDOG_TIMEOUT_MS
+        }
         val runnable = Runnable {
             watchdogRunnable = null
             if (guard.isCurrent(token)) {
@@ -1021,7 +1040,7 @@ class DictationRuntime internal constructor(
             }
         }
         watchdogRunnable = runnable
-        handler.postDelayed(runnable, WATCHDOG_TIMEOUT_MS)
+        handler.postDelayed(runnable, delayMs)
     }
 
     private fun cancelWatchdog() {
@@ -1036,6 +1055,7 @@ class DictationRuntime internal constructor(
             haptics.reset()
             cancelCloudLiveAttempt()
             cancelWatchdog()
+            postRecordingDeadlineAtElapsedMs = 0L
             guard.cancel()
             activeToken = 0
             // M6: the pipeline is terminal here -- injection finished, cancel, watchdog, or error
@@ -1186,6 +1206,8 @@ class DictationRuntime internal constructor(
             haptics.onRecordingStopped()
             val token = guard.start()
             activeToken = token
+            val deadline = elapsedRealtimeMs() + WATCHDOG_TIMEOUT_MS
+            postRecordingDeadlineAtElapsedMs = deadline
             cloudLiveAttempt?.takeIf { it.lease === lease }?.let { attempt ->
                 runCatching { attempt.session?.endActivity() }
             }
@@ -1196,7 +1218,7 @@ class DictationRuntime internal constructor(
             // any pipelineTiming existed to record it against.
             val nowMs = System.currentTimeMillis()
             pipelineTiming.start(PipelineTiming(stopTapAtMs = nowMs, correlationId = correlationIdFor(token), drainAtMs = nowMs))
-            armWatchdog(token, lease)
+            armWatchdog(token, lease, deadline)
             listener.onEnterTranscribingUi()
             toast("Recording limit reached (10 min) — transcribing…")
             thread { continueWithCloudLiveOrBatch(result, token, lease) }
@@ -1478,10 +1500,16 @@ class DictationRuntime internal constructor(
      * still transcribe it, and [transcribeApi]'s `advanceOrGiveUp` deletes it once the chain is
      * exhausted -- the [TranscriptionChain.shouldDeletePcm] contract.
      */
+    private sealed class BoundedLocalDecode {
+        data class Text(val value: String) : BoundedLocalDecode()
+        object Unloaded : BoundedLocalDecode()
+    }
+
     private fun transcribeLocal(
         file: File,
         token: Int,
         lease: DictationSessionLease,
+        budgetMs: Long = localSttBudgetMs,
         onChainFailure: ((String) -> Unit)? = null,
     ) {
         thread {
@@ -1489,39 +1517,73 @@ class DictationRuntime internal constructor(
             // but possible on a corrupt/truncated PCM file) still gets an honest latency instead
             // of one measured from a t0 that never ran (GH #100 benchmark logger).
             val benchmarkStartMs = System.currentTimeMillis()
+            val deadlineAtMs = nowMs() + budgetMs
             try {
-                val vadModelFile = ModelDownloader.vadModelFile(context, SILERO_VAD_MODEL)
-                // #139: provision the VAD model for local transcription itself, rather than
-                // leaving it to the unrelated silence-auto-stop toggle (#108). Without this the
-                // segmented decode below is unreachable for anyone who never enabled that
-                // feature, silently pinning them to the unsegmented path #132 was filed to fix.
-                // Asynchronous by design: this take still falls back below, and a later one gets
-                // segmented decode once the ~644KB download lands.
-                if (VadModelProvisioning.shouldFetch(
-                        modelInstalled = vadModelFile != null,
-                        downloadInFlight = ModelDownloadWorker.isInFlight(
-                            vadDownloadStateFor(SILERO_VAD_MODEL)
-                        ),
-                    )
-                ) {
-                    Log.i(TAG, "VAD model missing — enqueueing download for segmented decode (#139)")
-                    ModelDownloadWorker.enqueue(context, SILERO_VAD_MODEL)
+                val vad: VadHandle? = if (transcriberHooks.openVad != null) {
+                    transcriberHooks.openVad.invoke(context)
+                } else {
+                    val vadModelFile = ModelDownloader.vadModelFile(context, SILERO_VAD_MODEL)
+                    // #139: provision the VAD model for local transcription itself, rather than
+                    // leaving it to the unrelated silence-auto-stop toggle (#108). Without this the
+                    // segmented decode below is unreachable for anyone who never enabled that
+                    // feature, silently pinning them to the unsegmented path #132 was filed to fix.
+                    // Asynchronous by design: this take still falls back below, and a later one gets
+                    // segmented decode once the ~644KB download lands.
+                    if (VadModelProvisioning.shouldFetch(
+                            modelInstalled = vadModelFile != null,
+                            downloadInFlight = ModelDownloadWorker.isInFlight(
+                                vadDownloadStateFor(SILERO_VAD_MODEL)
+                            ),
+                        )
+                    ) {
+                        Log.i(TAG, "VAD model missing — enqueueing download for segmented decode (#139)")
+                        ModelDownloadWorker.enqueue(context, SILERO_VAD_MODEL)
+                    }
+                    vadModelFile?.let { SherpaVadHandle.create(it) }
                 }
-                val vad = vadModelFile?.let { SherpaVadHandle.create(it) }
+
+                // Lock safety: acquire transcriberSlot.use INSIDE the bounded executor call so if
+                // a native decode hangs past deadlineAtMs, the abandoned executor thread continues
+                // holding the read lock and recognizer.release() cannot use-after-free native memory.
+                val decodeBounded: (FloatArray, Int, Long?) -> String = { samples, rate, remainingMs ->
+                    val remaining = remainingMs ?: (deadlineAtMs - nowMs())
+                    val outcome = LocalTranscriber.decodeWithDeadline(remaining) {
+                        transcriberSlot.use { transcriber ->
+                            BoundedLocalDecode.Text(transcriberHooks.decodeLocal(transcriber, samples, rate))
+                        } ?: BoundedLocalDecode.Unloaded
+                    }
+                    when (outcome) {
+                        BoundedLocalDecode.Unloaded -> throw IllegalStateException("Local model was unloaded during transcription")
+                        is BoundedLocalDecode.Text -> outcome.value
+                    }
+                }
 
                 val t0 = System.currentTimeMillis()
                 val durationSeconds = (file.length() / 2 / SAMPLE_RATE).toInt()
                 val text = try {
-                    transcriberSlot.use { transcriber ->
-                        if (vad != null) {
-                            transcriber.transcribeSegmented(file, vad, SAMPLE_RATE)
-                        } else {
-                            Log.i(TAG, "VAD model unavailable — decoding unsegmented (#132)")
-                            transcriberHooks.decodeLocal(transcriber, PcmFileBuffer.readAsFloatArray(file), SAMPLE_RATE)
-                        }
-                    } ?: throw IllegalStateException("Local model was unloaded during transcription")
+                    if (vad != null) {
+                        LocalTranscriber.transcribeFileSegmented(
+                            file = file,
+                            vad = vad,
+                            sampleRate = SAMPLE_RATE,
+                            deadlineAtMs = deadlineAtMs,
+                            nowMs = nowMs,
+                            isCancelled = { !guard.isCurrent(token) },
+                            decodeSegment = decodeBounded,
+                        )
+                    } else {
+                        Log.i(TAG, "VAD model unavailable — decoding unsegmented in 25s chunks (#132)")
+                        LocalTranscriber.transcribeFileUnsegmentedChunked(
+                            file = file,
+                            sampleRate = SAMPLE_RATE,
+                            deadlineAtMs = deadlineAtMs,
+                            nowMs = nowMs,
+                            isCancelled = { !guard.isCurrent(token) },
+                            decodeChunk = decodeBounded,
+                        )
+                    }
                 } finally {
-                    vad?.close()
+                    (vad as? AutoCloseable)?.close()
                 }
                 // Success: the transcript exists, so no candidate (chain or otherwise) needs the
                 // audio anymore -- mirrors the delete-on-success the cloud candidates do (M5).
@@ -1550,6 +1612,8 @@ class DictationRuntime internal constructor(
                 )
 
                 handleTranscriptionResult(text, token, lease)
+            } catch (_: LocalTranscriptionCancelledException) {
+                file.delete()
             } catch (e: Exception) {
                 Log.e(TAG, "Local transcription failed", e)
                 BenchmarkLogger.log(
@@ -1578,7 +1642,13 @@ class DictationRuntime internal constructor(
                     // owns its lifetime now (see kdoc above), so the next candidate can still
                     // upload it. advanceOrGiveUp hops to main, re-checks the guard, and either
                     // advances or deletes the audio and surfaces this error at chain exhaustion.
-                    onChainFailure("Local error: ${e.message}")
+                    onChainFailure(
+                        if (e is LocalTranscriptionTimeoutException) {
+                            e.message ?: "Local transcription timed out"
+                        } else {
+                            "Local error: ${e.message}"
+                        }
+                    )
                 } else {
                     // Direct pure-local path (continueTranscription): no chain walk owns the PCM
                     // and nothing can retry without one, so delete it here and report honestly.
@@ -1588,8 +1658,13 @@ class DictationRuntime internal constructor(
                     file.delete()
                     handler.post {
                         if (!guard.isCurrent(token)) return@post // cancelled or watchdog already reset the UI
-                        toast("Local error: ${e.message}")
-                        reportFailure(BackgroundFailure.FAILED)
+                        if (e is LocalTranscriptionTimeoutException) {
+                            toast(e.message ?: "Local transcription timed out")
+                            reportFailure(BackgroundFailure.TIMED_OUT)
+                        } else {
+                            toast("Local error: ${e.message}")
+                            reportFailure(BackgroundFailure.FAILED)
+                        }
                         resetToIdle(lease)
                     }
                 }
@@ -1681,6 +1756,7 @@ class DictationRuntime internal constructor(
             startedAtMs = nowMs(),
             isCompressedUpload = remainingCompressedFile != null,
             backoffMs = transcriptionRetryBackoffMs,
+            localBudgetMs = localSttBudgetMs,
         )
 
         fun isStaleOrCancelled(): Boolean =
@@ -1739,7 +1815,7 @@ class DictationRuntime internal constructor(
                         Log.i(TAG, "Transcription via ProviderChain provider=${step.entry.kind}")
                         remainingCompressedFile?.delete()
                         remainingCompressedFile = null
-                        transcribeLocal(file, token, lease, onChainFailure = { error ->
+                        transcribeLocal(file, token, lease, budgetMs = step.budgetMs, onChainFailure = { error ->
                             walk.recordLocalFailure(error)
                             dispatchNext()
                         })
@@ -2210,6 +2286,7 @@ class DictationRuntime internal constructor(
         inFlightCall.cancel()
         stateMachine.reset()
         cancelWatchdog()
+        postRecordingDeadlineAtElapsedMs = 0L
         guard.cancel()
         activeToken = 0
         pipelineTiming.abandon()

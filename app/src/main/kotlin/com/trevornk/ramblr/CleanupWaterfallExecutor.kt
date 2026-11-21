@@ -379,7 +379,11 @@ object BoundedBlockingCall {
      *  result) and `Runnable` (discards it, returning a `Future<*>` that always resolves to
      *  null); passing a stored `() -> R` directly resolves to the `Runnable` overload, silently
      *  dropping every real result. */
-    fun <R> runWithDeadline(deadlineAtMs: Long, block: () -> R): R? {
+    fun <R> runWithDeadline(
+        deadlineAtMs: Long,
+        executor: java.util.concurrent.ExecutorService = this.executor,
+        block: () -> R,
+    ): R? {
         val future = executor.submit(java.util.concurrent.Callable { block() })
         val timeoutMs = (deadlineAtMs - System.currentTimeMillis()).coerceAtLeast(MIN_WAIT_MS)
         return try {

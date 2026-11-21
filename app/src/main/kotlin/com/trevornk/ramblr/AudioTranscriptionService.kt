@@ -82,6 +82,7 @@ internal object AudioJobs {
             return
         }
         AudioJobFiles.sourceFile(ctx.filesDir, id).delete()
+        AudioJobFiles.deleteRawCheckpoint(ctx.filesDir, id)
         store(ctx).delete(id)
     }
 
@@ -299,6 +300,9 @@ class AudioTranscriptionService : Service() {
             val after = store.update(id, JobEvent.Cancel)
             if (after != null && !AudioJobMachine.keepsAudio(after)) {
                 File(ctx.filesDir, "audio_jobs/$id.src").delete()
+            }
+            if (after != null && !AudioJobMachine.keepsRawCheckpoint(after)) {
+                AudioJobFiles.deleteRawCheckpoint(ctx.filesDir, id)
             }
         }
     }
