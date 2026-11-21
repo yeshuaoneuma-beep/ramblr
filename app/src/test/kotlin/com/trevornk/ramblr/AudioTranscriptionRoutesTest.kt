@@ -55,6 +55,18 @@ class AudioTranscriptionRoutesTest {
         assertTrue(p.routes.isEmpty())
     }
 
+    @Test fun `text-only Gemma 4 models are excluded from audio transcription routes`() {
+        val gemma31b = ProviderChainEntry(ProviderKind.GEMINI, "gemma-4-31b-it", id = "g31", transcriptionModel = "gemma-4-31b-it")
+        val gemma26b = ProviderChainEntry(ProviderKind.GEMINI, "gemma-4-26b-a4b-it", id = "g26", transcriptionModel = "gemma-4-26b-a4b-it")
+        val gemmaE4b = ProviderChainEntry(ProviderKind.GEMINI, "gemma-4-e4b-it", id = "ge4", transcriptionModel = "gemma-4-e4b-it")
+        val p = plan(useLocal = false, cands = listOf(gemma31b, gemma26b, gemmaE4b, openai))
+        assertEquals(listOf("ge4", "o"), p.routes.map { (it as AudioRoute.Cloud).entry.id })
+
+        val onlyBlocked = plan(useLocal = false, cands = listOf(gemma31b, gemma26b))
+        assertTrue(onlyBlocked.routes.isEmpty())
+        assertEquals(JobFailure.NO_PROVIDER, onlyBlocked.unavailable)
+    }
+
     @Test fun `chunk size respects every route in the plan`() {
         val cloudOnly = plan(useLocal = false)
         assertEquals(AudioTranscriptionRoutes.CLOUD_CHUNK_SAMPLES, AudioTranscriptionRoutes.maxChunkSamples(cloudOnly, vadAvailable = false))

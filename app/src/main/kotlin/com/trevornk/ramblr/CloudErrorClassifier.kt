@@ -15,6 +15,32 @@ object CloudErrorClassifier {
     val TEMPORARY_BUSY_HTTP_CODES: Set<Int> = setOf(408, 498, 500, 502, 503, 504, 529)
     val PERMANENT_OR_QUOTA_HTTP_CODES: Set<Int> = setOf(400, 401, 402, 403, 404, 413, 422, 429)
 
+    const val QUICK_429_MAX_RETRY_AFTER_MS = 3_000L
+    const val QUICK_429_DEFAULT_BACKOFF_MS = 1_500L
+
+    /**
+     * Parses a numeric HTTP `Retry-After` header value (seconds) into milliseconds.
+     * Returns null when absent, blank, negative, or non-numeric (e.g. HTTP-date).
+     */
+    fun parseRetryAfterMs(headerValue: String?): Long? {
+        val trimmed = headerValue?.trim() ?: return null
+        if (trimmed.isEmpty()) return null
+        val seconds = trimmed.toLongOrNull() ?: return null
+        if (seconds < 0L) return null
+        return seconds * 1_000L
+    }
+
+    /**
+     * True when an HTTP 429 response is eligible for a single quick retry:
+     * `retryAfterMs == null || retryAfterMs <= 3_000L`.
+     */
+    fun isQuickRetryable429(httpCode: Int?, retryAfterMs: Long? = null): Boolean =
+        httpCode == 429 && (retryAfterMs == null || retryAfterMs <= QUICK_429_MAX_RETRY_AFTER_MS)
+
+    /** Backoff in ms for a quick HTTP 429 retry (`retryAfterMs ?: 1_500L`). */
+    fun quick429BackoffMs(retryAfterMs: Long?): Long =
+        retryAfterMs ?: QUICK_429_DEFAULT_BACKOFF_MS
+
     fun classify(
         httpCode: Int? = null,
         errorText: String? = null,

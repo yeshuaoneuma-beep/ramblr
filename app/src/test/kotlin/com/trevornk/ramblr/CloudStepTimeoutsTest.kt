@@ -13,25 +13,19 @@ import org.junit.Test
 class CloudStepTimeoutsTest {
 
     private val start = 1_000_000L
-    private val deadline = start + CLEANUP_WATERFALL_HARD_CAP_MS
+    private val deadline = start + CLOUD_CLEANUP_STAGE_BUDGET_MS
 
     @Test
-    fun `a step starting with the full budget keeps the normal per-phase timeouts`() {
+    fun `a step starting with the full budget keeps the normal per-phase timeouts and 40s per-provider cap`() {
         val t = cloudStepTimeouts(deadline, start)
 
-        // Nothing is clamped away when there's plenty of budget: the phase timeouts are what
-        // ADR-0001 chose them to be, and only the whole-call bound is added.
         assertEquals(CleanupStepTimeouts.DEFAULT.connectMs, t.connectMs)
         assertEquals(CleanupStepTimeouts.DEFAULT.readMs, t.readMs)
-        assertEquals(CLEANUP_WATERFALL_HARD_CAP_MS, t.callMs)
+        assertEquals(CLOUD_CLEANUP_PER_PROVIDER_CAP_MS, t.callMs)
     }
 
     @Test
     fun `the whole-call bound never exceeds the budget the waterfall has left`() {
-        // Modeled on Trevor's benchmark log, where a third cleanup step was dispatched late in
-        // the budget and then got connect+read on top of it, reaching ~18.2s under the old 15s
-        // cap. Expressed relative to the cap so retuning the cap (15s -> 8s, #137 follow-up)
-        // doesn't turn this regression pin into arithmetic about a budget that no longer exists.
         val remainingMs = 2_900L
         val nowMs = deadline - remainingMs
         val t = cloudStepTimeouts(deadline, nowMs)
@@ -45,8 +39,6 @@ class CloudStepTimeoutsTest {
 
     @Test
     fun `phase timeouts are clamped down too so neither phase can outlive the deadline`() {
-        // 1.2s left is less than the 1.5s connect and 7s read defaults -- if the phases weren't
-        // clamped, connect alone could outlast the whole waterfall.
         val t = cloudStepTimeouts(deadline, deadline - 1_200L)
 
         assertEquals(1_200L, t.connectMs)
@@ -56,8 +48,6 @@ class CloudStepTimeoutsTest {
 
     @Test
     fun `a spent budget floors instead of collapsing to zero`() {
-        // OkHttp treats a 0 timeout as INFINITE, so clamping a spent budget to 0 would remove
-        // the cap entirely -- the precise opposite of this fix's intent.
         val t = cloudStepTimeouts(deadline, deadline + 5_000L)
 
         assertEquals(MIN_STEP_CALL_BUDGET_MS, t.callMs)
@@ -66,14 +56,10 @@ class CloudStepTimeoutsTest {
 
     @Test
     fun `the worst case is bounded by the cap rather than cap plus a full step allowance`() {
-        // Regression pin for the original defect's arithmetic. The between-steps gate lets a step
-        // start at cap-1ms; before the clamp that step could still spend connectMs + readMs.
         val latestLegalStart = deadline - 1L
         val t = cloudStepTimeouts(deadline, latestLegalStart)
 
         val oldWorstCase = 1L + CleanupStepTimeouts.DEFAULT.connectMs + CleanupStepTimeouts.DEFAULT.readMs
-        assertEquals(8_501L, oldWorstCase)
-
         assertNotNull(t.callMs)
         assertTrue(
             "clamped budget must be far below the old connect+read worst case",

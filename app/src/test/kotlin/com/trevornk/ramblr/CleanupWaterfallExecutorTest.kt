@@ -241,7 +241,7 @@ class CleanupWaterfallExecutorTest {
         var callbacks = 0
         val transport = CleanupHttpTransport { _, _, _, _, _, callback ->
             requests++
-            now = 100L + CLEANUP_WATERFALL_HARD_CAP_MS
+            now = 100L + CLOUD_CLEANUP_PER_PROVIDER_CAP_MS
             callback(CleanupHttpOutcome.HttpError(400,
                 """{"error":{"type":"unsupported_value","code":"unsupported_value","param":"temperature","message":"temperature is unsupported"}}"""))
         }
@@ -265,7 +265,7 @@ class CleanupWaterfallExecutorTest {
         val transport = CleanupHttpTransport { _, _, _, timeouts, _, callback ->
             requests++
             if (requests == 1) {
-                now = 100L + CLEANUP_WATERFALL_HARD_CAP_MS - 150L
+                now = 100L + CLOUD_CLEANUP_PER_PROVIDER_CAP_MS - 150L
                 callback(CleanupHttpOutcome.HttpError(400,
                     """{"error":{"type":"unsupported_value","code":"unsupported_value","param":"temperature","message":"temperature is unsupported"}}"""))
             } else {
@@ -378,7 +378,7 @@ class CleanupWaterfallExecutorTest {
         val transport = FakeCleanupHttpTransport(
             mutableListOf(
                 CleanupHttpOutcome.ConnectionFailure("dead host"),
-                CleanupHttpOutcome.HttpError(429, """{"error":{"message":"rate limit exceeded"}}"""),
+                CleanupHttpOutcome.HttpError(429, """{"error":{"message":"rate limit exceeded"}}""", retryAfterMs = 10_000L),
             )
         )
         val waterfall = CleanupWaterfall(
@@ -425,7 +425,7 @@ class CleanupWaterfallExecutorTest {
         // the next between-step check jumps past the hard cap so attempt(1) reports the budget error
         // instead of trying the second step.
         var calls = 0
-        val clock = { if (calls++ < 2) 0L else CLEANUP_WATERFALL_HARD_CAP_MS + 1L }
+        val clock = { if (calls++ < 2) 0L else CLOUD_CLEANUP_STAGE_BUDGET_MS + 1L }
         val transport = FakeCleanupHttpTransport(mutableListOf(CleanupHttpOutcome.HttpError(500, "")))
         val waterfall = CleanupWaterfall(
             listOf(
@@ -544,10 +544,10 @@ class CleanupWaterfallExecutorTest {
         assertEquals(2, transport.requestedUrls.size)
     }
 
-    @Test fun `a 429 from the Anthropic step falls through immediately without honoring Retry-After`() {
+    @Test fun `a 429 from the Anthropic step with Retry-After over 3s falls through immediately`() {
         val transport = FakeCleanupHttpTransport(
             mutableListOf(
-                CleanupHttpOutcome.HttpError(429, """{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}"""),
+                CleanupHttpOutcome.HttpError(429, """{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}""", retryAfterMs = 10_000L),
                 okOutcome("cleaned via fallback"),
             )
         )
@@ -560,6 +560,69 @@ class CleanupWaterfallExecutorTest {
         val result = execute(waterfall, transport)
         assertEquals("cleaned via fallback", result.text)
         assertEquals(2, transport.requestedUrls.size)
+    }
+
+    @Test fun `stage 2 cloud cleanup tries up to 3 providers sequentially and stops on first valid result`() {
+        val transport = FakeCleanupHttpTransport(
+            mutableListOf(
+                CleanupHttpOutcome.HttpError(401, """{"error":{"message":"bad key"}}"""),
+                CleanupHttpOutcome.HttpError(403, """{"error":{"message":"forbidden"}}"""),
+                okOutcome("cleaned by provider 3"),
+            )
+        )
+        val waterfall = CleanupWaterfall(
+            listOf(
+                CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m1"),
+                CleanupStep(CleanupStepGroup.GEMINI_DIRECT, "m2"),
+                CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m3"),
+                CleanupStep(CleanupStepGroup.ANTHROPIC_DIRECT, "m4"),
+            )
+        )
+        val result = execute(
+            waterfall,
+            transport,
+            credentials = mapOf(
+                CleanupCredentialSlot.OPENAI_DIRECT to "k1",
+                CleanupCredentialSlot.GEMINI_DIRECT to "k2",
+                CleanupCredentialSlot.ANTHROPIC_DIRECT to "k3",
+            ),
+        )
+        assertEquals("cleaned by provider 3", result.text)
+        assertEquals(3, transport.requestedUrls.size)
+    }
+
+    @Test fun `stage 2 cloud cleanup caps at 3 cloud providers and falls through to Local Cleanup`() {
+        val transport = FakeCleanupHttpTransport(
+            mutableListOf(
+                CleanupHttpOutcome.HttpError(401, """{"error":{"message":"bad key 1"}}"""),
+                CleanupHttpOutcome.HttpError(401, """{"error":{"message":"bad key 2"}}"""),
+                CleanupHttpOutcome.HttpError(401, """{"error":{"message":"bad key 3"}}"""),
+            )
+        )
+        val local = FakeLocalInferenceEngine(mutableListOf(LocalInferenceResult.Success("cleaned locally")))
+        val waterfall = CleanupWaterfall(
+            listOf(
+                CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m1"),
+                CleanupStep(CleanupStepGroup.GEMINI_DIRECT, "m2"),
+                CleanupStep(CleanupStepGroup.ANTHROPIC_DIRECT, "m3"),
+                CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m4-skipped"),
+                CleanupStep(CleanupStepGroup.LOCAL_LLM, "local"),
+            )
+        )
+        val result = execute(
+            waterfall,
+            transport,
+            credentials = mapOf(
+                CleanupCredentialSlot.OPENAI_DIRECT to "k1",
+                CleanupCredentialSlot.GEMINI_DIRECT to "k2",
+                CleanupCredentialSlot.ANTHROPIC_DIRECT to "k3",
+            ),
+            localInference = local,
+            localModelPath = { "/model.gguf" },
+        )
+        assertEquals("cleaned locally", result.text)
+        assertEquals(3, transport.requestedUrls.size)
+        assertEquals(1, local.calls.size)
     }
 
     @Test fun `a 5xx from the Anthropic step falls through to the next step`() {
@@ -771,15 +834,7 @@ class LocalLlmWaterfallStepTest {
         assertEquals(1, transport.requestedUrls.size)
     }
 
-    @Test fun `a single LOCAL_LLM step -- the last step in the waterfall -- gets the terminal budget, not the tighter budget`() {
-        // #37 follow-up: Trevor's real Local-only cleanup choice is exactly this shape (one
-        // LOCAL_LLM step, nothing after it). The tighter LOCAL_LLM_STEP_BUDGET_MS exists only to
-        // protect a *subsequent* step's own timeout window -- with no subsequent step, applying
-        // it anyway just turns a healthy-but-slightly-slower completion into a hard failure with
-        // llama_decode aborting mid-generation, which is the exact bug Trevor hit live on-device.
-        // #155: what that step gets is now TERMINAL_LOCAL_LLM_STEP_BUDGET_MS from the waterfall's
-        // start rather than the cloud-shaped hard cap, because the 8s cap killed a healthy 8003ms
-        // completion by 3ms.
+    @Test fun `a single LOCAL_LLM step -- the last step in the waterfall -- gets its independent local budget`() {
         val transport = FakeCleanupHttpTransport(mutableListOf())
         val engine = FakeLocalInferenceEngine(mutableListOf(LocalInferenceResult.Success("ok")))
         val waterfall = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.LOCAL_LLM, LOCAL_CLEANUP_MODEL.archive)))
@@ -789,17 +844,11 @@ class LocalLlmWaterfallStepTest {
         val after = System.currentTimeMillis()
 
         val deadline = engine.deadlines.single()
-        // Terminal budget from the waterfall's start, not the tighter LOCAL_LLM_STEP_BUDGET_MS
-        // and not the cloud-shaped CLEANUP_WATERFALL_HARD_CAP_MS.
-        assertTrue(deadline >= before + TERMINAL_LOCAL_LLM_STEP_BUDGET_MS)
-        assertTrue(deadline <= after + TERMINAL_LOCAL_LLM_STEP_BUDGET_MS)
+        assertTrue(deadline >= before + LOCAL_CHUNKED_TOTAL_BUDGET_MS)
+        assertTrue(deadline <= after + LOCAL_CHUNKED_TOTAL_BUDGET_MS)
     }
 
     @Test fun `a LOCAL_LLM step followed by another step gets the tighter step budget, not the full waterfall deadline`() {
-        // #98: the LOCAL_LLM step is bounded by LOCAL_LLM_STEP_BUDGET_MS specifically so a
-        // slow/aborted local attempt can't consume the whole waterfall deadline and starve a
-        // subsequent cloud step of its own timeout window -- this still applies when a real
-        // fallback step follows it (unlike the single-step case above).
         val transport = FakeCleanupHttpTransport(mutableListOf(okOutcome("cleaned via cloud")))
         val engine = FakeLocalInferenceEngine(mutableListOf(LocalInferenceResult.Success("ok")))
         val waterfall = CleanupWaterfall(
@@ -816,8 +865,7 @@ class LocalLlmWaterfallStepTest {
         val deadline = engine.deadlines.single()
         assertTrue(deadline >= before + LOCAL_LLM_STEP_BUDGET_MS)
         assertTrue(deadline <= after + LOCAL_LLM_STEP_BUDGET_MS)
-        // And that tighter budget must never exceed the overall waterfall deadline.
-        assertTrue(deadline <= after + CLEANUP_WATERFALL_HARD_CAP_MS)
+        assertTrue(deadline <= after + CLOUD_CLEANUP_STAGE_BUDGET_MS)
     }
 
     @Test fun `a failed local step still falls through to a following cloud step within the waterfall deadline`() {
@@ -987,188 +1035,57 @@ class LocalLlmWaterfallStepTest {
 class LocalLlmStepDeadlineTest {
     @Test fun `not the last step gets the tighter budget, capped at the overall deadline`() {
         val now = 1_000_000L
-        val overallDeadline = now + CLEANUP_WATERFALL_HARD_CAP_MS
+        val overallDeadline = now + CLOUD_CLEANUP_STAGE_BUDGET_MS
         val deadline = localLlmStepDeadline(overallDeadline, now, isLastStep = false)
         assertEquals(now + LOCAL_LLM_STEP_BUDGET_MS, deadline)
     }
 
-    @Test fun `the last step gets the wider terminal budget, not the tighter per-step budget`() {
-        // Intent unchanged from #37: a terminal local step must not be held to the 4s budget that
-        // exists only to protect a *subsequent* step. #155 widens what it gets instead: the
-        // terminal budget measured from the waterfall's start, rather than the cloud-shaped 8s cap.
+    @Test fun `the last step gets its independent 240s local budget from now`() {
         val now = 1_000_000L
-        val overallDeadline = now + CLEANUP_WATERFALL_HARD_CAP_MS
+        val overallDeadline = now + CLOUD_CLEANUP_STAGE_BUDGET_MS
         val deadline = localLlmStepDeadline(overallDeadline, now, isLastStep = true)
-        assertEquals(now + TERMINAL_LOCAL_LLM_STEP_BUDGET_MS, deadline)
+        assertEquals(now + LOCAL_CHUNKED_TOTAL_BUDGET_MS, deadline)
+        assertEquals(60_000L, RealLocalInferenceEngine.PREPARE_TIMEOUT_MS)
         assertTrue("terminal step must not be held to the tighter budget", deadline > now + LOCAL_LLM_STEP_BUDGET_MS)
     }
 
     @Test fun `not the last step never exceeds the overall deadline even if the tighter budget would`() {
-        // If the overall waterfall deadline is already closer than LOCAL_LLM_STEP_BUDGET_MS away
-        // (e.g. a retry deep into an already-long-running waterfall), the local step must still
-        // respect the smaller of the two -- never run past the overall hard cap.
         val now = 1_000_000L
-        val overallDeadline = now + 1_000L // less than LOCAL_LLM_STEP_BUDGET_MS (4000ms)
+        val overallDeadline = now + 1_000L
         val deadline = localLlmStepDeadline(overallDeadline, now, isLastStep = false)
         assertEquals(overallDeadline, deadline)
     }
 
-    @Test fun `the last step ignores the tighter budget entirely, even when it would be smaller`() {
-        // A waterfall already 7s deep: only 1s of the 8s cap is left. The terminal step still
-        // gets its own budget measured from the waterfall's start (#155), so the near-spent
-        // overall deadline no longer decides whether a healthy local completion survives.
-        val now = 1_000_000L
-        val overallDeadline = now + 1_000L // less than LOCAL_LLM_STEP_BUDGET_MS
-        val waterfallStartedAtMs = overallDeadline - CLEANUP_WATERFALL_HARD_CAP_MS
-        val deadline = localLlmStepDeadline(overallDeadline, now, isLastStep = true)
-        assertEquals(waterfallStartedAtMs + TERMINAL_LOCAL_LLM_STEP_BUDGET_MS, deadline)
-        assertTrue("terminal step must not be capped by the tighter per-step budget", deadline > overallDeadline)
+    @Test fun `terminal local cleanup starts at 0ms consumed even after cloud cleanup spends its entire 120s budget`() {
+        val cloudStartedAtMs = 1_000_000L
+        val cloudDeadline = cloudStartedAtMs + CLOUD_CLEANUP_STAGE_BUDGET_MS
+        val nowAfterCloudExhausted = cloudStartedAtMs + CLOUD_CLEANUP_STAGE_BUDGET_MS + 5_000L
+
+        val deadline = localLlmStepDeadline(cloudDeadline, nowAfterCloudExhausted, isLastStep = true)
+        assertEquals(nowAfterCloudExhausted + LOCAL_CHUNKED_TOTAL_BUDGET_MS, deadline)
+        assertEquals(LOCAL_CHUNKED_TOTAL_BUDGET_MS, deadline - nowAfterCloudExhausted)
     }
 
-    @Test fun `the terminal budget is measured from the waterfall start, not from now`() {
-        // Time already spent on earlier steps comes out of the terminal step's budget rather than
-        // extending the total run: the ceiling is absolute, anchored at the waterfall's start.
-        val waterfallStartedAtMs = 1_000_000L
-        val overallDeadline = waterfallStartedAtMs + CLEANUP_WATERFALL_HARD_CAP_MS
-        val spentOnEarlierStepsMs = 5_000L
-        val now = waterfallStartedAtMs + spentOnEarlierStepsMs
-
-        val deadline = localLlmStepDeadline(overallDeadline, now, isLastStep = true, waterfallStartedAtMs)
-
-        assertEquals(waterfallStartedAtMs + TERMINAL_LOCAL_LLM_STEP_BUDGET_MS, deadline)
-        // What's actually left for this step is the ceiling minus what earlier steps burned.
-        assertEquals(TERMINAL_LOCAL_LLM_STEP_BUDGET_MS - spentOnEarlierStepsMs, deadline - now)
-    }
-
-    @Test fun `the default waterfall start recovers the real start from the overall deadline`() {
-        // execute() builds deadlineAtMs as startedAtMs + CLEANUP_WATERFALL_HARD_CAP_MS and passes
-        // only the deadline down, so the defaulted parameter must invert that exactly. If these
-        // two ever disagree the production call site is silently using a different anchor.
-        val waterfallStartedAtMs = 1_000_000L
-        val overallDeadline = waterfallStartedAtMs + CLEANUP_WATERFALL_HARD_CAP_MS
-        val now = waterfallStartedAtMs + 2_500L
-
-        assertEquals(
-            localLlmStepDeadline(overallDeadline, now, isLastStep = true, waterfallStartedAtMs),
-            localLlmStepDeadline(overallDeadline, now, isLastStep = true),
-        )
-    }
-
-    @Test fun `the terminal deadline can only widen, never shrink below the overall deadline`() {
-        // maxOf, not a plain replacement: if the overall deadline is ever further out than the
-        // terminal budget would allow (a caller with a longer cap, or a start anchor further in
-        // the past than the cap implies), the terminal step keeps the deadline it already had.
-        val waterfallStartedAtMs = 1_000_000L
-        val now = waterfallStartedAtMs + 100L
-        val generousOverallDeadline = waterfallStartedAtMs + TERMINAL_LOCAL_LLM_STEP_BUDGET_MS + 30_000L
-
-        val deadline =
-            localLlmStepDeadline(generousOverallDeadline, now, isLastStep = true, waterfallStartedAtMs)
-
-        assertEquals(generousOverallDeadline, deadline)
-
-        // And the general property across a spread of start anchors: never below the overall deadline.
-        for (offsetMs in listOf(-60_000L, -12_000L, -8_000L, -1L, 0L, 5_000L)) {
-            val overallDeadline = waterfallStartedAtMs + CLEANUP_WATERFALL_HARD_CAP_MS
-            val widened =
-                localLlmStepDeadline(overallDeadline, now, isLastStep = true, waterfallStartedAtMs + offsetMs)
-            assertTrue(
-                "terminal deadline must never shrink below the overall deadline (offset $offsetMs)",
-                widened >= overallDeadline,
-            )
-        }
-    }
-
-    @Test fun `a non-terminal local step is still bounded by the 4s budget so a cloud step survives`() {
-        // The #98 role of LOCAL_LLM_STEP_BUDGET_MS is untouched by #155: when a cloud step follows,
-        // a slow local attempt must abort with enough of the 8s cap left for that step to run.
-        val waterfallStartedAtMs = 1_000_000L
-        val overallDeadline = waterfallStartedAtMs + CLEANUP_WATERFALL_HARD_CAP_MS
-        val now = waterfallStartedAtMs
-
-        val deadline = localLlmStepDeadline(overallDeadline, now, isLastStep = false, waterfallStartedAtMs)
-
-        assertEquals(now + LOCAL_LLM_STEP_BUDGET_MS, deadline)
-        assertTrue(
-            "a non-terminal local step must never reach the terminal budget",
-            deadline < waterfallStartedAtMs + TERMINAL_LOCAL_LLM_STEP_BUDGET_MS,
-        )
-        assertTrue(
-            "the following cloud step must still have budget left inside the hard cap",
-            overallDeadline - deadline >= CLEANUP_WATERFALL_HARD_CAP_MS - LOCAL_LLM_STEP_BUDGET_MS,
-        )
-    }
-
-    @Test fun `the 8003ms Pixel 10a completion now survives where the 8s cap killed it`() {
-        // Trevor's real failure: a healthy local cleanup finished its work in 8003ms and was
-        // aborted at the 8000ms hard cap, missing by 3ms. For a user with no cloud provider
-        // configured this is the only cleanup path, so that 3ms meant no cleanup at all.
-        val waterfallStartedAtMs = 1_000_000L
-        val overallDeadline = waterfallStartedAtMs + CLEANUP_WATERFALL_HARD_CAP_MS
-        val observedCompletionAtMs = waterfallStartedAtMs + 8_003L
-
-        // The old behavior, spelled out: the terminal step got the overall deadline verbatim.
-        assertTrue(
-            "the 8003ms completion must have been aborted under the bare 8s cap",
-            observedCompletionAtMs > overallDeadline,
-        )
-
-        val deadline = localLlmStepDeadline(overallDeadline, waterfallStartedAtMs, isLastStep = true, waterfallStartedAtMs)
-        assertTrue(
-            "the 8003ms completion must now finish inside the terminal budget",
-            observedCompletionAtMs <= deadline,
-        )
-    }
-
-    /**
-     * #137 regression guard, deliberately living next to the #155 widening it must not follow.
-     *
-     * The 8s hard cap was tuned against 318 real cloud cleanups to stop a user with no local
-     * model waiting on unreachable hosts. #155 widens the *terminal on-device* step only. If a
-     * future change routes cloud steps through the wider terminal budget -- or relaxes the
-     * clamp -- this fails.
-     */
-    @Test fun `cloud steps are still clamped to the 8s hard cap, never the terminal local budget`() {
+    @Test fun `cloud steps are clamped to the 40s per-provider cap and 120s stage budget`() {
         val start = 1_000_000L
-        val deadline = start + CLEANUP_WATERFALL_HARD_CAP_MS
+        val deadline = start + CLOUD_CLEANUP_STAGE_BUDGET_MS
 
-        // Full budget: the whole-call bound is the hard cap, not the wider terminal budget.
         val fresh = cloudStepTimeouts(deadline, start)
-        assertEquals(CLEANUP_WATERFALL_HARD_CAP_MS, fresh.callMs)
-        assertNotEquals(TERMINAL_LOCAL_LLM_STEP_BUDGET_MS, fresh.callMs)
+        assertEquals(CLOUD_CLEANUP_PER_PROVIDER_CAP_MS, fresh.callMs)
 
-        // Partly spent: still exactly what the waterfall has left, phases clamped with it.
         val late = cloudStepTimeouts(deadline, deadline - 1_200L)
         assertEquals(1_200L, late.callMs)
         assertEquals(1_200L, late.connectMs)
         assertEquals(1_200L, late.readMs)
 
-        // Spent: floors at MIN_STEP_CALL_BUDGET_MS rather than collapsing to OkHttp's infinite 0.
         assertEquals(MIN_STEP_CALL_BUDGET_MS, cloudStepTimeouts(deadline, deadline + 5_000L).callMs)
 
-        // The invariant a widening would break: a cloud step can never outlive the hard cap,
-        // for every start that leaves at least the MIN_STEP_CALL_BUDGET_MS floor.
-        for (spentMs in listOf(0L, 1L, 2_500L, 7_750L)) {
+        for (spentMs in listOf(0L, 1L, 40_000L, 80_000L, 119_750L)) {
             val nowMs = start + spentMs
             val t = cloudStepTimeouts(deadline, nowMs)
-            assertTrue(
-                "cloud step at +${spentMs}ms must not outlive the hard cap",
-                nowMs + t.callMs!! <= deadline,
-            )
-            assertTrue(
-                "cloud step budget must never reach the terminal local budget",
-                t.callMs!! < TERMINAL_LOCAL_LLM_STEP_BUDGET_MS,
-            )
+            assertTrue("cloud step at +${spentMs}ms must not outlive stage deadline", nowMs + t.callMs!! <= deadline)
+            assertTrue("cloud step must not exceed 40s per-provider cap", t.callMs!! <= CLOUD_CLEANUP_PER_PROVIDER_CAP_MS)
         }
-
-        // Below the floor the budget stops shrinking (0 would mean infinite in OkHttp), so the
-        // overshoot is bounded by MIN_STEP_CALL_BUDGET_MS and nothing else -- never by 12s.
-        val nearlySpent = cloudStepTimeouts(deadline, deadline - 1L)
-        assertEquals(MIN_STEP_CALL_BUDGET_MS, nearlySpent.callMs)
-        assertTrue(
-            "even the floored overshoot stays far inside the terminal local budget",
-            nearlySpent.callMs!! < TERMINAL_LOCAL_LLM_STEP_BUDGET_MS,
-        )
     }
 }
 

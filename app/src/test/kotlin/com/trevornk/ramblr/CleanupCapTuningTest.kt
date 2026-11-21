@@ -21,60 +21,37 @@ class CleanupCapTuningTest {
     private val observedP99Ms = 3_828L
 
     @Test
-    fun `the cap still admits the slowest cleanup ever observed to succeed`() {
+    fun `stage 2 cloud cleanup uses 120s stage budget and 40s per-provider cap`() {
+        assertEquals(120_000L, CLOUD_CLEANUP_STAGE_BUDGET_MS)
+        assertEquals(40_000L, CLOUD_CLEANUP_PER_PROVIDER_CAP_MS)
+        assertEquals(3, MAX_CLOUD_CLEANUP_PROVIDERS)
+        assertEquals(CLOUD_CLEANUP_STAGE_BUDGET_MS, CLOUD_CLEANUP_PER_PROVIDER_CAP_MS * MAX_CLOUD_CLEANUP_PROVIDERS)
+    }
+
+    @Test
+    fun `the per-provider cap admits the slowest cleanup ever observed to succeed`() {
         assertTrue(
-            "Cap ${CLEANUP_WATERFALL_HARD_CAP_MS}ms would abort the slowest real success " +
-                "(${slowestObservedSuccessMs}ms), turning a cleanup that works today into a " +
-                "raw-text fallback. Re-check benchmark_log.jsonl before lowering this.",
-            CLEANUP_WATERFALL_HARD_CAP_MS > slowestObservedSuccessMs,
+            "Per-provider cap ${CLOUD_CLEANUP_PER_PROVIDER_CAP_MS}ms would abort the slowest real success " +
+                "(${slowestObservedSuccessMs}ms).",
+            CLOUD_CLEANUP_PER_PROVIDER_CAP_MS > slowestObservedSuccessMs,
         )
     }
 
     @Test
-    fun `the cap stays tight enough to beat the old 15s offline wait`() {
-        // The offline case is what this budget actually costs: every provider burns its full
-        // timeout in sequence before the chain gives up. Two such waterfalls were logged at
-        // 18.2s and 19.7s under the old 15s cap (which #137 made real). Anything at or above
-        // 15s means that tuning never happened.
-        //
-        // Deliberately a bound, not assertEquals(8_000L): pinning the exact value would just
-        // restate the constant and fail on any future retune, including a justified one. The
-        // bounds in this class are the part worth defending -- together they say the cap must
-        // clear the slowest real success and still beat the un-tuned wait, which is the actual
-        // decision the benchmark data supports. Anything inside that window is a product call.
+    fun `the read timeout fits inside the per-provider cap`() {
         assertTrue(
-            "Cap ${CLEANUP_WATERFALL_HARD_CAP_MS}ms is back at/above the old un-tuned 15s.",
-            CLEANUP_WATERFALL_HARD_CAP_MS < 15_000L,
+            "readMs (${CleanupStepTimeouts.DEFAULT.readMs}ms) exceeds per-provider cap ${CLOUD_CLEANUP_PER_PROVIDER_CAP_MS}ms.",
+            CleanupStepTimeouts.DEFAULT.readMs <= CLOUD_CLEANUP_PER_PROVIDER_CAP_MS,
         )
     }
 
     @Test
-    fun `the read timeout still fits inside the cap`() {
-        // readMs is deliberately 7s -- that is what let the 7859ms success through. If the cap
-        // ever drops below it, the per-phase budget becomes unreachable and the clamp in
-        // cloudStepTimeouts silently starts truncating every slow-but-healthy call.
-        assertTrue(
-            "readMs (${CleanupStepTimeouts.DEFAULT.readMs}ms) no longer fits in the " +
-                "${CLEANUP_WATERFALL_HARD_CAP_MS}ms cap.",
-            CleanupStepTimeouts.DEFAULT.readMs < CLEANUP_WATERFALL_HARD_CAP_MS,
-        )
-    }
-
-    @Test
-    fun `a step dispatched at the p99 mark still gets a usable budget`() {
-        // Typical bad case: an earlier step burned p99 before failing over. The next step must
-        // still get meaningfully more than the floor, or the waterfall is single-step in practice.
+    fun `a step dispatched at the p99 mark still gets a full per-provider budget`() {
         val start = 1_000_000L
-        val deadline = start + CLEANUP_WATERFALL_HARD_CAP_MS
+        val deadline = start + CLOUD_CLEANUP_STAGE_BUDGET_MS
         val t = cloudStepTimeouts(deadline, start + observedP99Ms)
 
-        val remaining = CLEANUP_WATERFALL_HARD_CAP_MS - observedP99Ms
-        assertEquals(remaining, t.callMs)
-        assertTrue(
-            "Only ${t.callMs}ms left for a follow-up step after a p99 first attempt.",
-            t.callMs!! > MIN_STEP_CALL_BUDGET_MS * 4,
-        )
-        // And that leftover still covers the median cleanup (901ms) comfortably.
+        assertEquals(CLOUD_CLEANUP_PER_PROVIDER_CAP_MS, t.callMs)
         assertTrue("Leftover budget can't even fit a median cleanup.", t.callMs!! > 901L)
     }
 }

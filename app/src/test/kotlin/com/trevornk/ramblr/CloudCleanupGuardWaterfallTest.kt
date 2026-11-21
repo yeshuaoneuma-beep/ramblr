@@ -67,21 +67,57 @@ class CloudCleanupGuardWaterfallTest {
 
     private val raw = "tell Sarah the delivery is late and the driver says he will be there around noon"
 
-    @Test fun `a cloud result that fails the guard is rejected and the next provider is not tried`() {
-        // First provider replies instead of cleaning up; the second would have been fine.
-        val transport = QueueTransport(mutableListOf(ok("Please provide the transcript you would like me to edit."), ok("Tell Sarah the delivery is late.")))
+    @Test fun `a cloud result that fails the guard advances to the next cloud provider`() {
+        // First provider replies instead of cleaning up; the second returns faithful text.
+        val faithful = "Tell Sarah the delivery is late and the driver says he will be there around noon."
+        val transport = QueueTransport(
+            mutableListOf(
+                ok("Please provide the transcript you would like me to edit."),
+                ok(faithful),
+            ),
+        )
         val result = run(raw, PostProcessor.NATURAL_PROMPT, transport)
 
-        assertNull("rejected output must not be delivered", result.text)
-        assertNotNull(result.error)
-        assertTrue(result.error!!, result.error!!.contains("META_REPLY"))
-        assertEquals("the waterfall must stop, not fall through to the next provider", 1, transport.requestedUrls.size)
+        assertEquals(faithful, result.text)
+        assertNull(result.error)
+        assertEquals("the waterfall must advance to the next provider after rejection", 2, transport.requestedUrls.size)
+    }
+
+    @Test fun `a cloud result that fails the guard advances to Local Cleanup when no cloud provider succeeds`() {
+        val waterfall = CleanupWaterfall(
+            listOf(
+                CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-4o-mini"),
+                CleanupStep(CleanupStepGroup.LOCAL_LLM, "local-model"),
+            ),
+        )
+        val transport = QueueTransport(mutableListOf(ok("Please provide the transcript you would like me to edit.")))
+        var localCalled = false
+        var captured: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = raw,
+            prompt = PostProcessor.NATURAL_PROMPT,
+            waterfall = waterfall,
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "key" },
+            transport = transport,
+            localInference = LocalInferenceEngine { _, _, _, _, _ ->
+                localCalled = true
+                LocalInferenceResult.Success("Tell Sarah the delivery is late and the driver says he will be there around noon.")
+            },
+            localModelPath = { "/model.gguf" },
+            callback = { captured = it },
+        )
+        assertTrue("Expected Local Cleanup to run after cloud fidelity rejection", localCalled)
+        assertEquals("Tell Sarah the delivery is late and the driver says he will be there around noon.", captured?.text)
+        assertNull(captured?.error)
     }
 
     @Test fun `the rejection reads as a plain-language notice, not an enum name`() {
+        val singleStep = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-4o-mini")))
         val transport = QueueTransport(mutableListOf(ok("Tell Sarah the delivery is late.")))
-        val result = run(raw, PostProcessor.NATURAL_PROMPT, transport)
-        assertEquals("Cloud cleanup output rejected (LENGTH_COLLAPSE)", result.error)
+        val result = run(raw, PostProcessor.NATURAL_PROMPT, transport, waterfall = singleStep)
+        assertEquals("All cleanup steps failed: Cloud cleanup output rejected (LENGTH_COLLAPSE)", result.error)
         assertEquals("model dropped most of the text", CleanupFailureNotice.summarize(result.error))
         assertEquals(
             "Cleanup failed (model dropped most of the text) \u2014 inserted raw text",
@@ -98,9 +134,10 @@ class CloudCleanupGuardWaterfallTest {
 
     @Test fun `the prompt the app actually sends still selects the guard`() {
         // DictationRuntime sends interpolated vocabulary plus the keep-language clause.
+        val singleStep = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-4o-mini")))
         val sent = PostProcessor.withKeepLanguage(PostProcessor.interpolateVocabulary(PostProcessor.NATURAL_PROMPT, listOf("Hetzner")))
         val transport = QueueTransport(mutableListOf(ok("Tell Sarah the delivery is late.")))
-        assertNull(run(raw, sent, transport).text)
+        assertNull(run(raw, sent, transport, waterfall = singleStep).text)
     }
 
     @Test fun `a rewriting prompt is not guarded`() {
@@ -117,21 +154,21 @@ class CloudCleanupGuardWaterfallTest {
     }
 
     @Test fun `the guard can be forced on or off regardless of prompt`() {
+        val singleStep = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-4o-mini")))
         val shortened = ok("Tell Sarah the delivery is late.")
-        assertNull(run(raw, "Rewrite this as a haiku.", QueueTransport(mutableListOf(shortened)), guard = true).text)
+        assertNull(run(raw, "Rewrite this as a haiku.", QueueTransport(mutableListOf(shortened)), waterfall = singleStep, guard = true).text)
         assertEquals(
             "Tell Sarah the delivery is late.",
-            run(raw, PostProcessor.NATURAL_PROMPT, QueueTransport(mutableListOf(shortened)), guard = false).text,
+            run(raw, PostProcessor.NATURAL_PROMPT, QueueTransport(mutableListOf(shortened)), waterfall = singleStep, guard = false).text,
         )
     }
 
-    @Test fun `a rejected step still counts as the provider that answered`() {
+    @Test fun `cursor records the step that actually passed the guard, not the rejected one`() {
         val cursor = CleanupWaterfallCursor()
-        // Step 0 fails outright; step 1 answers but is rejected. The next dictation should still
-        // start at step 1, because that provider is the one that is up.
-        val transport = QueueTransport(mutableListOf(CleanupHttpOutcome.HttpError(403, ""), ok("Tell Sarah the delivery is late.")))
+        val faithful = "Tell Sarah the delivery is late and the driver says he will be there around noon."
+        val transport = QueueTransport(mutableListOf(ok("Tell Sarah the delivery is late."), ok(faithful)))
         val result = run(raw, PostProcessor.NATURAL_PROMPT, transport, cursor = cursor)
-        assertNull(result.text)
+        assertEquals(faithful, result.text)
         assertEquals(1, cursor.startIndex(System.currentTimeMillis()))
     }
 

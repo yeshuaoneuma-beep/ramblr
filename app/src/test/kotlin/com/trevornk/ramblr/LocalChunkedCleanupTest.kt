@@ -133,7 +133,7 @@ class LocalChunkedCleanupTest {
 
     // ---- short input is untouched --------------------------------------------------------------
 
-    @Test fun `a short transcript takes the single pass path with the original terminal deadline`() {
+    @Test fun `a short transcript takes the single pass path with the independent local deadline`() {
         val text = "um so this is a short dictation that fits easily."
         val engine = ScriptedEngine { _, _ -> LocalInferenceResult.Success("Cleaned.") }
         val before = System.currentTimeMillis()
@@ -145,8 +145,8 @@ class LocalChunkedCleanupTest {
         assertNull("single pass has no chunk report", result.sections)
         assertEquals(listOf(text), engine.userTexts)
         val deadline = engine.deadlines.single()
-        assertTrue(deadline >= before + TERMINAL_LOCAL_LLM_STEP_BUDGET_MS)
-        assertTrue(deadline <= after + TERMINAL_LOCAL_LLM_STEP_BUDGET_MS)
+        assertTrue(deadline >= before + LOCAL_CHUNKED_TOTAL_BUDGET_MS)
+        assertTrue(deadline <= after + LOCAL_CHUNKED_TOTAL_BUDGET_MS)
     }
 
     @Test fun `text exactly at the limit is still a single pass`() {
@@ -182,53 +182,50 @@ class LocalChunkedCleanupTest {
         assertEquals("cloud cleaned", result.text)
     }
 
-    // ---- per-chunk failure isolation -------------------------------------------------------------
+    // ---- all-or-nothing chunk integrity ----------------------------------------------------------
 
-    @Test fun `one rejected chunk stays raw and the rest are cleaned -- partial success`() {
+    @Test fun `one rejected chunk aborts completely and never returns a partial mix`() {
         val engine = ScriptedEngine { i, t ->
             if (i == 2) LocalInferenceResult.Failure("Local cleanup output rejected (NUMERIC_DIVERGENCE)") else cleaned(t)
         }
         val text = sentences(60)
         val result = run(text, engine)
 
-        assertNull(result.error)
-        val partial = result.partial!!
-        assertEquals(engine.userTexts.size - 1, partial.cleanedChunks)
-        assertEquals(engine.userTexts.size, partial.totalChunks)
-        assertEquals(partial, result.sections)
-        val out = result.text!!
-        val rawChunk = engine.userTexts[2]
-        assertTrue("failed chunk delivered raw, unbracketed", out.contains(" $rawChunk ") && !out.contains("[$rawChunk]"))
-        assertTrue(out.contains("[${engine.userTexts[1]}]") && out.contains("[${engine.userTexts[3]}]"))
-        assertTrue("the run continued past the failure", engine.userTexts.size > 3)
+        assertNull("all-or-nothing: must fall back to complete immutable raw transcript", result.text)
+        assertNull(result.partial)
+        assertEquals("All cleanup steps failed: Local cleanup output rejected (NUMERIC_DIVERGENCE)", result.error)
+        assertEquals("must abort immediately on chunk 2 without running further chunks", 3, engine.userTexts.size)
     }
 
-    @Test fun `a thrown cap or loop failure on one chunk is isolated the same way`() {
+    @Test fun `a thrown cap or loop failure on one chunk aborts completely`() {
         val engine = ScriptedEngine { i, t ->
             if (i == 0) LocalInferenceResult.Failure("Local model exceeded max response length (512 pieces) without emitting an end-of-generation token")
             else cleaned(t)
         }
         val result = run(sentences(30), engine)
-        assertNull(result.error)
-        assertEquals(1, result.partial!!.totalChunks - result.partial!!.cleanedChunks)
+        assertNull(result.text)
+        assertNull(result.partial)
+        assertTrue(result.error!!.contains("max response length"))
+        assertEquals(1, engine.userTexts.size)
     }
 
-    @Test fun `when no chunk could be cleaned the step fails with the last reason`() {
+    @Test fun `when no chunk could be cleaned the step fails with the failure reason`() {
         val engine = ScriptedEngine { _, _ -> LocalInferenceResult.Failure("Local cleanup output rejected (PROMPT_ECHO)") }
         val result = run(sentences(30), engine)
         assertNull(result.text)
         assertEquals("All cleanup steps failed: Local cleanup output rejected (PROMPT_ECHO)", result.error)
+        assertEquals(1, engine.userTexts.size)
     }
 
-    @Test fun `numeric divergence is checked per chunk against that chunk's own numbers`() {
-        // Chunk text contains "forty five"; the fake drops it, so the numeric verifier rejects that chunk only.
+    @Test fun `numeric divergence on any chunk aborts all-or-nothing`() {
         val text = (1..30).joinToString(" ") { if (it == 12) "The total was forty five dollars." else "Plain sentence $it goes here." }
         val engine = ScriptedEngine { _, t ->
             if (t.contains("45") || t.contains("forty")) LocalInferenceResult.Success("The total was a lot of dollars.") else cleaned(t)
         }
         val result = run(text, engine)
-        assertNull(result.error)
-        assertEquals(1, result.partial!!.totalChunks - result.partial!!.cleanedChunks)
+        assertNull(result.text)
+        assertNull(result.partial)
+        assertTrue(result.error!!.contains("NUMERIC_DIVERGENCE"))
     }
 
     @Test fun `vocabulary correction is applied to each cleaned chunk`() {
@@ -240,55 +237,77 @@ class LocalChunkedCleanupTest {
 
     // ---- timeouts, budgets -------------------------------------------------------------------------
 
-    @Test fun `two timeouts in a row stop the run and leave the remainder raw`() {
+    @Test fun `a timeout on any chunk aborts immediately and falls back to complete raw`() {
         val engine = ScriptedEngine { i, t ->
-            if (i in 1..2) LocalInferenceResult.TimedOut("Local cleanup timed out") else cleaned(t)
+            if (i == 1) LocalInferenceResult.TimedOut("Local cleanup timed out") else cleaned(t)
         }
         val text = sentences(60)
         val result = run(text, engine)
 
-        assertEquals("no engine call after the second consecutive timeout", 3, engine.userTexts.size)
-        assertNull(result.error)
-        assertEquals(1, result.partial!!.cleanedChunks)
-        // Everything after the stopped chunk is raw -- the output still contains all the text.
-        assertEquals(text, result.text!!.replace("[", "").replace("]", ""))
+        assertEquals("must stop immediately on first chunk timeout", 2, engine.userTexts.size)
+        assertNull(result.text)
+        assertNull(result.partial)
+        assertEquals("All cleanup steps failed: Local cleanup timed out", result.error)
     }
 
-    @Test fun `isolated timeouts do not trip the breaker`() {
-        val engine = ScriptedEngine { i, t ->
-            if (i % 3 == 1) LocalInferenceResult.TimedOut("Local cleanup timed out") else cleaned(t)
-        }
-        val result = run(sentences(60), engine)
-        assertTrue(engine.userTexts.size > 6)
-        assertNotNull(result.partial)
-    }
-
-    @Test fun `the accumulator's own deadline failure counts as a timeout for the breaker`() {
-        val engine = ScriptedEngine { _, _ -> LocalInferenceResult.Failure("Local completion exceeded its wall-clock deadline") }
-        run(sentences(60), engine)
-        assertEquals(LOCAL_CHUNK_MAX_CONSECUTIVE_TIMEOUTS, engine.userTexts.size)
-    }
-
-    @Test fun `validator rejections never trip the timeout breaker`() {
-        val engine = ScriptedEngine { _, _ -> LocalInferenceResult.Failure("Local cleanup output rejected (LENGTH_COLLAPSE)") }
-        run(sentences(60), engine)
-        assertTrue(engine.userTexts.size > LOCAL_CHUNK_MAX_CONSECUTIVE_TIMEOUTS)
-    }
-
-    @Test fun `a chunk that cannot fit in what is left of the step is not started`() {
+    @Test fun `a chunk that cannot fit in what is left of the step aborts all-or-nothing`() {
         val clock = FakeClock()
         val device = SimulatedDevice(clock, msPerChar = 200.0) // ~58 s per 290-character chunk
         val text = sentences(60)
         val result = run(text, device, nowMs = clock::now)
 
-        assertNull(result.error)
+        assertNull("must not return partial cleaned+raw mix when step budget runs out", result.text)
+        assertNull(result.partial)
+        assertTrue(result.error!!.contains("cannot fit chunk"))
         assertEquals("no chunk ran into its deadline", 0, device.timedOut)
         assertTrue("never ran past the step ceiling: ${clock.elapsed}", clock.elapsed <= LOCAL_CHUNKED_TOTAL_BUDGET_MS)
-        val partial = result.partial!!
-        assertEquals(device.calls, partial.cleanedChunks)
-        assertTrue(partial.totalChunks > device.calls)
-        assertTrue("several chunks fit before the ceiling, got ${device.calls}", device.calls in 3..5)
+        assertTrue("several chunks ran before budget check aborted, got ${device.calls}", device.calls in 3..5)
+    }
+
+    @Test fun `prepare time is independent of the 240s chunked budget and cloud cleanup time`() {
+        val clock = FakeClock(t = 0L)
+        val waterfall = CleanupWaterfall(
+            listOf(
+                CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-4o-mini"),
+                CleanupStep(CleanupStepGroup.LOCAL_LLM, "lfm"),
+            ),
+        )
+        // Cloud step burns the entire 120s cloud cleanup stage budget before failing.
+        val transport = CleanupHttpTransport { _, _, _, _, _, cb ->
+            clock.t += CLOUD_CLEANUP_STAGE_BUDGET_MS + 1_000L
+            cb(CleanupHttpOutcome.HttpError(503, "busy"))
+        }
+        // Prepare takes 50s (within PREPARE_TIMEOUT_MS = 60s), then each chunk takes 30s (total 6 chunks = 180s <= 240s).
+        val device = object : LocalInferenceEngine {
+            var calls = 0
+            override fun prepare(modelPath: String) {
+                clock.t += 50_000L
+            }
+            override fun complete(
+                systemPrompt: String,
+                userText: String,
+                modelPath: String,
+                deadlineAtMs: Long,
+                isCancelled: () -> Boolean,
+            ): LocalInferenceResult {
+                calls++
+                clock.t += 20_000L
+                return LocalInferenceResult.Success("[$userText]")
+            }
+        }
+        val text = sentences(36) // 6 chunks * 20s = 120s <= 240s even after 121s cloud + 50s prepare!
+        val result = run(
+            text = text,
+            engine = device,
+            waterfall = waterfall,
+            nowMs = clock::now,
+            transport = transport,
+            credential = "key",
+        )
+        assertNull("Expected full local cleanup success, got error=${result.error}", result.error)
+        assertNull(result.partial)
         assertEquals(text, result.text!!.replace("[", "").replace("]", ""))
+        assertTrue("Expected all chunks to complete, got ${device.calls}", device.calls >= 5)
     }
 
     // ---- cancellation -------------------------------------------------------------------------------
@@ -421,30 +440,34 @@ class LocalChunkedCleanupTest {
         assertTrue("every chunk was allowed well above the old flat 20 s", device.allowances.all { it > 30_000L })
     }
 
-    @Test fun `a first chunk slower than the initial allowance times out once and then the allowance grows`() {
+    @Test fun `a first chunk slower than the initial allowance times out and aborts all-or-nothing while learning pace`() {
         val clock = FakeClock()
+        val pace = LocalCleanupPaceStore()
         val device = SimulatedDevice(clock, msPerChar = 250.0) // ~72 s per chunk > the 60 s initial allowance
         val text = sentences(36)
-        val result = run(text, device, nowMs = clock::now, stepBudgetMs = AUDIO_LOCAL_STEP_BUDGET_MS)
+        val result = run(text, device, nowMs = clock::now, stepBudgetMs = AUDIO_LOCAL_STEP_BUDGET_MS, pace = pace)
 
-        assertEquals("only the unmeasured first chunk timed out", 1, device.timedOut)
-        assertTrue(device.allowances[1] > device.allowances[0])
-        assertNotNull(result.partial)
-        assertEquals(1, result.partial!!.totalChunks - result.partial!!.cleanedChunks)
-        assertEquals(text, result.text!!.replace("[", "").replace("]", ""))
+        assertEquals("aborts immediately on first chunk timeout", 1, device.timedOut)
+        assertEquals(1, device.calls)
+        assertNull(result.text)
+        assertNull(result.partial)
+        assertEquals("All cleanup steps failed: Local cleanup timed out", result.error)
+        assertTrue(
+            "learned pace raises the next piece's allowance above initial",
+            pace.budgetFor("/model.gguf", clock.now()).budgetMs(290) > LocalCleanupChunkBudget.INITIAL_BUDGET_MS,
+        )
     }
 
-    @Test fun `a device that cannot decode a chunk at all stops after two timeouts and delivers raw`() {
+    @Test fun `a device that cannot decode a chunk aborts on first timeout and delivers raw`() {
         val clock = FakeClock()
         val device = SimulatedDevice(clock, msPerChar = 2_000.0) // ~10 minutes per chunk
         val text = sentences(60)
         val result = run(text, device, nowMs = clock::now, stepBudgetMs = AUDIO_LOCAL_STEP_BUDGET_MS)
 
-        assertEquals(LOCAL_CHUNK_MAX_CONSECUTIVE_TIMEOUTS, device.calls)
+        assertEquals(1, device.calls)
         assertNull(result.text)
         assertEquals("All cleanup steps failed: Local cleanup timed out", result.error)
-        // 60 s + 120 s: the second timeout is at the ceiling, and nothing else was attempted.
-        assertEquals(LocalCleanupChunkBudget.INITIAL_BUDGET_MS + LocalCleanupChunkBudget.MAX_BUDGET_MS, clock.elapsed)
+        assertEquals(LocalCleanupChunkBudget.INITIAL_BUDGET_MS, clock.elapsed)
     }
 
     @Test fun `each chunk's allowance tracks the measured pace of the chunks before it`() {
@@ -515,15 +538,14 @@ class LocalChunkedCleanupTest {
 
     // ---- runaway generation (#325) ----------------------------------------------------------------
 
-    @Test fun `a chunk stopped by the response cap is raw, not a timeout, and does not trip the breaker`() {
+    @Test fun `a chunk stopped by the response cap aborts all-or-nothing`() {
         val engine = ScriptedEngine { _, _ ->
             LocalInferenceResult.Failure("Local model exceeded max response length (112 pieces) without emitting an end-of-generation token")
         }
-        run(sentences(60), engine)
-        assertTrue(
-            "the cap is a bad chunk, not a slow device: every chunk is still attempted",
-            engine.userTexts.size > LOCAL_CHUNK_MAX_CONSECUTIVE_TIMEOUTS,
-        )
+        val result = run(sentences(60), engine)
+        assertNull(result.text)
+        assertNull(result.partial)
+        assertEquals(1, engine.userTexts.size)
     }
 
     @Test fun `a capped chunk is not counted as pace evidence`() {
@@ -533,14 +555,14 @@ class LocalChunkedCleanupTest {
         val engine = object : LocalInferenceEngine {
             override fun complete(systemPrompt: String, userText: String, modelPath: String, deadlineAtMs: Long, isCancelled: () -> Boolean): LocalInferenceResult {
                 clock.t += 9_000
-                return if (calls++ == 0) LocalInferenceResult.Failure("Local model exceeded max response length (112 pieces)")
+                return if (calls++ == 1) LocalInferenceResult.Failure("Local model exceeded max response length (112 pieces)")
                 else LocalInferenceResult.Success("[$userText]")
             }
         }
-        run(sentences(36), engine, nowMs = clock::now, stepBudgetMs = AUDIO_LOCAL_STEP_BUDGET_MS, pace = pace)
+        val result = run(sentences(36), engine, nowMs = clock::now, stepBudgetMs = AUDIO_LOCAL_STEP_BUDGET_MS, pace = pace)
+        assertNull(result.text)
         val est = pace.budgetFor("/model.gguf", clock.now()).estimateMsPerChar()!!
-        // The capped chunk was 9 s too, but a failure that is not a timeout is left out; the
-        // estimate comes from the successful chunks only, which all took 9 s each.
+        // Chunk 0 succeeded in 9s; chunk 1 failed with response cap (not a timeout) and was left out.
         assertTrue(est in 20.0..45.0)
     }
 
@@ -559,17 +581,17 @@ class LocalChunkedCleanupTest {
             }
         }
         val result = run(sentences(60), engine, holder = holder, nowMs = clock::now)
-        assertEquals("Cleanup cancelled", result.error)
         assertEquals(1, engine.calls)
+        assertNull(result.text)
     }
 
     // ---- misc ----------------------------------------------------------------------------------------
 
-    @Test fun `partial results are not an error and keep Result error null`() {
+    @Test fun `any chunk failure yields null text and non-null error`() {
         val engine = ScriptedEngine { i, t -> if (i == 0) LocalInferenceResult.Failure("x") else cleaned(t) }
         val result = run(sentences(60), engine)
-        assertNotNull(result.text)
-        assertNull(result.error)
-        assertFalse(result.partial == null)
+        assertNull(result.text)
+        assertNotNull(result.error)
+        assertNull(result.partial)
     }
 }

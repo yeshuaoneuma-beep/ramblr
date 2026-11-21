@@ -1651,9 +1651,10 @@ class DictationRuntime internal constructor(
         }
 
         // Keep transcription cloud-first and provider-neutral: walk configured cloud STT
-        // candidates (with usable credentials) before falling back sequentially to LOCAL.
+        // candidates (with usable credentials and audio-capable models) before falling back sequentially to LOCAL.
         val usableCloudCandidates = candidates.filter { entry ->
-            (entry.kind == ProviderKind.OPENAI || entry.kind == ProviderKind.GEMINI) &&
+            (entry.kind == ProviderKind.OPENAI ||
+                (entry.kind == ProviderKind.GEMINI && GeminiTranscriberClient.supportsAudioTranscription(entry.transcriptionModel))) &&
                 TranscriptionChain.precheck(
                     entry.kind,
                     hasCredential = ProviderCredentialStore.getOrLegacy(context, entry).isNotBlank(),
@@ -1711,8 +1712,8 @@ class DictationRuntime internal constructor(
                                 handleTranscriptionResult(transcript, token, lease)
                             },
                             onCancelled = { cleanupAudio() },
-                            onFailure = { errorKind, errorMsg ->
-                                walk.recordCloudFailure(errorKind, errorMsg)
+                            onFailure = { errorKind, errorMsg, httpCode, retryAfterMs ->
+                                walk.recordCloudFailure(errorKind, errorMsg, httpCode, retryAfterMs)
                                 dispatchNext()
                             },
                         )
@@ -1763,7 +1764,7 @@ class DictationRuntime internal constructor(
         cancelsAtStart: Int,
         onSuccessOrNoSpeech: (String?) -> Unit,
         onCancelled: () -> Unit,
-        onFailure: (CloudErrorKind, String?) -> Unit,
+        onFailure: (CloudErrorKind, String?, Int?, Long?) -> Unit,
     ) {
         fun isCancelledOrStale(): Boolean =
             !guard.isCurrent(token) || inFlightCall.isCancelled || inFlightCall.cancelCount != cancelsAtStart
@@ -1778,7 +1779,7 @@ class DictationRuntime internal constructor(
             isCompressedUpload = compressedFile != null,
         )
         if (timeoutMs == null) {
-            onFailure(CloudErrorKind.TEMPORARY_BUSY, "Cloud transcription exceeded time budget")
+            onFailure(CloudErrorKind.TEMPORARY_BUSY, "Cloud transcription exceeded time budget", null, null)
             return
         }
 
@@ -1827,18 +1828,23 @@ class DictationRuntime internal constructor(
                         result.isCancelled || isCancelledOrStale() -> onCancelled()
                         success -> onSuccessOrNoSpeech(result.text)
                         isNoSpeechTranscript(result.text, result.error) -> onSuccessOrNoSpeech(null)
-                        else -> onFailure(result.errorKind, result.error ?: "empty transcript")
+                        else -> onFailure(result.errorKind, result.error ?: "empty transcript", result.httpCode, result.retryAfterMs)
                     }
                 }
             }
             ProviderKind.GEMINI -> {
+                val geminiModel = entry.transcriptionModel?.ifBlank { null } ?: GeminiTranscriberClient.DEFAULT_MODEL
+                if (!GeminiTranscriberClient.supportsAudioTranscription(geminiModel)) {
+                    Log.w(TAG, "Skipping text-only Gemini/Gemma model for audio transcription: $geminiModel")
+                    onFailure(CloudErrorKind.PERMANENT_OR_QUOTA, "Model $geminiModel does not support audio transcription", null, null)
+                    return
+                }
                 if (!GeminiTranscriberClient.canInlineAudio(file, compressedFile)) {
                     Log.w(TAG, "Recording too large for Gemini inline audio (pcm=${file.length()}, compressed=${compressedFile?.length()}); trying next candidate")
-                    onFailure(CloudErrorKind.PERMANENT_OR_QUOTA, "Recording too large for Gemini transcription")
+                    onFailure(CloudErrorKind.PERMANENT_OR_QUOTA, "Recording too large for Gemini transcription", null, null)
                     return
                 }
                 Log.i(TAG, "Cloud transcription via ProviderChain provider=${entry.kind} (attempt ${step.attemptNumber}, revisit=${step.isRevisit})")
-                val geminiModel = entry.transcriptionModel?.ifBlank { null } ?: GeminiTranscriberClient.DEFAULT_MODEL
                 val geminiEndpoint = entry.baseUrlOverride?.takeIf { it.isNotBlank() }
                     ?.let { GeminiCleanupProvider.endpointUrl(geminiModel, it) }
                     ?: GeminiCleanupProvider.endpointUrl(geminiModel)
@@ -1881,11 +1887,11 @@ class DictationRuntime internal constructor(
                         result.isCancelled || isCancelledOrStale() -> onCancelled()
                         success -> onSuccessOrNoSpeech(result.text)
                         isNoSpeechTranscript(result.text, result.error) -> onSuccessOrNoSpeech(null)
-                        else -> onFailure(result.errorKind, result.error ?: "empty transcript")
+                        else -> onFailure(result.errorKind, result.error ?: "empty transcript", result.httpCode, result.retryAfterMs)
                     }
                 }
             }
-            else -> onFailure(CloudErrorKind.PERMANENT_OR_QUOTA, "Unsupported cloud transcription provider ${entry.kind}")
+            else -> onFailure(CloudErrorKind.PERMANENT_OR_QUOTA, "Unsupported cloud transcription provider ${entry.kind}", null, null)
         }
     }
 

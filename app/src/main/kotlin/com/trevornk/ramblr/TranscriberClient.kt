@@ -17,6 +17,7 @@ object TranscriberClient {
         val httpCode: Int? = null,
         val isTransientIo: Boolean = false,
         val isCancelled: Boolean = false,
+        val retryAfterMs: Long? = null,
     ) {
         val errorKind: CloudErrorKind
             get() = CloudErrorClassifier.classify(httpCode, error, isTransientIo)
@@ -213,6 +214,7 @@ object TranscriberClient {
                 cancelHolder.clear(call)
                 val httpCode = response.code
                 val successful = response.isSuccessful
+                val retryAfterMs = CloudErrorClassifier.parseRetryAfterMs(response.header("Retry-After"))
                 // Read via HttpBodyReader (#62): a body read that throws inside onResponse is
                 // swallowed by OkHttp, so the callback (and the temp PCM file's deletion in it)
                 // would otherwise never run and the dictation would hang until the watchdog.
@@ -221,7 +223,14 @@ object TranscriberClient {
                         if (successful) {
                             callback(resultFor(body, vocabularyTerms).copy(httpCode = httpCode))
                         } else {
-                            callback(Result(null, errorFromResponse(body, httpCode), httpCode = httpCode))
+                            callback(
+                                Result(
+                                    text = null,
+                                    error = errorFromResponse(body, httpCode),
+                                    httpCode = httpCode,
+                                    retryAfterMs = retryAfterMs,
+                                )
+                            )
                         }
                     },
                     onFailure = { e ->

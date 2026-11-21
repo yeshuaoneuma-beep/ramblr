@@ -91,8 +91,34 @@ class CloudErrorClassifierTest {
         }
     }
 
-    @Test fun `cleanup executor does not retry 429 401 402 403 or 400 non-temperature errors`() {
-        for (code in listOf(429, 401, 402, 403, 400)) {
+    @Test fun `parseRetryAfterMs parses numeric seconds and rejects non-numeric or negative values`() {
+        assertEquals(0L, CloudErrorClassifier.parseRetryAfterMs("0"))
+        assertEquals(2_000L, CloudErrorClassifier.parseRetryAfterMs("2"))
+        assertEquals(3_000L, CloudErrorClassifier.parseRetryAfterMs(" 3 "))
+        assertEquals(60_000L, CloudErrorClassifier.parseRetryAfterMs("60"))
+        assertNull(CloudErrorClassifier.parseRetryAfterMs(null))
+        assertNull(CloudErrorClassifier.parseRetryAfterMs(""))
+        assertNull(CloudErrorClassifier.parseRetryAfterMs("   "))
+        assertNull(CloudErrorClassifier.parseRetryAfterMs("-1"))
+        assertNull(CloudErrorClassifier.parseRetryAfterMs("Wed, 21 Oct 2015 07:28:00 GMT"))
+    }
+
+    @Test fun `isQuickRetryable429 and quick429BackoffMs enforce 3s cap and 1500ms default`() {
+        assertTrue(CloudErrorClassifier.isQuickRetryable429(429, null))
+        assertTrue(CloudErrorClassifier.isQuickRetryable429(429, 0L))
+        assertTrue(CloudErrorClassifier.isQuickRetryable429(429, 2_000L))
+        assertTrue(CloudErrorClassifier.isQuickRetryable429(429, 3_000L))
+        assertFalse(CloudErrorClassifier.isQuickRetryable429(429, 3_001L))
+        assertFalse(CloudErrorClassifier.isQuickRetryable429(429, 10_000L))
+        assertFalse(CloudErrorClassifier.isQuickRetryable429(503, null))
+        assertFalse(CloudErrorClassifier.isQuickRetryable429(401, 1_000L))
+        assertEquals(1_500L, CloudErrorClassifier.quick429BackoffMs(null))
+        assertEquals(0L, CloudErrorClassifier.quick429BackoffMs(0L))
+        assertEquals(2_000L, CloudErrorClassifier.quick429BackoffMs(2_000L))
+    }
+
+    @Test fun `cleanup executor does not retry 401 402 403 400 or 429 with Retry-After over 3s`() {
+        for (code in listOf(401, 402, 403, 400)) {
             var requests = 0
             val transport = CleanupHttpTransport { _, _, _, _, _, callback ->
                 requests++
@@ -114,6 +140,58 @@ class CloudErrorClassifierTest {
             assertEquals("HTTP $code must fail over without retry", 1, requests)
             assertNull(result?.text)
         }
+
+        var longRetryAfterRequests = 0
+        var longRetryAfterResult: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-5.4-mini"))),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "test-key" },
+            transport = CleanupHttpTransport { _, _, _, _, _, callback ->
+                longRetryAfterRequests++
+                callback(CleanupHttpOutcome.HttpError(429, """{"error":{"message":"rate limited"}}""", retryAfterMs = 10_000L))
+            },
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, action -> action() },
+            callback = { longRetryAfterResult = it },
+        )
+        assertEquals("HTTP 429 with Retry-After > 3s must not retry", 1, longRetryAfterRequests)
+        assertNull(longRetryAfterResult?.text)
+    }
+
+    @Test fun `cleanup executor allows 1 quick retry on HTTP 429 with Retry-After null or up to 3s`() {
+        for ((retryAfterMs, expectedDelay) in listOf(null to 1_500L, 2_000L to 2_000L, 3_000L to 3_000L)) {
+            var requests = 0
+            val scheduledDelays = mutableListOf<Long>()
+            var result: PostProcessor.Result? = null
+            CleanupWaterfallExecutor.execute(
+                text = "raw",
+                prompt = "clean",
+                waterfall = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-5.4-mini"))),
+                cursor = CleanupWaterfallCursor(),
+                cancelHolder = InFlightCall(),
+                credentialLookup = { "test-key" },
+                transport = CleanupHttpTransport { _, _, _, _, _, callback ->
+                    requests++
+                    if (requests == 1) {
+                        callback(CleanupHttpOutcome.HttpError(429, """{"error":{"message":"rate limited"}}""", retryAfterMs = retryAfterMs))
+                    } else {
+                        callback(CleanupHttpOutcome.Ok("""{"choices":[{"message":{"content":"recovered"}}]}"""))
+                    }
+                },
+                scheduleRetry = { delay, action ->
+                    scheduledDelays += delay
+                    action()
+                },
+                callback = { result = it },
+            )
+            assertEquals(2, requests)
+            assertEquals(listOf(expectedDelay), scheduledDelays)
+            assertEquals("recovered", result?.text)
+        }
     }
 
     @Test fun `cleanup executor busy-retry respects remaining budget and cancelHolder`() {
@@ -129,7 +207,7 @@ class CloudErrorClassifierTest {
             credentialLookup = { "test-key" },
             transport = CleanupHttpTransport { _, _, _, _, _, callback ->
                 requestsOnExpired++
-                now = 1_000L + CLEANUP_WATERFALL_HARD_CAP_MS - 100L
+                now = 1_000L + CLOUD_CLEANUP_PER_PROVIDER_CAP_MS - 100L
                 callback(CleanupHttpOutcome.HttpError(503, "overloaded"))
             },
             nowMs = { now },
@@ -216,10 +294,17 @@ class CloudErrorClassifierTest {
         assertEquals("fallback ok", omniResult?.text)
     }
 
-    @Test fun `AudioJobRunner retries once only on TEMPORARY_BUSY`() {
+    @Test fun `AudioJobRunner retries once on TEMPORARY_BUSY or quick-429 only`() {
         assertTrue(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.TEMPORARY_BUSY))
         assertFalse(AudioJobRunner.shouldRetryCloudChunk(1, CloudErrorKind.TEMPORARY_BUSY))
         assertFalse(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA))
         assertFalse(AudioJobRunner.shouldRetryCloudChunk(1, CloudErrorKind.PERMANENT_OR_QUOTA))
+        assertTrue(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = null))
+        assertTrue(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = 2_000L))
+        assertFalse(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = 5_000L))
+        assertFalse(AudioJobRunner.shouldRetryCloudChunk(1, CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = 1_000L))
+        assertEquals(1_500L, AudioJobRunner.cloudChunkRetryDelayMs(CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = null))
+        assertEquals(2_000L, AudioJobRunner.cloudChunkRetryDelayMs(CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = 2_000L))
+        assertEquals(3_000L, AudioJobRunner.cloudChunkRetryDelayMs(CloudErrorKind.TEMPORARY_BUSY, httpCode = 503, retryAfterMs = null))
     }
 }

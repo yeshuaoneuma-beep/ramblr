@@ -126,4 +126,25 @@ class GeminiModelConfigTest {
         assertEquals("LOW", genConfig.getJSONObject("thinkingConfig").getString("thinkingLevel"))
         assertEquals("cleaned", result?.text)
     }
+
+    @Test fun `supportsAudioTranscription blocks text-only Gemma 4 models and allows audio-capable models`() {
+        for (blocked in listOf("gemma-4-31b-it", "gemma-4-26b-a4b-it", "models/gemma-4-31b-it", "gemma-4-27b-it")) {
+            assertFalse("Expected $blocked to be blocked from audio STT", GeminiTranscriberClient.supportsAudioTranscription(blocked))
+        }
+        for (allowed in listOf("gemma-4-e2b-it", "gemma-4-e4b-it", "gemma-4-12b-it", "models/gemma-4-e4b-it", "gemini-3.1-flash-lite", "gemini-3.8-flash", null, "")) {
+            assertTrue("Expected $allowed to be allowed for audio STT", GeminiTranscriberClient.supportsAudioTranscription(allowed))
+        }
+    }
+
+    @Test fun `GeminiTranscriberClient transcribe rejects text-only Gemma 4 immediately without IO`() {
+        var result: GeminiTranscriberClient.Result? = null
+        GeminiTranscriberClient.transcribe(
+            pcmFile = java.io.File("/nonexistent/should-not-read.pcm"),
+            apiKey = "key",
+            model = "gemma-4-31b-it",
+            cancelHolder = InFlightCall(),
+        ) { result = it }
+        assertNull(result?.text)
+        assertTrue(result?.error?.contains("does not support audio transcription") == true)
+    }
 }

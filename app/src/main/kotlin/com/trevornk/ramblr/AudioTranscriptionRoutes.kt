@@ -29,6 +29,15 @@ object AudioTranscriptionRoutes {
      *        local-fallback toggle)
      * @param hasCredential whether a cloud entry has a usable credential
      */
+    private fun isUsableCloudStt(
+        entry: ProviderChainEntry,
+        hasCredential: (ProviderChainEntry) -> Boolean,
+    ): Boolean = when (entry.kind) {
+        ProviderKind.OPENAI -> hasCredential(entry)
+        ProviderKind.GEMINI -> GeminiTranscriberClient.supportsAudioTranscription(entry.transcriptionModel) && hasCredential(entry)
+        else -> false
+    }
+
     fun plan(
         useLocal: Boolean,
         localReady: Boolean,
@@ -37,8 +46,7 @@ object AudioTranscriptionRoutes {
         hasCredential: (ProviderChainEntry) -> Boolean,
     ): AudioRoutePlan {
         val cloud = candidates
-            .filter { it.kind == ProviderKind.OPENAI || it.kind == ProviderKind.GEMINI }
-            .filter(hasCredential)
+            .filter { isUsableCloudStt(it, hasCredential) }
             .map { AudioRoute.Cloud(it) }
 
         if (useLocal) {
@@ -56,7 +64,7 @@ object AudioTranscriptionRoutes {
         val routes = candidates.mapNotNull { entry ->
             when (entry.kind) {
                 ProviderKind.LOCAL -> if (localReady) AudioRoute.Local else null
-                ProviderKind.OPENAI, ProviderKind.GEMINI -> if (hasCredential(entry)) AudioRoute.Cloud(entry) else null
+                ProviderKind.OPENAI, ProviderKind.GEMINI -> if (isUsableCloudStt(entry, hasCredential)) AudioRoute.Cloud(entry) else null
                 else -> null
             }
         }

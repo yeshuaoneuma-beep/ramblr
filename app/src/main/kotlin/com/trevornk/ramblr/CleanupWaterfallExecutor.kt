@@ -18,16 +18,12 @@ import org.json.JSONObject
  */
 data class CleanupStepTimeouts(
     val connectMs: Long = 1_500L,
-    val readMs: Long = 7_000L,
+    val readMs: Long = CLOUD_CLEANUP_PER_PROVIDER_CAP_MS,
     /**
      * Whole-call bound (connect + write + read + redirects), clamped to what's actually left of
-     * [CLEANUP_WATERFALL_HARD_CAP_MS] -- see [cloudStepTimeouts] (#137). Null means "leave the
-     * shared client's own callTimeout alone", which is what test fakes and any caller that
-     * doesn't know the deadline get.
-     *
-     * This exists because [connectMs]/[readMs] are per-*phase* budgets: OkHttp will happily
-     * spend connectMs connecting and then a further readMs reading, so bounding the phases
-     * individually does not bound the call. Only callTimeout does.
+     * [CLOUD_CLEANUP_STAGE_BUDGET_MS] and [CLOUD_CLEANUP_PER_PROVIDER_CAP_MS] -- see
+     * [cloudStepTimeouts] (#137). Null means "leave the shared client's own callTimeout alone",
+     * which is what test fakes and any caller that doesn't know the deadline get.
      */
     val callMs: Long? = null,
 ) {
@@ -45,9 +41,13 @@ data class CleanupStepTimeouts(
  */
 const val MIN_STEP_CALL_BUDGET_MS = 250L
 
-/** Retry-only bound: unlike a fresh step, a parameter retry must never borrow the 250ms floor. */
-internal fun temperatureRetryTimeouts(deadlineAtMs: Long, nowMs: Long): CleanupStepTimeouts? {
-    val remainingMs = deadlineAtMs - nowMs
+/** Retry-only bound: unlike a fresh step, a retry must never borrow the 250ms floor. */
+internal fun temperatureRetryTimeouts(
+    deadlineAtMs: Long,
+    nowMs: Long,
+    perProviderCapMs: Long = CLOUD_CLEANUP_PER_PROVIDER_CAP_MS,
+): CleanupStepTimeouts? {
+    val remainingMs = minOf(deadlineAtMs - nowMs, perProviderCapMs)
     if (remainingMs <= 0L) return null
     return CleanupStepTimeouts(
         connectMs = minOf(CleanupStepTimeouts.DEFAULT.connectMs, remainingMs),
@@ -57,24 +57,17 @@ internal fun temperatureRetryTimeouts(deadlineAtMs: Long, nowMs: Long): CleanupS
 }
 
 /**
- * Per-step network timeouts for a cloud step, clamped to the waterfall's remaining wall clock
- * (#137).
- *
- * Before this existed, every cloud step was handed [CleanupStepTimeouts.DEFAULT] verbatim and
- * [CLEANUP_WATERFALL_HARD_CAP_MS] was only ever checked *between* steps -- so a step dispatched
- * at 14,999ms of a 15,000ms budget still got its full connect+read allowance and the real worst
- * case was 14,999 + 1,500 + 7,000 = 23,499ms. Trevor's own benchmark log has a 22,852ms
- * dictation, which is that arithmetic happening in the field.
- *
- * Clamping [CleanupStepTimeouts.callMs] to the remaining budget makes the documented cap
- * actually hold, because callTimeout bounds the entire call rather than one phase of it.
+ * Per-step network timeouts for a cloud cleanup step, clamped to both the Stage 2 cloud cleanup
+ * deadline ([CLOUD_CLEANUP_STAGE_BUDGET_MS]) and the per-provider cap
+ * ([CLOUD_CLEANUP_PER_PROVIDER_CAP_MS]).
  */
 fun cloudStepTimeouts(
     overallDeadlineAtMs: Long,
     nowMs: Long,
     base: CleanupStepTimeouts = CleanupStepTimeouts.DEFAULT,
+    perProviderCapMs: Long = CLOUD_CLEANUP_PER_PROVIDER_CAP_MS,
 ): CleanupStepTimeouts {
-    val remainingMs = (overallDeadlineAtMs - nowMs).coerceAtLeast(MIN_STEP_CALL_BUDGET_MS)
+    val remainingMs = minOf(overallDeadlineAtMs - nowMs, perProviderCapMs).coerceAtLeast(MIN_STEP_CALL_BUDGET_MS)
     return base.copy(
         connectMs = minOf(base.connectMs, remainingMs),
         readMs = minOf(base.readMs, remainingMs),
@@ -83,108 +76,44 @@ fun cloudStepTimeouts(
 }
 
 /**
- * Hard cap on the whole waterfall, regardless of how many steps remain, before falling back to
- * raw injection.
- *
- * Tuned to 8s from the original 15s against 34 days of real dictation on Trevor's Fold (318
- * successful cleanups, benchmark_log.jsonl): median 901ms, p95 2879ms, p99 3828ms, slowest
- * success 7859ms. An 8s cap kills 0 of those 318 -- 6s would kill the 7859ms one and 5s would
- * kill two -- so this is the tightest cap with no observed regression, with [readMs][
- * CleanupStepTimeouts.readMs] left at 7s precisely because that is what let the 7859ms call
- * through.
- *
- * The 15s value was never load-bearing; it predated #137, when this cap was only checked
- * *between* steps and so didn't bound anything in practice. The same log shows two offline
- * waterfalls running 18.2s and 19.7s under it. Now that #137 makes the deadline real, the cost
- * of a generous cap is paid entirely by the offline case, where every provider burns its full
- * timeout in sequence before the chain gives up and injects raw text -- the user is already
- * getting no cleanup there, so making them wait 15s for that answer is the worst trade in the
- * chain. [LOCAL_LLM_STEP_BUDGET_MS] below remains the mechanism for keeping one slow local
- * attempt from eating this budget.
+ * Stage 2 Cloud Cleanup total stage budget across up to [MAX_CLOUD_CLEANUP_PROVIDERS] sequential
+ * cloud providers (3 x 40s = 120s). Local Cleanup has its own independent budget after Cloud
+ * Cleanup completes, fails, or is skipped.
  */
-const val CLEANUP_WATERFALL_HARD_CAP_MS = 8_000L
+const val CLOUD_CLEANUP_STAGE_BUDGET_MS = 120_000L
+
+/** Per-provider wall-clock cap for each cloud cleanup provider attempt (including retries). */
+const val CLOUD_CLEANUP_PER_PROVIDER_CAP_MS = 40_000L
+
+/** Maximum number of configured cloud cleanup providers tried sequentially in Stage 2. */
+const val MAX_CLOUD_CLEANUP_PROVIDERS = 3
 
 /**
- * Wall-clock budget for the LOCAL_LLM step specifically (#98, Claude Fable 5 consult), separate
- * from and always <= [CLEANUP_WATERFALL_HARD_CAP_MS]. Before this existed, the LOCAL_LLM step
- * used the *entire* remaining waterfall deadline -- so on a device under real memory pressure, a
- * slow/aborted local attempt could consume the whole budget and leave zero time for the cloud
- * step that should have followed it, defeating the point of having a waterfall at all. With
- * LFM2.5-350M (see [LOCAL_CLEANUP_MODEL]'s kdoc) a healthy device should complete well under
- * 1-2s; 4s gives headroom for a loaded device's slower decode while guaranteeing that a genuinely
- * stuck/slow local attempt aborts (see commit 2212db2's native ggml abort callback, #92) with
- * enough of [CLEANUP_WATERFALL_HARD_CAP_MS] still left for a subsequent cloud step's own
- * [CleanupStepTimeouts] to actually run.
+ * Wall-clock budget for a non-terminal LOCAL_LLM step (#98), keeping a slow local attempt from
+ * starving a subsequent cloud step.
  */
 const val LOCAL_LLM_STEP_BUDGET_MS = 4_000L
 
-/**
- * Wall-clock budget for a LOCAL_LLM step that is the LAST step in the waterfall, measured from
- * the waterfall's start (#155). Replaces [CLEANUP_WATERFALL_HARD_CAP_MS] for that one case only.
- *
- * Exists because the 8s hard cap was doing two unrelated jobs with one number. Its own kdoc says
- * what it was tuned for: a user with *no* local model, whose unreachable cloud hosts burn their
- * timeouts in sequence while the chain grinds toward raw injection. That is a hanging-socket
- * problem, and 8s is the right answer to it -- the #137 tuning against 318 real cleanups (p99
- * 3828ms, slowest success 7859ms) is load-bearing and stays exactly as it is for every cloud
- * step.
- *
- * A terminal on-device step has the opposite risk profile. It is a CPU-bound, self-terminating
- * computation that already carries its own native abort callback (#92), so it cannot hang the way
- * a dead socket can; and being last, there is no subsequent step whose time it could steal. The
- * only thing the cloud-shaped cap achieves there is converting a slow-but-healthy completion into
- * an outright failure. Trevor hit exactly that on a Pixel 10a: a local cleanup finished its work
- * in 8003ms and was killed at 8000ms, missing by 3ms. For a user with no cloud provider
- * configured, local cleanup is the ONLY cleanup path, so that 3ms is the difference between
- * cleaned text and no cleanup at all.
- *
- * 12s is chosen as a bound on that observed failure, not a device measurement: it clears the
- * 8003ms case by ~50% while still guaranteeing the user gets *some* answer in a bounded time.
- * It is deliberately a fixed ceiling -- no adaptive or calibration machinery -- because it is a
- * safety net, not a latency fix.
- *
- * This budget deliberately does NOT rest on any claim about vocabulary length. An earlier
- * revision justified it with a "2145 t/s short prompt vs 391 t/s 22-term prompt" figure; that
- * measurement was wrong twice over and has been retracted. Re-measured against the real
- * lfm2.5-350m-q4_0 with the real production prompts: the "364 -> 702" figures were *character*
- * counts, not tokens (true tokenized lengths are 100 -> 212), and the throughput gap was a
- * warmup artifact of an uncontrolled first run -- alternating A/B reps put the 22-term prompt at
- * 2431-2797 t/s versus 1582-1781 t/s for the short one, i.e. the longer prompt evaluates
- * *faster* per token because the larger batch uses the CPU better. The personal vocabulary costs
- * ~15ms of prompt eval, which cannot explain an 8000ms budget overrun.
- *
- * The real cost is structural: LLMInference::startCompletion clears the KV cache every
- * completion, so the system prompt is re-evaluated from scratch on every dictation instead of
- * reusing its cached prefix. See .hermes/plans/2026-08-18-local-cleanup-latency-measured.md.
- *
- * Measured from the waterfall's start rather than from "now", so a chain that spent time on
- * earlier steps cannot extend the total run past this ceiling.
- */
+/** Legacy constant kept for reference; terminal local cleanup uses its independent budget. */
 const val TERMINAL_LOCAL_LLM_STEP_BUDGET_MS = 12_000L
 
 /**
- * The actual wall-clock deadline a LOCAL_LLM step gets for one completion attempt (#37 follow-up,
- * Trevor hit this directly with a single-step Local-only chain): [LOCAL_LLM_STEP_BUDGET_MS]
- * exists to guarantee a *subsequent* step gets real time to run after a slow/stuck local attempt
- * aborts -- but when the LOCAL_LLM step is the LAST step in the whole waterfall (no fallback
- * follows it, e.g. a user's simple "Local" cleanup choice with nothing else configured), that
- * same tight 4s budget serves no purpose: there's no later step it's protecting, so it just
- * turns a genuinely healthy but slightly slower completion into an outright failure with no
- * safety net.
+ * The actual wall-clock deadline a LOCAL_LLM step gets for one completion attempt.
  *
- * When [isLastStep] is true this returns [TERMINAL_LOCAL_LLM_STEP_BUDGET_MS] from
- * [waterfallStartedAtMs] (#155) rather than the cloud-shaped [overallDeadlineAtMs] -- see that
- * constant's kdoc for why the 8s hard cap is the wrong instrument for a terminal on-device step.
- * [maxOf] rather than a plain replacement so this can only ever widen the terminal step's
- * deadline, never shrink it below what it already got.
+ * When [isLastStep] is true, Local Cleanup receives its own independent budget
+ * ([localStepBudgetMs], defaulting to [LOCAL_CHUNKED_TOTAL_BUDGET_MS] = 240s) starting at 0ms
+ * consumed from [nowMs], completely independent of time spent on Cloud Cleanup.
+ *
+ * When [isLastStep] is false (a cloud step follows), it stays bounded by [LOCAL_LLM_STEP_BUDGET_MS]
+ * and [overallDeadlineAtMs] so it never starves the cloud step behind it.
  */
 fun localLlmStepDeadline(
     overallDeadlineAtMs: Long,
     nowMs: Long,
     isLastStep: Boolean,
-    waterfallStartedAtMs: Long = overallDeadlineAtMs - CLEANUP_WATERFALL_HARD_CAP_MS,
+    localStepBudgetMs: Long = LOCAL_CHUNKED_TOTAL_BUDGET_MS,
 ): Long =
-    if (isLastStep) maxOf(overallDeadlineAtMs, waterfallStartedAtMs + TERMINAL_LOCAL_LLM_STEP_BUDGET_MS)
+    if (isLastStep) nowMs + localStepBudgetMs
     else minOf(overallDeadlineAtMs, nowMs + LOCAL_LLM_STEP_BUDGET_MS)
 
 /**
@@ -328,7 +257,7 @@ class CleanupWaterfallCursor(private val idleExpiryMs: Long = 5 * 60 * 1000L) {
  *  requires knowing whether the body parses for that step's wire format). */
 sealed class CleanupHttpOutcome {
     data class Ok(val body: String) : CleanupHttpOutcome()
-    data class HttpError(val code: Int, val body: String) : CleanupHttpOutcome()
+    data class HttpError(val code: Int, val body: String, val retryAfterMs: Long? = null) : CleanupHttpOutcome()
     data class ConnectionFailure(val message: String?) : CleanupHttpOutcome()
     /** The call was aborted via [InFlightCall.cancel] (user long-press or watchdog), not by the
      *  network. Kept distinct from [ConnectionFailure] because OkHttp reports a cancel through
@@ -475,7 +404,7 @@ object BoundedBlockingCall {
  *  isn't enough on its own. */
 object RealLocalInferenceEngine : LocalInferenceEngine {
     /** Longest [prepare] waits for a load. Generous: a cold load of a ~350 MB GGUF on a slow phone. */
-    private const val PREPARE_TIMEOUT_MS = 60_000L
+    const val PREPARE_TIMEOUT_MS = 60_000L
 
     override fun prepare(modelPath: String) {
         runCatching {
@@ -604,6 +533,7 @@ object RealCleanupHttpTransport : CleanupHttpTransport {
 
             override fun onResponse(call: Call, response: Response) {
                 cancelHolder.clear(call)
+                val retryAfterMs = CloudErrorClassifier.parseRetryAfterMs(response.header("Retry-After"))
                 // A body read that dies mid-stream (stalled socket after headers arrived) must
                 // report as a connection failure, not throw out of onResponse — OkHttp swallows
                 // exceptions thrown here without ever calling onFailure, which would leave the
@@ -613,7 +543,7 @@ object RealCleanupHttpTransport : CleanupHttpTransport {
                         if (response.isSuccessful) {
                             callback(CleanupHttpOutcome.Ok(responseBody))
                         } else {
-                            callback(CleanupHttpOutcome.HttpError(response.code, responseBody))
+                            callback(CleanupHttpOutcome.HttpError(response.code, responseBody, retryAfterMs = retryAfterMs))
                         }
                     },
                     onFailure = { e -> callback(CleanupHttpOutcome.ConnectionFailure(e.message)) },
@@ -734,20 +664,23 @@ object CleanupWaterfallExecutor {
         // from a previous dictation, and give the synchronous LOCAL_LLM step the same wall-clock
         // budget the between-step check below enforces.
         cancelHolder.beginWork()
-        val deadlineAtMs = startedAtMs + CLEANUP_WATERFALL_HARD_CAP_MS
-        val retryAwareTransport = withBusyRetry(
-            transport = transport,
-            deadlineAtMs = deadlineAtMs,
-            nowMs = nowMs,
-            maxRetries = busyRetryMaxRetries,
-            delayMs = busyRetryDelayMs,
-            scheduleRetry = scheduleRetry,
-        )
+        val cloudDeadlineAtMs = startedAtMs + CLOUD_CLEANUP_STAGE_BUDGET_MS
+        var cloudProvidersAttempted = 0
 
         fun nextGroupStart(index: Int): Int {
             val range = groupRanges.first { index in it }
             return range.last + 1
         }
+
+        fun nextLocalStepIndex(fromIndex: Int): Int? =
+            (fromIndex until steps.size).firstOrNull { steps[it].group == CleanupStepGroup.LOCAL_LLM }
+
+        fun resolveCredential(step: CleanupStep): String =
+            if (step.entryId.isNotBlank()) {
+                entryCredentialLookup(step.entryId).ifBlank { step.credentialSlot()?.let(credentialLookup) ?: "" }
+            } else {
+                step.credentialSlot()?.let(credentialLookup) ?: ""
+            }
 
         fun attempt(index: Int, lastFailure: String?) {
             if (index >= steps.size) {
@@ -765,23 +698,65 @@ object CleanupWaterfallExecutor {
                 callback(PostProcessor.Result(null, "Cleanup cancelled"))
                 return
             }
-            if (nowMs() - startedAtMs >= CLEANUP_WATERFALL_HARD_CAP_MS) {
-                callback(PostProcessor.Result(null, "Cleanup waterfall exceeded time budget"))
-                return
+
+            val step = steps[index]
+            val stepDeadlineAtMs: Long
+            val stepTransport: CleanupHttpTransport
+            if (step.group != CleanupStepGroup.LOCAL_LLM) {
+                if (cloudProvidersAttempted >= MAX_CLOUD_CLEANUP_PROVIDERS) {
+                    val localIndex = nextLocalStepIndex(index)
+                    if (localIndex != null) {
+                        attempt(localIndex, lastFailure)
+                    } else {
+                        val message = lastFailure?.let { "All cleanup steps failed: $it" } ?: "All cleanup steps failed"
+                        callback(PostProcessor.Result(null, message))
+                    }
+                    return
+                }
+                val now = nowMs()
+                if (now - startedAtMs >= CLOUD_CLEANUP_STAGE_BUDGET_MS) {
+                    val localIndex = nextLocalStepIndex(index)
+                    if (localIndex != null) {
+                        // Local Cleanup has its own independent budget starting at 0ms consumed.
+                        attempt(localIndex, lastFailure ?: "Cloud cleanup exceeded time budget")
+                    } else {
+                        callback(PostProcessor.Result(null, "Cleanup waterfall exceeded time budget"))
+                    }
+                    return
+                }
+                if (resolveCredential(step).isNotBlank()) {
+                    cloudProvidersAttempted++
+                }
+                stepDeadlineAtMs = minOf(cloudDeadlineAtMs, now + CLOUD_CLEANUP_PER_PROVIDER_CAP_MS)
+                stepTransport = withBusyRetry(
+                    transport = transport,
+                    deadlineAtMs = stepDeadlineAtMs,
+                    nowMs = nowMs,
+                    maxRetries = busyRetryMaxRetries,
+                    delayMs = busyRetryDelayMs,
+                    scheduleRetry = scheduleRetry,
+                )
+            } else {
+                stepDeadlineAtMs = cloudDeadlineAtMs
+                stepTransport = transport
             }
 
-            performStep(steps[index], text, prompt, localPrompt, localVocabulary, credentialLookup, entryCredentialLookup, retryAwareTransport, localInference, localModelPath, cancelHolder, deadlineAtMs, nowMs, temperatureCacheContext, isLastStep = index == steps.lastIndex, localStepBudgetMs = localStepBudgetMs, localPace = localPace) { stepOutcome ->
-                val outcome = if (fidelityGuard) guardCloudOutput(steps[index], text, stepOutcome) else stepOutcome
-                logStepOutcome(steps[index], startedAtMs, outcome, benchmarkContext, benchmarkCorrelationId)
+            performStep(step, text, prompt, localPrompt, localVocabulary, credentialLookup, entryCredentialLookup, stepTransport, localInference, localModelPath, cancelHolder, stepDeadlineAtMs, nowMs, temperatureCacheContext, isLastStep = index == steps.lastIndex, localStepBudgetMs = localStepBudgetMs, localPace = localPace) { stepOutcome ->
+                val guardedOutcome = if (fidelityGuard) guardCloudOutput(step, text, stepOutcome) else stepOutcome
+                logStepOutcome(step, startedAtMs, guardedOutcome, benchmarkContext, benchmarkCorrelationId)
+                val outcome = when (guardedOutcome) {
+                    is CleanupStepOutcome.Rejected ->
+                        CleanupStepOutcome.StepFailed("Cloud cleanup output rejected (${guardedOutcome.reason.name})")
+                    else -> guardedOutcome
+                }
                 when (outcome) {
                     is CleanupStepOutcome.Success -> {
                         cursor.recordSuccess(index, nowMs())
                         callback(PostProcessor.Result(outcome.text, null, outcome.partial, outcome.sections))
                     }
                     is CleanupStepOutcome.Rejected -> {
-                        // The provider worked, so remember it; only its content was refused.
-                        cursor.recordSuccess(index, nowMs())
-                        callback(PostProcessor.Result(null, "Cloud cleanup output rejected (${outcome.reason.name})"))
+                        // Normalized to StepFailed above.
+                        attempt(index + 1, "Cloud cleanup output rejected (${outcome.reason.name})")
                     }
                     is CleanupStepOutcome.StepFailed -> attempt(index + 1, outcome.message)
                     is CleanupStepOutcome.ConnectionFailed -> attempt(nextGroupStart(index), outcome.message)
@@ -972,34 +947,32 @@ object CleanupWaterfallExecutor {
         pace: LocalCleanupPaceStore,
     ): CleanupStepOutcome {
         val chunks = LocalCleanupChunker.split(text, LocalCleanupChunker.maxChunkChars(localPrompt))
+        if (cancelHolder.isCancelled) return CleanupStepOutcome.Cancelled
+        // Model preparation has its own independent PREPARE_TIMEOUT_MS (60s) and is not charged
+        // against the chunked inference budget (LOCAL_CHUNKED_TOTAL_BUDGET_MS = 240s).
+        runCatching { localInference.prepare(modelPath) }
+        if (cancelHolder.isCancelled) return CleanupStepOutcome.Cancelled
         val startedAtMs = nowMs()
         val stepDeadlineAtMs = startedAtMs + stepBudgetMs
-        if (cancelHolder.isCancelled) return CleanupStepOutcome.Cancelled
-        runCatching { localInference.prepare(modelPath) }
         // Shared with the other pieces of this job: not restarted at the first-chunk allowance.
-        val budget = pace.budgetFor(modelPath, nowMs())
+        val budget = pace.budgetFor(modelPath, startedAtMs)
         val texts = ArrayList<String>(chunks.size)
-        var cleaned = 0
-        var consecutiveTimeouts = 0
-        var lastFailure: String? = null
-        var stoppedEarly: String? = null
         for ((index, chunk) in chunks.withIndex()) {
             if (cancelHolder.isCancelled) return CleanupStepOutcome.Cancelled
-            if (stoppedEarly == null) {
-                val remainingMs = stepDeadlineAtMs - nowMs()
-                val expectedMs = budget.expectedMs(chunk.text.length)
-                if (remainingMs <= 0 || (expectedMs != null && expectedMs > remainingMs) ||
-                    (expectedMs == null && remainingMs < LocalCleanupChunkBudget.MIN_BUDGET_MS)
-                ) {
-                    stoppedEarly = "step budget of ${stepBudgetMs}ms cannot fit another chunk " +
-                        "(${remainingMs}ms left, ~${expectedMs ?: "?"}ms needed)"
-                } else if (consecutiveTimeouts >= LOCAL_CHUNK_MAX_CONSECUTIVE_TIMEOUTS) {
-                    stoppedEarly = "$consecutiveTimeouts consecutive chunks timed out"
+            val remainingMs = stepDeadlineAtMs - nowMs()
+            val expectedMs = budget.expectedMs(chunk.text.length)
+            if (remainingMs <= 0 || (expectedMs != null && expectedMs > remainingMs) ||
+                (expectedMs == null && remainingMs < LocalCleanupChunkBudget.MIN_BUDGET_MS)
+            ) {
+                val reason = "step budget of ${stepBudgetMs}ms cannot fit chunk ${index + 1}/${chunks.size} " +
+                    "(${remainingMs}ms left, ~${expectedMs ?: "?"}ms needed)"
+                runCatching {
+                    android.util.Log.i(
+                        "CleanupWaterfallExecutor",
+                        "Chunked local cleanup aborted all-or-nothing at chunk ${index + 1}/${chunks.size} in ${nowMs() - startedAtMs}ms ($reason)",
+                    )
                 }
-            }
-            if (stoppedEarly != null) {
-                texts += chunk.text
-                continue
+                return CleanupStepOutcome.StepFailed(reason)
             }
             val chunkStartedAtMs = nowMs()
             val allowedMs = minOf(budget.budgetMs(chunk.text.length), stepDeadlineAtMs - chunkStartedAtMs)
@@ -1013,8 +986,6 @@ object CleanupWaterfallExecutor {
                 is CleanupStepOutcome.Cancelled -> return outcome
                 is CleanupStepOutcome.Success -> {
                     texts += outcome.text
-                    cleaned++
-                    consecutiveTimeouts = 0
                     budget.recordCompleted(chunk.text.length, tookMs)
                     logChunk(index, chunks.size, chunk.text.length, outcome.text.length, tookMs, "cleaned", allowedMs)
                 }
@@ -1022,31 +993,25 @@ object CleanupWaterfallExecutor {
                     val message = when (outcome) {
                         is CleanupStepOutcome.StepFailed -> outcome.message
                         is CleanupStepOutcome.ConnectionFailed -> outcome.message
+                        is CleanupStepOutcome.Rejected -> "Local cleanup output rejected (${outcome.reason.name})"
                         else -> null
                     }
-                    lastFailure = message ?: lastFailure
-                    val timedOut = isTimeoutMessage(message)
-                    consecutiveTimeouts = if (timedOut) consecutiveTimeouts + 1 else 0
                     // A timeout is evidence about the device (it ran at least this long); a validator
                     // rejection is not about speed and is left out of the estimate.
-                    if (timedOut) budget.recordTimedOut(chunk.text.length, allowedMs)
-                    texts += chunk.text
-                    logChunk(index, chunks.size, chunk.text.length, chunk.text.length, tookMs, "raw: ${message ?: "failed"}", allowedMs)
+                    if (isTimeoutMessage(message)) budget.recordTimedOut(chunk.text.length, allowedMs)
+                    logChunk(index, chunks.size, chunk.text.length, chunk.text.length, tookMs, "abort: ${message ?: "failed"}", allowedMs)
+                    // All-or-nothing integrity: never return a partial mix of cleaned and raw chunks.
+                    return CleanupStepOutcome.StepFailed(message ?: "Local cleanup failed on chunk ${index + 1}/${chunks.size}")
                 }
             }
         }
         runCatching {
             android.util.Log.i(
                 "CleanupWaterfallExecutor",
-                "Chunked local cleanup: $cleaned/${chunks.size} chunks cleaned in ${nowMs() - startedAtMs}ms" +
-                    (stoppedEarly?.let { " (stopped early: $it)" } ?: ""),
+                "Chunked local cleanup: ${chunks.size}/${chunks.size} chunks cleaned in ${nowMs() - startedAtMs}ms",
             )
         }
-        if (cleaned == 0) {
-            return CleanupStepOutcome.StepFailed(lastFailure ?: stoppedEarly ?: "Local cleanup produced no usable chunk")
-        }
-        val partial = if (cleaned < chunks.size) PartialCleanup(cleaned, chunks.size) else null
-        return CleanupStepOutcome.Success(LocalCleanupChunker.join(chunks, texts), partial, PartialCleanup(cleaned, chunks.size))
+        return CleanupStepOutcome.Success(LocalCleanupChunker.join(chunks, texts), partial = null, sections = PartialCleanup(chunks.size, chunks.size))
     }
 
     /** Failure messages that mean "ran out of time", as opposed to "model said something unusable":
@@ -1111,15 +1076,9 @@ object CleanupWaterfallExecutor {
                 return
             }
 
-            // Bounded to LOCAL_LLM_STEP_BUDGET_MS (#98) so a slow/aborted local attempt still
-            // leaves real time for a subsequent cloud step's own CleanupStepTimeouts to run --
-            // except when this LOCAL_LLM step is the LAST step in the whole waterfall (#37
-            // follow-up: Trevor's simple "Local" cleanup choice has nothing after it to protect),
-            // in which case it gets the real remaining deadline like every other step group.
-            // waterfallStartedAtMs is left to its default, which recovers the waterfall's start
-            // as `deadlineAtMs - CLEANUP_WATERFALL_HARD_CAP_MS` -- exact here, since execute()
-            // builds deadlineAtMs as startedAtMs + CLEANUP_WATERFALL_HARD_CAP_MS.
-            val localDeadlineAtMs = localLlmStepDeadline(deadlineAtMs, System.currentTimeMillis(), isLastStep)
+            // Terminal local cleanup gets its own independent budget starting at 0ms consumed from
+            // nowMs(); non-terminal local cleanup stays bounded by LOCAL_LLM_STEP_BUDGET_MS (#98).
+            val localDeadlineAtMs = localLlmStepDeadline(deadlineAtMs, nowMs(), isLastStep, localStepBudgetMs)
             callback(
                 cleanLocalPass(text, localPrompt, localVocabulary, localInference, modelPath, localDeadlineAtMs, cancelHolder)
             )
@@ -1237,12 +1196,18 @@ object CleanupWaterfallExecutor {
     ): CleanupHttpTransport = CleanupHttpTransport { url, headers, jsonBody, timeouts, cancelHolder, callback ->
         val cancelsAtStart = cancelHolder.cancelCount
 
-        fun isBusyOutcome(outcome: CleanupHttpOutcome): Boolean = when (outcome) {
-            is CleanupHttpOutcome.HttpError ->
-                !TemperatureRejectionClassifier.isTemperatureRejection(outcome.body, outcome.code) &&
-                    CloudErrorClassifier.isTemporaryBusy(httpCode = outcome.code, errorText = outcome.body)
-            is CleanupHttpOutcome.Ok -> isBusyErrorEnvelope(outcome.body)
-            is CleanupHttpOutcome.ConnectionFailure, CleanupHttpOutcome.Cancelled -> false
+        fun retryDelayFor(outcome: CleanupHttpOutcome): Long? = when (outcome) {
+            is CleanupHttpOutcome.HttpError -> when {
+                TemperatureRejectionClassifier.isTemperatureRejection(outcome.body, outcome.code) -> null
+                CloudErrorClassifier.isQuickRetryable429(outcome.code, outcome.retryAfterMs) ->
+                    CloudErrorClassifier.quick429BackoffMs(outcome.retryAfterMs)
+                CloudErrorClassifier.isTemporaryBusy(httpCode = outcome.code, errorText = outcome.body) ->
+                    delayMs.coerceAtLeast(0L)
+                else -> null
+            }
+            is CleanupHttpOutcome.Ok ->
+                if (isBusyErrorEnvelope(outcome.body)) delayMs.coerceAtLeast(0L) else null
+            is CleanupHttpOutcome.ConnectionFailure, CleanupHttpOutcome.Cancelled -> null
         }
 
         fun dispatch(attempt: Int, stepTimeouts: CleanupStepTimeouts) {
@@ -1255,16 +1220,17 @@ object CleanupWaterfallExecutor {
                     callback(CleanupHttpOutcome.Cancelled)
                     return@send
                 }
+                val retryDelay = retryDelayFor(outcome)
                 val remainingBeforeDelay = deadlineAtMs - nowMs()
                 val canRetry = attempt < maxRetries &&
+                    retryDelay != null &&
                     !cancelHolder.isCancelled &&
                     cancelHolder.cancelCount == cancelsAtStart &&
-                    remainingBeforeDelay > delayMs.coerceAtLeast(0L) &&
-                    isBusyOutcome(outcome)
-                if (!canRetry) {
+                    remainingBeforeDelay > retryDelay
+                if (!canRetry || retryDelay == null) {
                     callback(outcome)
                 } else {
-                    scheduleRetry(delayMs.coerceAtLeast(0L)) {
+                    scheduleRetry(retryDelay) {
                         if (cancelHolder.isCancelled || cancelHolder.cancelCount != cancelsAtStart) {
                             callback(CleanupHttpOutcome.Cancelled)
                             return@scheduleRetry

@@ -30,6 +30,7 @@ object GeminiTranscriberClient {
         val httpCode: Int? = null,
         val isTransientIo: Boolean = false,
         val isCancelled: Boolean = false,
+        val retryAfterMs: Long? = null,
     ) {
         val errorKind: CloudErrorKind
             get() = CloudErrorClassifier.classify(httpCode, error, isTransientIo)
@@ -55,6 +56,21 @@ object GeminiTranscriberClient {
     // gemini-3.5-flash-lite alongside the 2026-08-25 cleanup-default refresh: 3.5-flash-lite
     // measures ~3x slower on audio input, so the transcription path keeps the faster model.
     const val DEFAULT_MODEL = "gemini-3.1-flash-lite"
+
+    private val AUDIO_CAPABLE_GEMMA4_VARIANT = Regex("(^|[-_/])(e2b|e4b|12b)($|[-_/])")
+
+    /**
+     * Whether [model] supports multimodal audio input for Stage 1 STT.
+     *
+     * Text/image-only Gemma 4 models (`gemma-4-31b-it`, `gemma-4-26b-a4b-it`, and any `gemma-4-*`
+     * other than `e2b`/`e4b`/`12b`) are cleanup-only and must be excluded from audio STT dispatch.
+     */
+    fun supportsAudioTranscription(model: String?): Boolean {
+        val effective = model?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_MODEL
+        if (!GeminiCleanupProvider.isGemma4(effective)) return true
+        val normalized = effective.removePrefix("models/").lowercase()
+        return AUDIO_CAPABLE_GEMMA4_VARIANT.containsMatchIn(normalized)
+    }
     // "If the audio contains no speech, return an empty transcript" (#306): without an explicit
     // empty answer, a model given silence fills the void with its prompt context.
     const val TRANSCRIBE_PROMPT = "Transcribe this audio exactly as spoken. Return only the transcript text, with no commentary, labels, or extra formatting. If the audio contains no speech, return an empty transcript."
@@ -238,6 +254,11 @@ object GeminiTranscriberClient {
         callTimeoutMs: Long? = null,
         callback: (Result) -> Unit,
     ) {
+        val effectiveModel = model.ifBlank { DEFAULT_MODEL }
+        if (!supportsAudioTranscription(effectiveModel)) {
+            callback(Result(null, "Model $effectiveModel does not support audio transcription"))
+            return
+        }
         val (audioBytes, mimeType) = try {
             if (compressedFile != null) {
                 compressedFile.readBytes() to "audio/aac"
@@ -289,6 +310,7 @@ object GeminiTranscriberClient {
                     cancelHolder.clear(call)
                     val httpCode = response.code
                     val successful = response.isSuccessful
+                    val retryAfterMs = CloudErrorClassifier.parseRetryAfterMs(response.header("Retry-After"))
                     // Read via HttpBodyReader (#62): a body read that throws inside onResponse is
                     // swallowed by OkHttp (onFailure never fires), so this callback would otherwise
                     // never be invoked and the dictation would hang until the watchdog.
@@ -300,7 +322,7 @@ object GeminiTranscriberClient {
                                 val envelope = resultFor(responseBody, vocabularyTerms, prompt)
                                 val errorMsg = envelope.error
                                     ?: responseBody.trim().replace(Regex("\\s+"), " ").take(200).ifEmpty { "HTTP $httpCode" }
-                                Result(null, errorMsg, httpCode = httpCode)
+                                Result(null, errorMsg, httpCode = httpCode, retryAfterMs = retryAfterMs)
                             }
                             val overloaded = parsed.text == null && isOverloaded(httpCode, parsed.error)
                             when {
