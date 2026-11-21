@@ -23,11 +23,11 @@ object ProviderChainRuntime {
     fun cleanupWaterfallFor(chain: ProviderChain): CleanupWaterfall = CleanupWaterfall(
         chain.capableEntriesFor(needsTranscription = false).mapNotNull { entry ->
             when (entry.kind) {
-                ProviderKind.OPENAI -> CleanupStep(CleanupStepGroup.OPENAI_DIRECT, entry.model, entry.baseUrlOverride, entry.id)
-                ProviderKind.ANTHROPIC -> CleanupStep(CleanupStepGroup.ANTHROPIC_DIRECT, entry.model, entry.baseUrlOverride, entry.id)
-                ProviderKind.GEMINI -> CleanupStep(CleanupStepGroup.GEMINI_DIRECT, entry.model, entry.baseUrlOverride, entry.id)
-                ProviderKind.OMNIROUTE -> CleanupStep(CleanupStepGroup.OMNIROUTE, entry.model, entry.baseUrlOverride, entry.id)
-                ProviderKind.LOCAL -> CleanupStep(CleanupStepGroup.LOCAL_LLM, entry.model, entry.baseUrlOverride, entry.id)
+                ProviderKind.OPENAI -> CleanupStep(CleanupStepGroup.OPENAI_DIRECT, entry.model, entry.baseUrlOverride, entry.id, entry.presetId)
+                ProviderKind.ANTHROPIC -> CleanupStep(CleanupStepGroup.ANTHROPIC_DIRECT, entry.model, entry.baseUrlOverride, entry.id, entry.presetId)
+                ProviderKind.GEMINI -> CleanupStep(CleanupStepGroup.GEMINI_DIRECT, entry.model, entry.baseUrlOverride, entry.id, entry.presetId)
+                ProviderKind.OMNIROUTE -> CleanupStep(CleanupStepGroup.OMNIROUTE, entry.model, entry.baseUrlOverride, entry.id, entry.presetId)
+                ProviderKind.LOCAL -> CleanupStep(CleanupStepGroup.LOCAL_LLM, entry.model, entry.baseUrlOverride, entry.id, entry.presetId)
             }
         }
     )

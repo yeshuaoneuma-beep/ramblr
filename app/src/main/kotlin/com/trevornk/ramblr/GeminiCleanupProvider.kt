@@ -21,8 +21,8 @@ object GeminiCleanupProvider {
     /** [model] is bare (e.g. "gemini-2.5-flash"), not the "models/..." resource name; this builds
      *  the full resource path. No `?key=` query string: the key travels in the [headers] below
      *  instead, so it can't leak through a malformed-URL exception message or a logged URL (M-3). */
-    fun endpointUrl(model: String): String =
-        "$BASE_URL/models/${model.ifBlank { DEFAULT_MODEL }}:generateContent"
+    fun endpointUrl(model: String, baseUrl: String = BASE_URL): String =
+        "${PostProcessor.normalizeBaseUrl(baseUrl) ?: BASE_URL}/models/${model.ifBlank { DEFAULT_MODEL }}:generateContent"
 
     /** Gemini accepts the API key in an `x-goog-api-key` header as an alternative to the `?key=`
      *  query parameter (https://ai.google.dev/gemini-api/docs/api-key). Using the header keeps the
@@ -36,12 +36,28 @@ object GeminiCleanupProvider {
     // model on purpose (see ModelCatalogEntry's Gemini section).
     const val DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
+    private fun normalizedModelId(model: String): String =
+        model.trim().removePrefix("models/").lowercase()
+
+    fun isGemma4(model: String): Boolean = normalizedModelId(model).startsWith("gemma-4-")
+
+    fun isGemini38(model: String): Boolean = normalizedModelId(model).startsWith("gemini-3.8-")
+
+    fun thinkingLevelFor(model: String): String? = when {
+        isGemma4(model) -> "MINIMAL"
+        isGemini38(model) -> "LOW"
+        else -> null
+    }
+
+    fun rejectsTemperature(model: String): Boolean = isGemini38(model)
+
     /**
      * Builds the generateContent request body: [prompt] as `systemInstruction`, [text] as the
      * single user `contents` entry. `temperature: 0.0` mirrors [PostProcessor.buildRequestBody]/
      * [AnthropicCleanupProvider.buildRequestBody]'s deterministic-cleanup intent.
      */
-    fun buildRequestBody(text: String, prompt: String): JSONObject {
+    fun buildRequestBody(text: String, prompt: String, model: String = DEFAULT_MODEL): JSONObject {
+        val effectiveModel = model.ifBlank { DEFAULT_MODEL }
         val systemInstruction = JSONObject().apply {
             put("parts", JSONArray().put(JSONObject().apply { put("text", prompt) }))
         }
@@ -50,7 +66,12 @@ object GeminiCleanupProvider {
             put("parts", JSONArray().put(JSONObject().apply { put("text", text) }))
         })
         val generationConfig = JSONObject().apply {
-            put("temperature", 0.0)
+            if (!rejectsTemperature(effectiveModel)) {
+                put("temperature", 0.0)
+            }
+            thinkingLevelFor(effectiveModel)?.let { level ->
+                put("thinkingConfig", JSONObject().put("thinkingLevel", level))
+            }
         }
         return JSONObject().apply {
             put("systemInstruction", systemInstruction)
@@ -77,8 +98,8 @@ object GeminiCleanupProvider {
                 val parts = content?.optJSONArray("parts")
                 val text = parts?.let { arr ->
                     (0 until arr.length())
-                        .map { arr.getJSONObject(it) }
-                        .filter { it.has("text") }
+                        .mapNotNull { arr.optJSONObject(it) }
+                        .filter { !it.optBoolean("thought", false) && it.has("text") }
                         .joinToString("") { it.getString("text") }
                 }
                 if (!text.isNullOrBlank()) {

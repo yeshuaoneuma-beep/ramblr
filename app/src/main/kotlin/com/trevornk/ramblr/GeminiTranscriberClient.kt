@@ -24,9 +24,29 @@ import java.util.concurrent.TimeUnit
  * adequate for the short dictations this app records (see [NetworkClients] timeouts).
  */
 object GeminiTranscriberClient {
-    data class Result(val text: String?, val error: String?)
+    data class Result(
+        val text: String?,
+        val error: String?,
+        val httpCode: Int? = null,
+        val isTransientIo: Boolean = false,
+        val isCancelled: Boolean = false,
+    ) {
+        val errorKind: CloudErrorKind
+            get() = CloudErrorClassifier.classify(httpCode, error, isTransientIo)
+    }
 
     private val client = NetworkClients.shared
+
+    private fun clientFor(callTimeoutMs: Long?): OkHttpClient {
+        if (callTimeoutMs == null) return client
+        val boundedMs = callTimeoutMs.coerceAtLeast(MIN_STEP_CALL_BUDGET_MS)
+        return client.newBuilder()
+            .connectTimeout(minOf(NetworkClients.CONNECT_TIMEOUT_SECONDS * 1000L, boundedMs), TimeUnit.MILLISECONDS)
+            .readTimeout(minOf(NetworkClients.READ_TIMEOUT_SECONDS * 1000L, boundedMs), TimeUnit.MILLISECONDS)
+            .writeTimeout(minOf(NetworkClients.WRITE_TIMEOUT_SECONDS * 1000L, boundedMs), TimeUnit.MILLISECONDS)
+            .callTimeout(boundedMs, TimeUnit.MILLISECONDS)
+            .build()
+    }
 
     // gemini-2.5-flash -> gemini-3.1-flash-lite: 2.5-flash is on Google's deprecation path
     // (shutdown Oct 16, 2026). 3.1-flash-lite's own model card documents explicit "improved
@@ -81,8 +101,13 @@ object GeminiTranscriberClient {
      *  caller falls through to the next transcription candidate rather than risk the OOM. */
     const val MAX_INLINE_PCM_BYTES = 10L * 1024 * 1024
 
-    /** True when [pcmBytes] is small enough for the inline-audio path (see [MAX_INLINE_PCM_BYTES]). */
-    fun canInlineAudio(pcmBytes: Long): Boolean = pcmBytes <= MAX_INLINE_PCM_BYTES
+    /** True when the audio payload to be inlined ([compressedBytes] if present, otherwise [pcmBytes])
+     *  is within [MAX_INLINE_PCM_BYTES]. */
+    fun canInlineAudio(pcmBytes: Long, compressedBytes: Long? = null): Boolean =
+        (compressedBytes ?: pcmBytes) <= MAX_INLINE_PCM_BYTES
+
+    fun canInlineAudio(pcmFile: File, compressedFile: File?): Boolean =
+        canInlineAudio(pcmBytes = pcmFile.length(), compressedBytes = compressedFile?.length())
 
     /**
      * Waits before each retry of a "busy, try again" answer. Seen 2026-10 as a burst of 503
@@ -99,16 +124,11 @@ object GeminiTranscriberClient {
     }
 
     /**
-     * True for a server-side "temporarily unable" answer worth retrying unchanged: 500/502/503/504
-     * per Google's API troubleshooting guide, or an error message naming the overload when the
-     * status alone doesn't say so. 429 is left out: on the free tier it is usually a spent daily
-     * quota, which a retry seconds later can't fix.
+     * True for a server-side "temporarily unable" answer worth retrying unchanged, delegated to
+     * [CloudErrorClassifier] so 429/401/402/403/400 never trigger same-provider retries.
      */
-    fun isOverloaded(httpCode: Int, error: String?): Boolean {
-        if (httpCode in setOf(500, 502, 503, 504)) return true
-        val message = error?.lowercase() ?: return false
-        return "high demand" in message || "overloaded" in message
-    }
+    fun isOverloaded(httpCode: Int, error: String?): Boolean =
+        CloudErrorClassifier.isTemporaryBusy(httpCode = httpCode, errorText = error)
 
     /** The error shown once every retry hit the overload, naming the model so the user knows
      *  what to switch away from. */
@@ -124,7 +144,13 @@ object GeminiTranscriberClient {
      * path passes `audio/aac` for a finished `.m4a` file instead (AAC is one of Gemini's
      * documented supported inline audio MIME types).
      */
-    fun buildRequestBody(audioBytes: ByteArray, prompt: String = TRANSCRIBE_PROMPT, mimeType: String = "audio/wav"): JSONObject {
+    fun buildRequestBody(
+        audioBytes: ByteArray,
+        prompt: String = TRANSCRIBE_PROMPT,
+        mimeType: String = "audio/wav",
+        model: String = DEFAULT_MODEL,
+    ): JSONObject {
+        val effectiveModel = model.ifBlank { DEFAULT_MODEL }
         val audioPart = JSONObject().apply {
             put("inline_data", JSONObject().apply {
                 put("mime_type", mimeType)
@@ -138,6 +164,12 @@ object GeminiTranscriberClient {
         })
         return JSONObject().apply {
             put("contents", contents)
+            GeminiCleanupProvider.thinkingLevelFor(effectiveModel)?.let { level ->
+                put(
+                    "generationConfig",
+                    JSONObject().put("thinkingConfig", JSONObject().put("thinkingLevel", level)),
+                )
+            }
         }
     }
 
@@ -156,8 +188,8 @@ object GeminiTranscriberClient {
                 val parts = content?.optJSONArray("parts")
                 val text = parts?.let { arr ->
                     (0 until arr.length())
-                        .map { arr.getJSONObject(it) }
-                        .filter { it.has("text") }
+                        .mapNotNull { arr.optJSONObject(it) }
+                        .filter { !it.optBoolean("thought", false) && it.has("text") }
                         .joinToString("") { it.getString("text") }
                 }
                 if (!text.isNullOrBlank()) Result(text.trim(), null)
@@ -190,7 +222,8 @@ object GeminiTranscriberClient {
      * the WAV path built from [pcmFile] exactly as before whenever it's null.
      *
      * An overloaded answer (see [isOverloaded]) is retried after each of [retryDelaysMs] before
-     * it reports [overloadedMessage]; [endpoint] and [retryDelaysMs] are only overridden by tests.
+     * it reports [overloadedMessage]; [endpoint] and [retryDelaysMs] are only overridden by tests
+     * or centralized Stage 1 orchestration ([DictationRuntime], [AudioJobRunner]).
      */
     fun transcribe(
         pcmFile: File,
@@ -202,6 +235,7 @@ object GeminiTranscriberClient {
         language: String? = null,
         endpoint: String = GeminiCleanupProvider.endpointUrl(model),
         retryDelaysMs: List<Long> = OVERLOAD_RETRY_DELAYS_MS,
+        callTimeoutMs: Long? = null,
         callback: (Result) -> Unit,
     ) {
         val (audioBytes, mimeType) = try {
@@ -218,7 +252,7 @@ object GeminiTranscriberClient {
         // #114 part 2: interpolate the user's vocabulary into the transcription prompt itself
         // (previously only cleanup-stage prompts got it), always on when terms exist.
         val prompt = transcribePrompt(vocabularyTerms, language)
-        val body = buildRequestBody(audioBytes, prompt = prompt, mimeType = mimeType)
+        val body = buildRequestBody(audioBytes, prompt = prompt, mimeType = mimeType, model = model)
             .toString().toRequestBody("application/json".toMediaType())
 
         // A malformed key/model (or one OkHttp otherwise rejects) throws IllegalArgumentException
@@ -238,37 +272,56 @@ object GeminiTranscriberClient {
             return
         }
 
+        val activeClient = clientFor(callTimeoutMs)
         val cancelsAtStart = cancelHolder.cancelCount
         fun send(attempt: Int) {
-            val call = client.newCall(request)
+            val call = activeClient.newCall(request)
             cancelHolder.set(call)
+            if (cancelHolder.isCancelled) call.cancel()
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     cancelHolder.clear(call)
-                    callback(Result(null, e.message))
+                    val cancelled = call.isCanceled()
+                    callback(Result(null, e.message, isTransientIo = !cancelled, isCancelled = cancelled))
                 }
 
                 override fun onResponse(call: Call, response: Response) {
                     cancelHolder.clear(call)
+                    val httpCode = response.code
+                    val successful = response.isSuccessful
                     // Read via HttpBodyReader (#62): a body read that throws inside onResponse is
                     // swallowed by OkHttp (onFailure never fires), so this callback would otherwise
                     // never be invoked and the dictation would hang until the watchdog.
                     HttpBodyReader.read(response).fold(
                         onSuccess = { responseBody ->
-                            val result = resultFor(responseBody, vocabularyTerms, prompt)
-                            val overloaded = result.text == null && isOverloaded(response.code, result.error)
+                            val parsed = if (successful) {
+                                resultFor(responseBody, vocabularyTerms, prompt).copy(httpCode = httpCode)
+                            } else {
+                                val envelope = resultFor(responseBody, vocabularyTerms, prompt)
+                                val errorMsg = envelope.error
+                                    ?: responseBody.trim().replace(Regex("\\s+"), " ").take(200).ifEmpty { "HTTP $httpCode" }
+                                Result(null, errorMsg, httpCode = httpCode)
+                            }
+                            val overloaded = parsed.text == null && isOverloaded(httpCode, parsed.error)
                             when {
-                                !overloaded -> callback(result)
+                                !overloaded -> callback(parsed)
                                 attempt < retryDelaysMs.size -> retryScheduler.schedule({
                                     // A cancel during the backoff has no Call to abort, so it is
                                     // checked here instead of sending a request nobody waits for.
-                                    if (cancelHolder.cancelCount != cancelsAtStart) callback(Result(null, "Canceled"))
-                                    else send(attempt + 1)
+                                    if (cancelHolder.cancelCount != cancelsAtStart || cancelHolder.isCancelled) {
+                                        callback(Result(null, "Canceled", isCancelled = true))
+                                    } else {
+                                        send(attempt + 1)
+                                    }
                                 }, retryDelaysMs[attempt], TimeUnit.MILLISECONDS)
-                                else -> callback(Result(null, overloadedMessage(model, attempt + 1)))
+                                retryDelaysMs.isEmpty() -> callback(parsed)
+                                else -> callback(Result(null, overloadedMessage(model, attempt + 1), httpCode = httpCode))
                             }
                         },
-                        onFailure = { e -> callback(Result(null, e.message)) },
+                        onFailure = { e ->
+                            val cancelled = call.isCanceled()
+                            callback(Result(null, e.message, isTransientIo = !cancelled, isCancelled = cancelled))
+                        },
                     )
                 }
             })

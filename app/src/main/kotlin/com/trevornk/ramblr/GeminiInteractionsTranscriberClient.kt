@@ -14,6 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -30,7 +31,16 @@ class GeminiInteractionsTranscriberClient(
     private val interactionsEndpoint: HttpUrl = DEFAULT_INTERACTIONS_ENDPOINT.toHttpUrl(),
     private val filesEndpoint: HttpUrl = DEFAULT_FILES_ENDPOINT.toHttpUrl(),
 ) {
-    data class Result(val text: String?, val error: String?)
+    data class Result(
+        val text: String?,
+        val error: String?,
+        val httpCode: Int? = null,
+        val isTransientIo: Boolean = false,
+        val isCancelled: Boolean = false,
+    ) {
+        val errorKind: CloudErrorKind
+            get() = CloudErrorClassifier.classify(httpCode, error, isTransientIo)
+    }
 
     enum class Mode(val wireValue: String) {
         VERBATIM("verbatim"),
@@ -43,6 +53,17 @@ class GeminiInteractionsTranscriberClient(
         requireValidEndpoint(uploadEndpoint, "/upload/v1beta/files")
         requireValidEndpoint(interactionsEndpoint, "/v1beta/interactions")
         requireValidEndpoint(filesEndpoint, "/v1beta/files/")
+    }
+
+    private fun clientFor(callTimeoutMs: Long?): OkHttpClient {
+        if (callTimeoutMs == null) return httpClient
+        val boundedMs = callTimeoutMs.coerceAtLeast(MIN_STEP_CALL_BUDGET_MS)
+        return httpClient.newBuilder()
+            .connectTimeout(minOf(NetworkClients.CONNECT_TIMEOUT_SECONDS * 1000L, boundedMs), TimeUnit.MILLISECONDS)
+            .readTimeout(minOf(NetworkClients.READ_TIMEOUT_SECONDS * 1000L, boundedMs), TimeUnit.MILLISECONDS)
+            .writeTimeout(minOf(NetworkClients.WRITE_TIMEOUT_SECONDS * 1000L, boundedMs), TimeUnit.MILLISECONDS)
+            .callTimeout(boundedMs, TimeUnit.MILLISECONDS)
+            .build()
     }
 
     /**
@@ -59,6 +80,7 @@ class GeminiInteractionsTranscriberClient(
         languageCodes: List<String> = emptyList(),
         mode: Mode = Mode.VERBATIM,
         cancelHolder: InFlightCall,
+        callTimeoutMs: Long? = null,
         callback: (Result) -> Unit,
     ) {
         val completed = AtomicBoolean(false)
@@ -71,9 +93,10 @@ class GeminiInteractionsTranscriberClient(
             return
         }
         if (cancelHolder.isCancelled) {
-            complete(Result(null, CANCELLED_ERROR))
+            complete(Result(null, CANCELLED_ERROR, isCancelled = true))
             return
         }
+        val activeClient = clientFor(callTimeoutMs)
 
         val metadata = JSONObject()
             .put("file", JSONObject().put("display_name", "ramblr-audio"))
@@ -89,20 +112,20 @@ class GeminiInteractionsTranscriberClient(
             .post(metadata)
             .build()
 
-        enqueueTracked(startRequest, cancelHolder,
-            onFailure = { complete(Result(null, failureMessage(it))) },
+        enqueueTracked(activeClient, startRequest, cancelHolder,
+            onFailure = { complete(ioFailureResult(it)) },
             onResponse = { response, body ->
                 if (!response.isSuccessful) {
-                    complete(parseError(body, "Files API upload start failed (HTTP ${response.code})"))
+                    complete(parseError(body, "Files API upload start failed (HTTP ${response.code})", response.code))
                     return@enqueueTracked
                 }
                 val uploadUrl = response.header("X-Goog-Upload-URL")?.let(::validatedUploadUrl)
                 if (uploadUrl == null) {
-                    complete(Result(null, "Files API upload start returned no valid X-Goog-Upload-URL"))
+                    complete(Result(null, "Files API upload start returned no valid X-Goog-Upload-URL", httpCode = response.code))
                     return@enqueueTracked
                 }
                 uploadAndFinalize(
-                    audioFile, mimeType, apiKey, model, customVocabulary, languageCodes, mode,
+                    activeClient, audioFile, mimeType, apiKey, model, customVocabulary, languageCodes, mode,
                     uploadUrl, cancelHolder, ::complete,
                 )
             },
@@ -110,6 +133,7 @@ class GeminiInteractionsTranscriberClient(
     }
 
     private fun uploadAndFinalize(
+        activeClient: OkHttpClient,
         audioFile: File,
         mimeType: String,
         apiKey: String,
@@ -127,23 +151,23 @@ class GeminiInteractionsTranscriberClient(
             .header("X-Goog-Upload-Command", "upload, finalize")
             .post(audioFile.asRequestBody(mimeType.toMediaType()))
             .build()
-        enqueueTracked(request, cancelHolder,
-            onFailure = { complete(Result(null, failureMessage(it))) },
+        enqueueTracked(activeClient, request, cancelHolder,
+            onFailure = { complete(ioFailureResult(it)) },
             onResponse = { response, body ->
                 if (!response.isSuccessful) {
-                    complete(parseError(body, "Files API upload failed (HTTP ${response.code})"))
+                    complete(parseError(body, "Files API upload failed (HTTP ${response.code})", response.code))
                     return@enqueueTracked
                 }
                 val uploaded = parseUploadedFile(body)
                 if (uploaded == null) {
-                    val primary = Result(null, "Files API upload response contained no valid file resource")
+                    val primary = Result(null, "Files API upload response contained no valid file resource", httpCode = response.code)
                     val fileName = parseUploadedFileName(body)
                     if (fileName != null) cleanup(fileName, apiKey)
                     complete(primary)
                     return@enqueueTracked
                 }
                 createInteraction(
-                    uploaded, mimeType, apiKey, model, customVocabulary, languageCodes, mode,
+                    activeClient, uploaded, mimeType, apiKey, model, customVocabulary, languageCodes, mode,
                     cancelHolder, complete,
                 )
             },
@@ -151,6 +175,7 @@ class GeminiInteractionsTranscriberClient(
     }
 
     private fun createInteraction(
+        activeClient: OkHttpClient,
         uploaded: UploadedFile,
         mimeType: String,
         apiKey: String,
@@ -181,14 +206,17 @@ class GeminiInteractionsTranscriberClient(
             .post(body)
             .build()
 
-        enqueueTracked(request, cancelHolder,
+        enqueueTracked(activeClient, request, cancelHolder,
             onFailure = { error ->
                 cleanup(uploaded.name, apiKey)
-                complete(Result(null, failureMessage(error)))
+                complete(ioFailureResult(error))
             },
             onResponse = { response, responseBody ->
-                val result = if (response.isSuccessful) guardEcho(parseResponse(responseBody), customVocabulary)
-                else parseError(responseBody, "Interactions API failed (HTTP ${response.code})")
+                val result = if (response.isSuccessful) {
+                    guardEcho(parseResponse(responseBody), customVocabulary).copy(httpCode = response.code)
+                } else {
+                    parseError(responseBody, "Interactions API failed (HTTP ${response.code})", response.code)
+                }
                 cleanup(uploaded.name, apiKey)
                 complete(result)
             },
@@ -214,23 +242,26 @@ class GeminiInteractionsTranscriberClient(
         })
     }
 
+    private class CancelledIoException : IOException(CANCELLED_ERROR)
+
     private fun enqueueTracked(
+        activeClient: OkHttpClient,
         request: Request,
         cancelHolder: InFlightCall,
         onFailure: (IOException) -> Unit,
         onResponse: (Response, String) -> Unit,
     ) {
         if (cancelHolder.isCancelled) {
-            onFailure(IOException(CANCELLED_ERROR))
+            onFailure(CancelledIoException())
             return
         }
-        val call = httpClient.newCall(request)
+        val call = activeClient.newCall(request)
         cancelHolder.set(call)
         if (cancelHolder.isCancelled) call.cancel()
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 cancelHolder.clear(call)
-                onFailure(if (call.isCanceled()) IOException(CANCELLED_ERROR) else e)
+                onFailure(if (call.isCanceled()) CancelledIoException() else e)
             }
 
             override fun onResponse(call: Call, response: Response) {
@@ -292,6 +323,10 @@ class GeminiInteractionsTranscriberClient(
     private fun redact(result: Result, apiKey: String): Result =
         if (apiKey.isBlank()) result else result.copy(error = result.error?.replace(apiKey, "[REDACTED]"))
 
+    private fun ioFailureResult(error: IOException): Result =
+        if (error is CancelledIoException) Result(null, CANCELLED_ERROR, isCancelled = true)
+        else Result(null, failureMessage(error), isTransientIo = true)
+
     private fun failureMessage(error: IOException): String =
         error.message?.let(UrlRedaction::redact) ?: "Network request failed"
 
@@ -347,10 +382,10 @@ class GeminiInteractionsTranscriberClient(
         internal fun guardEcho(result: Result, customVocabulary: List<String>): Result =
             if (VocabularyEchoGuard.isEcho(result.text, customVocabulary)) Result("", null) else result
 
-        private fun parseError(body: String, fallback: String): Result {
+        private fun parseError(body: String, fallback: String, httpCode: Int): Result {
             val parsed = parseResponse(body)
-            return if (parsed.error != null && parsed.error != "No text content in response") parsed
-            else Result(null, fallback)
+            return if (parsed.error != null && parsed.error != "No text content in response") parsed.copy(httpCode = httpCode)
+            else Result(null, fallback, httpCode = httpCode)
         }
     }
 }

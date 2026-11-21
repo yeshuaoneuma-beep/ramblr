@@ -62,20 +62,33 @@ class AacEncoderSession(cacheDir: File) {
      *  [release] unless [finish] already completed successfully. */
     val outputFile: File = File.createTempFile("rec_", ".m4a", cacheDir)
 
-    private val codec: MediaCodec = MediaCodec.createEncoderByType(MIME_TYPE)
-    private val muxer: MediaMuxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    private val codec: MediaCodec
+    private val muxer: MediaMuxer
 
     init {
         // Letting configure()/start() throw out of the constructor (rather than swallowing here)
-        // mirrors SilenceAutoStopSession's init block: the caller (WhisperAccessibilityService)
+        // mirrors SilenceAutoStopSession's init block: the caller (DictationRuntime)
         // already wraps session construction in a try/catch and treats a thrown constructor as
         // "feature unavailable this recording", not a reason to fail the recording itself.
-        val format = MediaFormat.createAudioFormat(MIME_TYPE, SAMPLE_RATE, CHANNEL_COUNT).apply {
-            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
+        var createdCodec: MediaCodec? = null
+        var createdMuxer: MediaMuxer? = null
+        try {
+            createdCodec = MediaCodec.createEncoderByType(MIME_TYPE)
+            createdMuxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val format = MediaFormat.createAudioFormat(MIME_TYPE, SAMPLE_RATE, CHANNEL_COUNT).apply {
+                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
+            }
+            createdCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            createdCodec.start()
+            codec = createdCodec
+            muxer = createdMuxer
+        } catch (t: Throwable) {
+            runCatching { createdCodec?.release() }
+            runCatching { createdMuxer?.release() }
+            outputFile.delete()
+            throw t
         }
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        codec.start()
     }
 
     private var audioTrackIndex = -1

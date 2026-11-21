@@ -8,6 +8,8 @@ import android.widget.Toast
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import java.io.File
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
@@ -209,6 +211,8 @@ class DictationRuntime internal constructor(
     private val transcriberHooks: TranscriberHooks = TranscriberHooks(),
     /** #385: start/stop haptic tick. Lazy-safe: with the setting off (the default) it never touches the vibrator. */
     private val haptics: HapticFeedback = DictationHaptics.forContext(context),
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    private val transcriptionRetryBackoffMs: Long = TranscriptionChain.CLOUD_STT_RETRY_BACKOFF_MS,
     /** Test seam: lets host-side unit tests substitute a fake engine at the capture boundary.
      *  The default is exactly the pre-extraction construction. */
     private val engineFactory: (File, RecordingStateMachine) -> RecordingEngine =
@@ -225,6 +229,10 @@ class DictationRuntime internal constructor(
          * Connect timeouts are included in each whole-call budget (#363). */
         private const val WATCHDOG_TIMEOUT_MS = 400_000L
         private const val CLOUD_LIVE_FINAL_WAIT_MS = 2_500L
+
+        private val transcriptionRetryScheduler = Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "stt-retry").apply { isDaemon = true }
+        }
 
         /**
          * #305: how long the runtime may sit IDLE before the on-device recognizers are released.
@@ -744,8 +752,8 @@ class DictationRuntime internal constructor(
             val aacSession = if (CompressedUploadToggle.isEnabled(context)) {
             try {
                 AacEncoderSession(context.cacheDir)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start AAC encoder session", e)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to start AAC encoder session", t)
                 null
             }
         } else null
@@ -1642,240 +1650,243 @@ class DictationRuntime internal constructor(
             return
         }
 
+        // Keep transcription cloud-first and provider-neutral: walk configured cloud STT
+        // candidates (with usable credentials) before falling back sequentially to LOCAL.
+        val usableCloudCandidates = candidates.filter { entry ->
+            (entry.kind == ProviderKind.OPENAI || entry.kind == ProviderKind.GEMINI) &&
+                TranscriptionChain.precheck(
+                    entry.kind,
+                    hasCredential = ProviderCredentialStore.getOrLegacy(context, entry).isNotBlank(),
+                    localModelLoaded = false,
+                ) == TranscriptionChain.Precheck.CALL
+        }
+        val localCandidate = candidates.firstOrNull { it.kind == ProviderKind.LOCAL }
+        if (usableCloudCandidates.isEmpty() && localCandidate == null) {
+            file.delete()
+            compressedFile?.delete()
+            reset("Set API key in Ramblr app", token, lease)
+            return
+        }
+
+        inFlightCall.beginWork()
+        val cancelsAtStart = inFlightCall.cancelCount
+
         // M5: which compressed .m4a copy (if any) the walk still holds. A LOCAL candidate never
-        // uploads, so its branch deletes the compressed copy and nulls this -- and now that LOCAL
-        // can *fail through* to a later cloud candidate (see its branch below), that candidate
-        // must see null (upload raw PCM) rather than a File pointing at deleted bytes. Only ever
-        // written before a candidate runs and read after its completion posts back, so the
-        // walk's existing thread handoffs (thread{}/handler.post) order every access.
+        // uploads, so its branch deletes the compressed copy and nulls this.
         var remainingCompressedFile: File? = compressedFile
+        val walk = TranscriptionChain.Walk(
+            cloudCandidates = usableCloudCandidates,
+            localCandidate = localCandidate,
+            startedAtMs = nowMs(),
+            isCompressedUpload = remainingCompressedFile != null,
+            backoffMs = transcriptionRetryBackoffMs,
+        )
 
-        fun attempt(index: Int) {
-            if (index >= candidates.size) {
-                file.delete()
-                remainingCompressedFile?.delete()
-                reset("Set API key in Ramblr app", token, lease)
+        fun isStaleOrCancelled(): Boolean =
+            !guard.isCurrent(token) || inFlightCall.isCancelled || inFlightCall.cancelCount != cancelsAtStart
+
+        fun cleanupAudio() {
+            file.delete()
+            remainingCompressedFile?.delete()
+            remainingCompressedFile = null
+        }
+
+        fun dispatchNext() {
+            if (isStaleOrCancelled()) {
+                cleanupAudio()
                 return
             }
-            val entry = candidates[index]
-
-            // A candidate failed to produce a transcript (unusable, HTTP error, timeout, or empty).
-            // Fall through to the next configured candidate -- Gemini, or the on-device LOCAL floor
-            // -- instead of losing the dictation. Only once every candidate is exhausted do we
-            // delete the audio and reset with the last real error. The PCM file is kept alive
-            // across the whole walk precisely so a later candidate can still use it (#H1). Runs on
-            // whatever thread the failing candidate's callback used; hop to the main thread and
-            // re-check the guard first so a cancel/watchdog reset stops the walk.
-            fun advanceOrGiveUp(error: String?) {
-                handler.post {
-                    if (!guard.isCurrent(token)) {
-                        // Cancelled or watchdog already reset the UI: nothing more to try, but the
-                        // PCM is still ours to clean up.
-                        file.delete()
-                        remainingCompressedFile?.delete()
-                        return@post
-                    }
-                    if (TranscriptionChain.hasNextCandidate(index, candidates.size)) {
-                        Log.w(TAG, "Transcription candidate #$index (${entry.kind}) failed: ${error ?: "unusable"}; trying next candidate")
-                        // M2 (2026-08-25 audit): the guard re-check above belongs on main, but
-                        // attempt() itself must not run there -- a fallback candidate's request
-                        // prep is real work (a GEMINI candidate readBytes()es the whole PCM, up
-                        // to ~10MB, and base64s it to ~13MB inside GeminiTranscriberClient before
-                        // OkHttp ever sees it). Mirrors the thread { continueTranscription(...) }
-                        // hop resolveLateRecordingOnMain/startMaxDurationTranscription already
-                        // use: attempt(0) already runs on that reader thread, so everything
-                        // attempt() touches is exercised off-main today -- the thread{}/
-                        // handler.post handoffs order every access to the walk's shared state
-                        // (remainingCompressedFile, guard, candidates).
-                        thread { attempt(index + 1) }
-                    } else {
-                        file.delete()
-                        remainingCompressedFile?.delete()
-                        reset("Error: ${error ?: "transcription failed"}", token, lease)
-                    }
-                }
-            }
-
-            // #280: like the direct path, a LOCAL candidate waits for an in-progress load of an
-            // installed model rather than skipping it. attempt() runs off-main (see thread{}
-            // handoffs below), so blocking here is safe.
-            val localLoaded = if (entry.kind == ProviderKind.LOCAL) awaitLocalTranscriber() else transcriberSlot.get() != null
-            val hasCredential = when (entry.kind) {
-                ProviderKind.OPENAI -> ProviderCredentialStore.getOrLegacy(context, entry).isNotBlank()
-                ProviderKind.GEMINI -> ProviderCredentialStore.getOrLegacy(context, entry).isNotBlank()
-                else -> false
-            }
-            if (TranscriptionChain.precheck(entry.kind, hasCredential, localLoaded) == TranscriptionChain.Precheck.SKIP) {
-                when (entry.kind) {
-                    ProviderKind.LOCAL ->
-                        // A LOCAL entry whose model hasn't loaded advances to the next candidate;
-                        // only if it's the last one do we surface "still downloading" (#H1).
-                        advanceOrGiveUp(localUnavailableMessage())
-                    else -> {
-                        Log.w(TAG, "Skipping transcription provider ${entry.kind}: not usable (no credential / not implemented)")
-                        attempt(index + 1)
-                    }
-                }
-                return
-            }
-
-            when (entry.kind) {
-                ProviderKind.OPENAI -> {
-                    val apiKey = ProviderCredentialStore.getOrLegacy(context, entry)
-                    Log.i(TAG, "Cloud transcription via ProviderChain provider=${entry.kind} (OpenAI audio/transcriptions)")
-                    val transcribeStartMs = System.currentTimeMillis()
-                    // Honor the entry's base-URL override and TRANSCRIPTION model (#101/#102: a
-                    // separate field from entry.model, which is the CLEANUP model -- OpenAI's
-                    // chat-completions models like "gpt-5.4-mini" can never serve
-                    // /v1/audio/transcriptions, which needs "gpt-transcribe").
-                    // .ifBlank { null } (#104 audit finding): the current UI never persists a
-                    // literal "" here, but without this guard a hand-edited SharedPreferences
-                    // value or a future regression could send an empty-string model id straight
-                    // to OpenAI instead of falling back to DEFAULT_MODEL -- matches the same
-                    // guard already applied on the Gemini call site just below.
-                    // #114 parts 1/2: bias transcription itself toward the user's vocabulary, not
-                    // just the cleanup stage -- same terms already read below at the cleanup call
-                    // site (see vocabularyTerms()).
-                    // M5: capture the compressed copy this attempt actually uploads as a local
-                    // (the #193 locals-capture pattern) -- remainingCompressedFile can be nulled
-                    // by a LOCAL candidate, and this callback must report/delete what IT sent.
-                    val uploadCompressedFile = remainingCompressedFile
-                    TranscriberClient.transcribe(
-                        file, apiKey, inFlightCall,
-                        baseUrl = entry.baseUrlOverride ?: PostProcessor.DEFAULT_BASE_URL,
-                        model = entry.transcriptionModel?.ifBlank { null } ?: TranscriberClient.DEFAULT_MODEL,
-                        vocabularyTerms = vocabularyTerms(),
-                        compressedFile = uploadCompressedFile,
-                        // #290: skip auto-detection when the user set their dictation language.
-                        language = DictationLanguage.languageOrNull(context),
-                    ) { result ->
-                        val roundTripMs = System.currentTimeMillis() - transcribeStartMs
-                        Log.i(TAG, "OpenAI transcription HTTP round-trip took ${roundTripMs}ms")
-                        val success = result.text != null && result.text.isNotBlank()
-                        BenchmarkLogger.log(
-                            context = context,
-                            correlationId = correlationIdFor(token),
-                            transcription = BenchmarkStage(
-                                provider = entry.kind.name,
-                                model = entry.transcriptionModel?.ifBlank { null } ?: TranscriberClient.DEFAULT_MODEL,
-                                latencyMs = roundTripMs,
-                                success = success,
-                                compressedUpload = uploadCompressedFile != null,
-                                // #138: a provider error envelope yields blank text, so this
-                                // records success=false; without the reason a bad key, a rate
-                                // limit and a timeout are indistinguishable after logcat rotates.
-                                error = sanitizeError(result.error),
-                            ),
-                            rawTextLength = result.text?.length,
+            when (val step = walk.nextStep(nowMs())) {
+                is TranscriptionChain.Step.RunCloud -> {
+                    val runAttempt = {
+                        dispatchCloudStep(
+                            step = step,
+                            file = file,
+                            compressedFile = remainingCompressedFile,
+                            token = token,
+                            walk = walk,
+                            cancelsAtStart = cancelsAtStart,
+                            onSuccessOrNoSpeech = { transcript ->
+                                cleanupAudio()
+                                handleTranscriptionResult(transcript, token, lease)
+                            },
+                            onCancelled = { cleanupAudio() },
+                            onFailure = { errorKind, errorMsg ->
+                                walk.recordCloudFailure(errorKind, errorMsg)
+                                dispatchNext()
+                            },
                         )
-                        if (listener.allowsTranscriptRetention()) QualityLogger.log(
-                            context = context,
-                            correlationId = correlationIdFor(token),
-                            transcription = QualityStage(
-                                provider = entry.kind.name,
-                                model = entry.transcriptionModel?.ifBlank { null } ?: TranscriberClient.DEFAULT_MODEL,
-                            ),
-                            rawText = result.text,
-                        )
-                        if (success) {
-                            file.delete()
-                            uploadCompressedFile?.delete()
-                            handleTranscriptionResult(result.text, token, lease)
-                        } else if (isNoSpeechTranscript(result.text, result.error)) {
-                            // #306: an empty transcript is "no speech", not a provider failure --
-                            // the next candidate would be handed the same silence.
-                            file.delete()
-                            uploadCompressedFile?.delete()
-                            handleTranscriptionResult(null, token, lease)
-                        } else {
-                            advanceOrGiveUp(result.error ?: "empty transcript")
-                        }
                     }
-                }
-                ProviderKind.LOCAL -> {
-                    Log.i(TAG, "Transcription via ProviderChain provider=${entry.kind}")
-                    // The local transcriber reads raw PCM, never an upload (#109) -- but null the
-                    // walk-level handle too (M5), so a cloud candidate reached via LOCAL's new
-                    // fail-through below uploads the raw PCM instead of a deleted .m4a path.
-                    remainingCompressedFile?.delete()
-                    remainingCompressedFile = null
-                    // M5: as a chain candidate, LOCAL's failure must behave like any cloud
-                    // candidate's -- keep the PCM alive and walk on via advanceOrGiveUp (which
-                    // deletes it at chain exhaustion) instead of transcribeLocal's direct-path
-                    // delete-and-reset. See transcribeLocal's PCM-lifetime kdoc and
-                    // TranscriptionChain.shouldDeletePcm.
-                    transcribeLocal(file, token, lease, onChainFailure = { error -> advanceOrGiveUp(error) })
-                }
-                ProviderKind.GEMINI -> {
-                    val apiKey = ProviderCredentialStore.getOrLegacy(context, entry)
-                    // Gemini's inline-audio path buffers the recording ~4x in memory, so gate it by
-                    // size: above the threshold, fall through to the next candidate rather than risk
-                    // an OOM stacked on the resident STT/cleanup models (M6). The compressed .m4a
-                    // (#109) is always much smaller than the PCM/WAV it was encoded from, but the
-                    // size check still gates on the original PCM: it's the cheap, reliable proxy for
-                    // recording length already used everywhere else on this path, and a length-gated
-                    // recording that's small enough to compress successfully is smaller still once
-                    // encoded, so this can only ever be more permissive, never wrongly reject.
-                    if (!GeminiTranscriberClient.canInlineAudio(file.length())) {
-                        Log.w(TAG, "Recording too large for Gemini inline audio (${file.length()} bytes); trying next candidate")
-                        advanceOrGiveUp("Recording too large for Gemini transcription")
+                    if (step.backoffMs > 0L) {
+                        transcriptionRetryScheduler.schedule(runAttempt, step.backoffMs, TimeUnit.MILLISECONDS)
                     } else {
-                        Log.i(TAG, "Cloud transcription via ProviderChain provider=${entry.kind} (Gemini generateContent audio)")
-                        val geminiModel = entry.transcriptionModel?.ifBlank { null } ?: GeminiTranscriberClient.DEFAULT_MODEL
-                        val geminiStartMs = System.currentTimeMillis()
-                        // M5: same locals-capture as the OpenAI branch above.
-                        val uploadCompressedFile = remainingCompressedFile
-                        GeminiTranscriberClient.transcribe(
-                            file, apiKey, geminiModel, inFlightCall,
-                            vocabularyTerms = vocabularyTerms(),
-                            compressedFile = uploadCompressedFile,
-                            language = DictationLanguage.languageOrNull(context),
-                        ) { result ->
-                            val success = result.text != null && result.text.isNotBlank()
-                            BenchmarkLogger.log(
-                                context = context,
-                                correlationId = correlationIdFor(token),
-                                transcription = BenchmarkStage(
-                                    provider = entry.kind.name,
-                                    model = geminiModel,
-                                    latencyMs = System.currentTimeMillis() - geminiStartMs,
-                                    success = success,
-                                    compressedUpload = uploadCompressedFile != null,
-                                    // #138: same as the OpenAI path -- Gemini reports failure as
-                                    // an error envelope with blank text, not an exception.
-                                    error = sanitizeError(result.error),
-                                ),
-                                rawTextLength = result.text?.length,
-                            )
-                            if (listener.allowsTranscriptRetention()) QualityLogger.log(
-                                context = context,
-                                correlationId = correlationIdFor(token),
-                                transcription = QualityStage(
-                                    provider = entry.kind.name,
-                                    model = geminiModel,
-                                ),
-                                rawText = result.text,
-                            )
-                            if (success) {
-                                file.delete()
-                                uploadCompressedFile?.delete()
-                                handleTranscriptionResult(result.text, token, lease)
-                            } else if (isNoSpeechTranscript(result.text, result.error)) {
-                                // #306: see the OpenAI branch above.
-                                file.delete()
-                                uploadCompressedFile?.delete()
-                                handleTranscriptionResult(null, token, lease)
-                            } else {
-                                advanceOrGiveUp(result.error ?: "empty transcript")
-                            }
-                        }
+                        thread { runAttempt() }
                     }
                 }
-                ProviderKind.ANTHROPIC, ProviderKind.OMNIROUTE -> attempt(index + 1) // filtered out by capability; defensive only
+                is TranscriptionChain.Step.RunLocal -> {
+                    thread {
+                        if (isStaleOrCancelled()) {
+                            cleanupAudio()
+                            return@thread
+                        }
+                        val localLoaded = awaitLocalTranscriber()
+                        if (TranscriptionChain.precheck(ProviderKind.LOCAL, hasCredential = false, localModelLoaded = localLoaded) == TranscriptionChain.Precheck.SKIP) {
+                            walk.recordLocalFailure(localUnavailableMessage())
+                            dispatchNext()
+                            return@thread
+                        }
+                        Log.i(TAG, "Transcription via ProviderChain provider=${step.entry.kind}")
+                        remainingCompressedFile?.delete()
+                        remainingCompressedFile = null
+                        transcribeLocal(file, token, lease, onChainFailure = { error ->
+                            walk.recordLocalFailure(error)
+                            dispatchNext()
+                        })
+                    }
+                }
+                is TranscriptionChain.Step.Exhausted -> {
+                    cleanupAudio()
+                    reset("Error: ${step.lastError ?: "transcription failed"}", token, lease)
+                }
             }
         }
 
-        attempt(0)
+        dispatchNext()
+    }
+
+    private fun dispatchCloudStep(
+        step: TranscriptionChain.Step.RunCloud,
+        file: File,
+        compressedFile: File?,
+        token: Int,
+        walk: TranscriptionChain.Walk,
+        cancelsAtStart: Int,
+        onSuccessOrNoSpeech: (String?) -> Unit,
+        onCancelled: () -> Unit,
+        onFailure: (CloudErrorKind, String?) -> Unit,
+    ) {
+        fun isCancelledOrStale(): Boolean =
+            !guard.isCurrent(token) || inFlightCall.isCancelled || inFlightCall.cancelCount != cancelsAtStart
+
+        if (isCancelledOrStale()) {
+            onCancelled()
+            return
+        }
+        val timeoutMs = TranscriptionChain.cloudAttemptTimeoutMs(
+            deadlineAtMs = walk.cloudDeadlineAtMs,
+            nowMs = nowMs(),
+            isCompressedUpload = compressedFile != null,
+        )
+        if (timeoutMs == null) {
+            onFailure(CloudErrorKind.TEMPORARY_BUSY, "Cloud transcription exceeded time budget")
+            return
+        }
+
+        val entry = step.entry
+        val apiKey = ProviderCredentialStore.getOrLegacy(context, entry)
+        when (entry.kind) {
+            ProviderKind.OPENAI -> {
+                Log.i(TAG, "Cloud transcription via ProviderChain provider=${entry.kind} (attempt ${step.attemptNumber}, revisit=${step.isRevisit})")
+                val model = entry.transcriptionModel?.ifBlank { null } ?: TranscriberClient.DEFAULT_MODEL
+                val transcribeStartMs = System.currentTimeMillis()
+                TranscriberClient.transcribe(
+                    file, apiKey, inFlightCall,
+                    baseUrl = entry.baseUrlOverride ?: PostProcessor.DEFAULT_BASE_URL,
+                    model = model,
+                    vocabularyTerms = vocabularyTerms(),
+                    compressedFile = compressedFile,
+                    language = DictationLanguage.languageOrNull(context),
+                    callTimeoutMs = timeoutMs,
+                ) { result ->
+                    val roundTripMs = System.currentTimeMillis() - transcribeStartMs
+                    Log.i(TAG, "OpenAI transcription HTTP round-trip took ${roundTripMs}ms")
+                    val success = result.text != null && result.text.isNotBlank()
+                    BenchmarkLogger.log(
+                        context = context,
+                        correlationId = correlationIdFor(token),
+                        transcription = BenchmarkStage(
+                            provider = entry.kind.name,
+                            model = model,
+                            latencyMs = roundTripMs,
+                            success = success,
+                            compressedUpload = compressedFile != null,
+                            error = sanitizeError(result.error),
+                        ),
+                        rawTextLength = result.text?.length,
+                    )
+                    if (listener.allowsTranscriptRetention()) QualityLogger.log(
+                        context = context,
+                        correlationId = correlationIdFor(token),
+                        transcription = QualityStage(
+                            provider = entry.kind.name,
+                            model = model,
+                        ),
+                        rawText = result.text,
+                    )
+                    when {
+                        result.isCancelled || isCancelledOrStale() -> onCancelled()
+                        success -> onSuccessOrNoSpeech(result.text)
+                        isNoSpeechTranscript(result.text, result.error) -> onSuccessOrNoSpeech(null)
+                        else -> onFailure(result.errorKind, result.error ?: "empty transcript")
+                    }
+                }
+            }
+            ProviderKind.GEMINI -> {
+                if (!GeminiTranscriberClient.canInlineAudio(file, compressedFile)) {
+                    Log.w(TAG, "Recording too large for Gemini inline audio (pcm=${file.length()}, compressed=${compressedFile?.length()}); trying next candidate")
+                    onFailure(CloudErrorKind.PERMANENT_OR_QUOTA, "Recording too large for Gemini transcription")
+                    return
+                }
+                Log.i(TAG, "Cloud transcription via ProviderChain provider=${entry.kind} (attempt ${step.attemptNumber}, revisit=${step.isRevisit})")
+                val geminiModel = entry.transcriptionModel?.ifBlank { null } ?: GeminiTranscriberClient.DEFAULT_MODEL
+                val geminiEndpoint = entry.baseUrlOverride?.takeIf { it.isNotBlank() }
+                    ?.let { GeminiCleanupProvider.endpointUrl(geminiModel, it) }
+                    ?: GeminiCleanupProvider.endpointUrl(geminiModel)
+                val geminiStartMs = System.currentTimeMillis()
+                // Pass retryDelaysMs = emptyList() so retries are controlled centrally under the
+                // shared 180 s cloud STT budget instead of double-retrying inside GeminiTranscriberClient.
+                GeminiTranscriberClient.transcribe(
+                    file, apiKey, geminiModel, inFlightCall,
+                    vocabularyTerms = vocabularyTerms(),
+                    compressedFile = compressedFile,
+                    language = DictationLanguage.languageOrNull(context),
+                    endpoint = geminiEndpoint,
+                    retryDelaysMs = emptyList(),
+                    callTimeoutMs = timeoutMs,
+                ) { result ->
+                    val success = result.text != null && result.text.isNotBlank()
+                    BenchmarkLogger.log(
+                        context = context,
+                        correlationId = correlationIdFor(token),
+                        transcription = BenchmarkStage(
+                            provider = entry.kind.name,
+                            model = geminiModel,
+                            latencyMs = System.currentTimeMillis() - geminiStartMs,
+                            success = success,
+                            compressedUpload = compressedFile != null,
+                            error = sanitizeError(result.error),
+                        ),
+                        rawTextLength = result.text?.length,
+                    )
+                    if (listener.allowsTranscriptRetention()) QualityLogger.log(
+                        context = context,
+                        correlationId = correlationIdFor(token),
+                        transcription = QualityStage(
+                            provider = entry.kind.name,
+                            model = geminiModel,
+                        ),
+                        rawText = result.text,
+                    )
+                    when {
+                        result.isCancelled || isCancelledOrStale() -> onCancelled()
+                        success -> onSuccessOrNoSpeech(result.text)
+                        isNoSpeechTranscript(result.text, result.error) -> onSuccessOrNoSpeech(null)
+                        else -> onFailure(result.errorKind, result.error ?: "empty transcript")
+                    }
+                }
+            }
+            else -> onFailure(CloudErrorKind.PERMANENT_OR_QUOTA, "Unsupported cloud transcription provider ${entry.kind}")
+        }
     }
 
     /**

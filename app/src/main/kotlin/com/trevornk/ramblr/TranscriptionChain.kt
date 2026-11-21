@@ -54,4 +54,157 @@ object TranscriptionChain {
      */
     fun shouldDeletePcm(candidateIndex: Int, candidateCount: Int, success: Boolean): Boolean =
         success || !hasNextCandidate(candidateIndex, candidateCount)
+
+    const val CLOUD_STT_STAGE_BUDGET_MS = 180_000L
+    const val CLOUD_STT_ATTEMPT_CAP_COMPRESSED_MS = 60_000L
+    const val CLOUD_STT_ATTEMPT_CAP_WAV_MS = 75_000L
+    const val CLOUD_STT_RETRY_BACKOFF_MS = 1_000L
+    const val SINGLE_CLOUD_MAX_ATTEMPTS = 3
+
+    /**
+     * Returns the per-attempt timeout in milliseconds clamped to [deadlineAtMs], or null when the
+     * shared Stage 1 cloud STT budget is already spent.
+     */
+    fun cloudAttemptTimeoutMs(
+        deadlineAtMs: Long,
+        nowMs: Long,
+        isCompressedUpload: Boolean,
+    ): Long? {
+        val remainingMs = deadlineAtMs - nowMs
+        if (remainingMs <= 0L) return null
+        val capMs = if (isCompressedUpload) {
+            CLOUD_STT_ATTEMPT_CAP_COMPRESSED_MS
+        } else {
+            CLOUD_STT_ATTEMPT_CAP_WAV_MS
+        }
+        return minOf(capMs, remainingMs)
+    }
+
+    sealed class Step {
+        data class RunCloud(
+            val entry: ProviderChainEntry,
+            val attemptNumber: Int,
+            val isRevisit: Boolean,
+            val backoffMs: Long,
+            val timeoutMs: Long,
+        ) : Step()
+
+        data class RunLocal(val entry: ProviderChainEntry) : Step()
+
+        data class Exhausted(val lastError: String?) : Step()
+    }
+
+    /**
+     * Deterministic Stage 1 state machine:
+     *  - Multi-cloud: P1 -> P2 -> ... -> Pn -> revisit P1 once (if P1 failed TEMPORARY_BUSY) -> Local -> Error.
+     *    If P1 failed PERMANENT_OR_QUOTA (e.g. 429/401/402/403/400), skip revisiting P1.
+     *  - Single-cloud: P1 with bounded retry (TEMPORARY_BUSY only) within [cloudBudgetMs] -> Local -> Error.
+     */
+    class Walk(
+        private val cloudCandidates: List<ProviderChainEntry>,
+        private val localCandidate: ProviderChainEntry?,
+        startedAtMs: Long,
+        private val isCompressedUpload: Boolean,
+        cloudBudgetMs: Long = CLOUD_STT_STAGE_BUDGET_MS,
+        private val backoffMs: Long = CLOUD_STT_RETRY_BACKOFF_MS,
+        private val singleCloudMaxAttempts: Int = SINGLE_CLOUD_MAX_ATTEMPTS,
+    ) {
+        val cloudDeadlineAtMs: Long = startedAtMs + cloudBudgetMs
+
+        private var cloudIndex = 0
+        private var singleCloudAttempt = 0
+        private var p1FailedTemporaryBusy = false
+        private var p1Revisited = false
+        private var cloudExhausted = cloudCandidates.isEmpty()
+        private var localAttempted = false
+        private var pendingStep: Step? = null
+        private var lastError: String? = null
+
+        fun nextStep(nowMs: Long): Step {
+            if (!cloudExhausted) {
+                val step = nextCloudStep(nowMs)
+                if (step != null) {
+                    pendingStep = step
+                    return step
+                }
+                cloudExhausted = true
+            }
+            if (localCandidate != null && !localAttempted) {
+                localAttempted = true
+                return Step.RunLocal(localCandidate).also { pendingStep = it }
+            }
+            return Step.Exhausted(lastError)
+        }
+
+        private fun nextCloudStep(nowMs: Long): Step.RunCloud? {
+            if (cloudCandidates.size == 1) {
+                if (singleCloudAttempt >= singleCloudMaxAttempts) return null
+                val attempt = singleCloudAttempt + 1
+                val delayMs = if (attempt > 1) backoffMs else 0L
+                val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs + delayMs, isCompressedUpload)
+                    ?: return null
+                return Step.RunCloud(
+                    entry = cloudCandidates[0],
+                    attemptNumber = attempt,
+                    isRevisit = false,
+                    backoffMs = delayMs,
+                    timeoutMs = timeoutMs,
+                )
+            }
+
+            if (cloudIndex < cloudCandidates.size) {
+                val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs, isCompressedUpload) ?: return null
+                return Step.RunCloud(
+                    entry = cloudCandidates[cloudIndex],
+                    attemptNumber = 1,
+                    isRevisit = false,
+                    backoffMs = 0L,
+                    timeoutMs = timeoutMs,
+                )
+            }
+
+            if (p1FailedTemporaryBusy && !p1Revisited) {
+                val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs + backoffMs, isCompressedUpload)
+                    ?: return null
+                return Step.RunCloud(
+                    entry = cloudCandidates[0],
+                    attemptNumber = 2,
+                    isRevisit = true,
+                    backoffMs = backoffMs,
+                    timeoutMs = timeoutMs,
+                )
+            }
+
+            return null
+        }
+
+        fun recordCloudFailure(errorKind: CloudErrorKind, errorMessage: String?) {
+            val step = pendingStep as? Step.RunCloud ?: return
+            pendingStep = null
+            if (!errorMessage.isNullOrBlank()) lastError = errorMessage
+
+            if (cloudCandidates.size == 1) {
+                singleCloudAttempt = step.attemptNumber
+                if (errorKind != CloudErrorKind.TEMPORARY_BUSY || singleCloudAttempt >= singleCloudMaxAttempts) {
+                    cloudExhausted = true
+                }
+                return
+            }
+
+            if (!step.isRevisit) {
+                if (cloudIndex == 0 && errorKind == CloudErrorKind.TEMPORARY_BUSY) {
+                    p1FailedTemporaryBusy = true
+                }
+                cloudIndex++
+            } else {
+                p1Revisited = true
+                cloudExhausted = true
+            }
+        }
+
+        fun recordLocalFailure(errorMessage: String?) {
+            pendingStep = null
+            if (!errorMessage.isNullOrBlank()) lastError = errorMessage
+        }
+    }
 }

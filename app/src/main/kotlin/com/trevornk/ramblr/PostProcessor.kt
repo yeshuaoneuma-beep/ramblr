@@ -33,6 +33,13 @@ object PostProcessor {
     fun rejectsTemperature(model: String): Boolean =
         TEMPERATURE_REJECTING_MODEL_PREFIXES.any { model.startsWith(it) }
 
+    fun isOpenRouter(presetId: String? = null, baseUrl: String? = null): Boolean {
+        if (presetId.equals(ProviderPresets.OPENROUTER.id, ignoreCase = true)) return true
+        val normalized = baseUrl?.let(::normalizeBaseUrl) ?: return false
+        val host = runCatching { java.net.URI(normalized).host?.lowercase() }.getOrNull() ?: return false
+        return host == "openrouter.ai" || host.endsWith(".openrouter.ai")
+    }
+
     val ENDPOINT_URL = "$DEFAULT_BASE_URL/chat/completions"
 
     /** Host cleanup requests are actually sent to by default, for use in UI copy. See #23. */
@@ -393,6 +400,8 @@ Output: The meeting has been moved to Thursday at 2 PM. Please confirm whether y
         prompt: String,
         model: String,
         omitTemperature: Boolean = rejectsTemperature(model.ifBlank { DEFAULT_MODEL }),
+        baseUrl: String? = null,
+        presetId: String? = null,
     ): JSONObject {
         val messages = JSONArray().apply {
             put(JSONObject().apply {
@@ -410,6 +419,9 @@ Output: The meeting has been moved to Thursday at 2 PM. Please confirm whether y
             put("messages", messages)
             if (!omitTemperature) put("temperature", 0.0)
             put("stream", false)
+            if (isOpenRouter(presetId = presetId, baseUrl = baseUrl)) {
+                put("provider", JSONObject().put("allow_fallbacks", false))
+            }
         }
     }
 

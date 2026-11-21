@@ -8,11 +8,32 @@ import okio.source
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 object TranscriberClient {
-    data class Result(val text: String?, val error: String?)
+    data class Result(
+        val text: String?,
+        val error: String?,
+        val httpCode: Int? = null,
+        val isTransientIo: Boolean = false,
+        val isCancelled: Boolean = false,
+    ) {
+        val errorKind: CloudErrorKind
+            get() = CloudErrorClassifier.classify(httpCode, error, isTransientIo)
+    }
 
     private val client = NetworkClients.shared
+
+    private fun clientFor(callTimeoutMs: Long?): OkHttpClient {
+        if (callTimeoutMs == null) return client
+        val boundedMs = callTimeoutMs.coerceAtLeast(MIN_STEP_CALL_BUDGET_MS)
+        return client.newBuilder()
+            .connectTimeout(minOf(NetworkClients.CONNECT_TIMEOUT_SECONDS * 1000L, boundedMs), TimeUnit.MILLISECONDS)
+            .readTimeout(minOf(NetworkClients.READ_TIMEOUT_SECONDS * 1000L, boundedMs), TimeUnit.MILLISECONDS)
+            .writeTimeout(minOf(NetworkClients.WRITE_TIMEOUT_SECONDS * 1000L, boundedMs), TimeUnit.MILLISECONDS)
+            .callTimeout(boundedMs, TimeUnit.MILLISECONDS)
+            .build()
+    }
 
     // whisper-1 -> gpt-4o-transcribe: real 20-clip benchmark (2026-07-10) showed lower WER
     // (2.86% vs 4.29%) and ~42% faster avg latency (0.81s vs 1.40s) on identical short
@@ -144,6 +165,7 @@ object TranscriberClient {
         vocabularyTerms: List<String> = emptyList(),
         compressedFile: File? = null,
         language: String? = null,
+        callTimeoutMs: Long? = null,
         callback: (Result) -> Unit,
     ) {
         val bodyBuilder = MultipartBody.Builder()
@@ -178,24 +200,46 @@ object TranscriberClient {
             return
         }
 
-        val call = client.newCall(request)
+        val call = clientFor(callTimeoutMs).newCall(request)
         cancelHolder.set(call)
+        if (cancelHolder.isCancelled) call.cancel()
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 cancelHolder.clear(call)
-                callback(Result(null, e.message))
+                val cancelled = call.isCanceled()
+                callback(Result(null, e.message, isTransientIo = !cancelled, isCancelled = cancelled))
             }
             override fun onResponse(call: Call, response: Response) {
                 cancelHolder.clear(call)
+                val httpCode = response.code
+                val successful = response.isSuccessful
                 // Read via HttpBodyReader (#62): a body read that throws inside onResponse is
                 // swallowed by OkHttp, so the callback (and the temp PCM file's deletion in it)
                 // would otherwise never run and the dictation would hang until the watchdog.
                 HttpBodyReader.read(response).fold(
-                    onSuccess = { body -> callback(resultFor(body, vocabularyTerms)) },
-                    onFailure = { e -> callback(Result(null, e.message)) },
+                    onSuccess = { body ->
+                        if (successful) {
+                            callback(resultFor(body, vocabularyTerms).copy(httpCode = httpCode))
+                        } else {
+                            callback(Result(null, errorFromResponse(body, httpCode), httpCode = httpCode))
+                        }
+                    },
+                    onFailure = { e ->
+                        val cancelled = call.isCanceled()
+                        callback(Result(null, e.message, isTransientIo = !cancelled, isCancelled = cancelled))
+                    },
                 )
             }
         })
+    }
+
+    private fun errorFromResponse(body: String, httpCode: Int): String {
+        val fromEnvelope = runCatching {
+            JSONObject(body).optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+        if (fromEnvelope != null) return fromEnvelope
+        val snippet = body.trim().replace(Regex("\\s+"), " ").take(200)
+        return snippet.ifEmpty { "HTTP $httpCode" }
     }
 }
 

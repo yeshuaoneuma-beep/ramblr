@@ -61,6 +61,7 @@ data class CleanupStep(
     val model: String,
     val baseUrlOverride: String? = null,
     val entryId: String = "",
+    val presetId: String? = null,
 ) {
     /** Null for LOCAL_LLM steps, which run on-device and have nothing to authenticate against (#37). */
     fun credentialSlot(): CleanupCredentialSlot? = when (group) {

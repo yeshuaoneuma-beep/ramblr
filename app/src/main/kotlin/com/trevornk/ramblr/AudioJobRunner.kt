@@ -251,15 +251,18 @@ internal class AudioJobRunner(
         vocabulary: List<String>,
     ): ChunkAttempt {
         val apiKey = ProviderCredentialStore.getOrLegacy(context, entry)
-        // One retry with backoff: a 40-chunk job should not die to one dropped connection.
+        // One retry with backoff for temporary/busy failures only: quota/auth/client errors
+        // fail over immediately to the next route via CloudErrorClassifier.
         for (attempt in 0..1) {
             if (isCancelled(id)) return ChunkAttempt.Cancelled
             val latch = CountDownLatch(1)
             var text: String? = null
             var noSpeech = false
-            val cb: (String?, String?) -> Unit = { transcript, error ->
+            var errorKind = CloudErrorKind.TEMPORARY_BUSY
+            val cb: (String?, String?, CloudErrorKind) -> Unit = { transcript, error, kind ->
                 text = transcript?.takeIf(String::isNotBlank)
                 noSpeech = isNoSpeechTranscript(transcript, error)
+                errorKind = kind
                 latch.countDown()
             }
             when (entry.kind) {
@@ -269,25 +272,30 @@ internal class AudioJobRunner(
                     model = entry.transcriptionModel?.ifBlank { null } ?: TranscriberClient.DEFAULT_MODEL,
                     vocabularyTerms = vocabulary,
                     language = language,
-                ) { cb(it.text, it.error) }
+                ) { cb(it.text, it.error, it.errorKind) }
                 ProviderKind.GEMINI -> GeminiTranscriberClient.transcribe(
                     file, apiKey,
                     entry.transcriptionModel?.ifBlank { null } ?: GeminiTranscriberClient.DEFAULT_MODEL,
                     inFlight,
                     vocabularyTerms = vocabulary,
                     language = language,
-                ) { cb(it.text, it.error) }
-                else -> return ChunkAttempt.Error()
+                    retryDelaysMs = emptyList(),
+                ) { cb(it.text, it.error, it.errorKind) }
+                else -> return ChunkAttempt.Error(retryable = false)
             }
-            if (!latch.await(NetworkClients.CALL_TIMEOUT_SECONDS + 30, TimeUnit.SECONDS)) inFlight.cancel()
+            if (!latch.await(NetworkClients.CALL_TIMEOUT_SECONDS + 30, TimeUnit.SECONDS)) {
+                inFlight.cancel()
+                errorKind = CloudErrorKind.TEMPORARY_BUSY
+            }
             if (isCancelled(id)) return ChunkAttempt.Cancelled
             text?.let { return ChunkAttempt.Text(it) }
             // #306: a silent chunk is empty text, not a failed call -- retrying (or walking to the
             // next route) cannot find speech in it, and SegmentedTranscript.join drops it.
             if (noSpeech) return ChunkAttempt.Text("")
-            if (attempt == 0) {
-                try { Thread.sleep(3_000) } catch (_: InterruptedException) { return ChunkAttempt.Cancelled }
+            if (!shouldRetryCloudChunk(attempt, errorKind)) {
+                return ChunkAttempt.Error(retryable = errorKind == CloudErrorKind.TEMPORARY_BUSY)
             }
+            try { Thread.sleep(3_000) } catch (_: InterruptedException) { return ChunkAttempt.Cancelled }
         }
         return ChunkAttempt.Error()
     }
@@ -359,6 +367,9 @@ internal class AudioJobRunner(
 
     companion object {
         private const val TAG = "AudioJob"
+
+        internal fun shouldRetryCloudChunk(attempt: Int, errorKind: CloudErrorKind): Boolean =
+            attempt == 0 && errorKind == CloudErrorKind.TEMPORARY_BUSY
 
         /** Any app can share audio here, and a sender can serve an endless stream. */
         const val MAX_IMPORT_BYTES = 2L * 1024 * 1024 * 1024

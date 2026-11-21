@@ -638,6 +638,23 @@ object RealCleanupHttpTransport : CleanupHttpTransport {
  * onto the network. Both let this object's step-sequencing logic run in a plain JVM unit test
  * with fakes, with no real I/O and no Android framework dependency.
  */
+internal const val CLEANUP_BUSY_RETRY_MAX_RETRIES = 1
+internal const val CLEANUP_BUSY_RETRY_DELAY_MS = 400L
+
+private val cleanupBusyRetryScheduler: java.util.concurrent.ScheduledExecutorService by lazy {
+    java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "cleanup-busy-retry").apply { isDaemon = true }
+    }
+}
+
+internal fun defaultScheduleCleanupRetry(delayMs: Long, action: () -> Unit) {
+    if (delayMs <= 0L) {
+        action()
+    } else {
+        cleanupBusyRetryScheduler.schedule(action, delayMs, TimeUnit.MILLISECONDS)
+    }
+}
+
 object CleanupWaterfallExecutor {
     fun execute(
         text: String,
@@ -698,6 +715,9 @@ object CleanupWaterfallExecutor {
         // Measured on-device pace, shared across chunked cleanups (and so across the pieces of one
         // audio job); see [LocalCleanupPaceStore]. Tests pass their own to stay independent.
         localPace: LocalCleanupPaceStore = LocalCleanupPaceStore.shared,
+        busyRetryMaxRetries: Int = CLEANUP_BUSY_RETRY_MAX_RETRIES,
+        busyRetryDelayMs: Long = CLEANUP_BUSY_RETRY_DELAY_MS,
+        scheduleRetry: (Long, () -> Unit) -> Unit = ::defaultScheduleCleanupRetry,
         callback: (PostProcessor.Result) -> Unit,
     ) {
         val steps = waterfall.steps
@@ -715,6 +735,14 @@ object CleanupWaterfallExecutor {
         // budget the between-step check below enforces.
         cancelHolder.beginWork()
         val deadlineAtMs = startedAtMs + CLEANUP_WATERFALL_HARD_CAP_MS
+        val retryAwareTransport = withBusyRetry(
+            transport = transport,
+            deadlineAtMs = deadlineAtMs,
+            nowMs = nowMs,
+            maxRetries = busyRetryMaxRetries,
+            delayMs = busyRetryDelayMs,
+            scheduleRetry = scheduleRetry,
+        )
 
         fun nextGroupStart(index: Int): Int {
             val range = groupRanges.first { index in it }
@@ -742,7 +770,7 @@ object CleanupWaterfallExecutor {
                 return
             }
 
-            performStep(steps[index], text, prompt, localPrompt, localVocabulary, credentialLookup, entryCredentialLookup, transport, localInference, localModelPath, cancelHolder, deadlineAtMs, nowMs, temperatureCacheContext, isLastStep = index == steps.lastIndex, localStepBudgetMs = localStepBudgetMs, localPace = localPace) { stepOutcome ->
+            performStep(steps[index], text, prompt, localPrompt, localVocabulary, credentialLookup, entryCredentialLookup, retryAwareTransport, localInference, localModelPath, cancelHolder, deadlineAtMs, nowMs, temperatureCacheContext, isLastStep = index == steps.lastIndex, localStepBudgetMs = localStepBudgetMs, localPace = localPace) { stepOutcome ->
                 val outcome = if (fidelityGuard) guardCloudOutput(steps[index], text, stepOutcome) else stepOutcome
                 logStepOutcome(steps[index], startedAtMs, outcome, benchmarkContext, benchmarkCorrelationId)
                 when (outcome) {
@@ -1122,15 +1150,17 @@ object CleanupWaterfallExecutor {
         }
 
         if (step.group == CleanupStepGroup.GEMINI_DIRECT) {
+            val baseUrl = step.baseUrlOverride?.takeIf { it.isNotBlank() } ?: GeminiCleanupProvider.BASE_URL
+            val endpoint = GeminiCleanupProvider.endpointUrl(step.model, baseUrl)
             val cache = temperatureCacheContext?.let(TemperatureCapabilityStore::forContext)
             val identity = cache?.let { TemperatureCapabilityStore.identity(ProviderKind.GEMINI,
-                GeminiCleanupProvider.endpointUrl(step.model), GeminiCleanupProvider.headers(apiKey), step.model,
+                endpoint, GeminiCleanupProvider.headers(apiKey), step.model,
                 "", "", 0.0, step.entryId) }
-            val body = GeminiCleanupProvider.buildRequestBody(text, prompt)
+            val body = GeminiCleanupProvider.buildRequestBody(text, prompt, step.model)
             val omit = cache != null && identity != null && cache.state(identity) == TemperatureCapabilityStore.State.UNSUPPORTED
             if (omit) body.optJSONObject("generationConfig")?.remove("temperature")
             executeTemperatureAwareRequest(
-                url = GeminiCleanupProvider.endpointUrl(step.model),
+                url = endpoint,
                 headers = GeminiCleanupProvider.headers(apiKey),
                 body = body,
                 transport = transport,
@@ -1163,7 +1193,13 @@ object CleanupWaterfallExecutor {
                 "", "stream=false", 0.0, step.entryId,
             )
         }
-        val initialBody = PostProcessor.buildRequestBody(text, prompt, step.model)
+        val initialBody = PostProcessor.buildRequestBody(
+            text = text,
+            prompt = prompt,
+            model = step.model,
+            baseUrl = baseUrl,
+            presetId = step.presetId,
+        )
         val omitKnownUnsupported = temperatureStore != null && temperatureIdentity != null &&
             temperatureStore.state(temperatureIdentity) == TemperatureCapabilityStore.State.UNSUPPORTED
         if (omitKnownUnsupported) initialBody.remove("temperature")
@@ -1184,6 +1220,76 @@ object CleanupWaterfallExecutor {
             callback = callback,
         )
     }
+
+    /**
+     * Wraps [transport] with a single bounded retry for transient/busy cloud errors across all
+     * cloud cleanup providers (OpenAI, Groq, OpenRouter, Gemini, Anthropic, OmniRoute).
+     * Leaves [CleanupHttpOutcome.ConnectionFailure] untouched for host-grouped fail-fast, and
+     * leaves HTTP 400 temperature rejections untouched for [executeTemperatureAwareRequest].
+     */
+    private fun withBusyRetry(
+        transport: CleanupHttpTransport,
+        deadlineAtMs: Long,
+        nowMs: () -> Long,
+        maxRetries: Int,
+        delayMs: Long,
+        scheduleRetry: (Long, () -> Unit) -> Unit,
+    ): CleanupHttpTransport = CleanupHttpTransport { url, headers, jsonBody, timeouts, cancelHolder, callback ->
+        val cancelsAtStart = cancelHolder.cancelCount
+
+        fun isBusyOutcome(outcome: CleanupHttpOutcome): Boolean = when (outcome) {
+            is CleanupHttpOutcome.HttpError ->
+                !TemperatureRejectionClassifier.isTemperatureRejection(outcome.body, outcome.code) &&
+                    CloudErrorClassifier.isTemporaryBusy(httpCode = outcome.code, errorText = outcome.body)
+            is CleanupHttpOutcome.Ok -> isBusyErrorEnvelope(outcome.body)
+            is CleanupHttpOutcome.ConnectionFailure, CleanupHttpOutcome.Cancelled -> false
+        }
+
+        fun dispatch(attempt: Int, stepTimeouts: CleanupStepTimeouts) {
+            if (cancelHolder.isCancelled || cancelHolder.cancelCount != cancelsAtStart) {
+                callback(CleanupHttpOutcome.Cancelled)
+                return
+            }
+            transport.send(url, headers, jsonBody, stepTimeouts, cancelHolder) { outcome ->
+                if (cancelHolder.isCancelled || cancelHolder.cancelCount != cancelsAtStart) {
+                    callback(CleanupHttpOutcome.Cancelled)
+                    return@send
+                }
+                val remainingBeforeDelay = deadlineAtMs - nowMs()
+                val canRetry = attempt < maxRetries &&
+                    !cancelHolder.isCancelled &&
+                    cancelHolder.cancelCount == cancelsAtStart &&
+                    remainingBeforeDelay > delayMs.coerceAtLeast(0L) &&
+                    isBusyOutcome(outcome)
+                if (!canRetry) {
+                    callback(outcome)
+                } else {
+                    scheduleRetry(delayMs.coerceAtLeast(0L)) {
+                        if (cancelHolder.isCancelled || cancelHolder.cancelCount != cancelsAtStart) {
+                            callback(CleanupHttpOutcome.Cancelled)
+                            return@scheduleRetry
+                        }
+                        val retryTimeouts = temperatureRetryTimeouts(deadlineAtMs, nowMs())
+                        if (retryTimeouts == null) {
+                            callback(outcome)
+                        } else {
+                            dispatch(attempt + 1, retryTimeouts)
+                        }
+                    }
+                }
+            }
+        }
+
+        dispatch(0, timeouts)
+    }
+
+    private fun isBusyErrorEnvelope(body: String): Boolean = runCatching {
+        val obj = JSONObject(body)
+        if (obj.has("choices") || obj.has("candidates") || obj.has("content")) return@runCatching false
+        val message = obj.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+            ?: return@runCatching false
+        CloudErrorClassifier.isTemporaryBusy(httpCode = 200, errorText = message)
+    }.getOrDefault(false)
 
     private fun executeTemperatureAwareRequest(
         url: String,

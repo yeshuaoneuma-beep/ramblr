@@ -184,6 +184,8 @@ class CleanupWaterfallExecutorTest {
             transport = transport,
             localInference = localInference,
             localModelPath = localModelPath,
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, action -> action() },
             callback = { captured = it },
         )
         return captured ?: error("callback never fired")
@@ -361,7 +363,10 @@ class CleanupWaterfallExecutorTest {
 
     @Test fun `a failing step with an unparseable error body falls back to a truncated raw snippet (L2)`() {
         val transport = FakeCleanupHttpTransport(
-            mutableListOf(CleanupHttpOutcome.HttpError(502, "<html><body>Bad Gateway</body></html>"))
+            mutableListOf(
+                CleanupHttpOutcome.HttpError(502, "<html><body>Bad Gateway</body></html>"),
+                CleanupHttpOutcome.HttpError(502, "<html><body>Bad Gateway</body></html>"),
+            )
         )
         val waterfall = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.ANTHROPIC_DIRECT, "claude-haiku-4-5")))
         val result = execute(waterfall, transport)
@@ -493,6 +498,7 @@ class CleanupWaterfallExecutorTest {
             mutableListOf(
                 CleanupHttpOutcome.ConnectionFailure("dead"),
                 CleanupHttpOutcome.HttpError(500, ""),
+                CleanupHttpOutcome.HttpError(500, ""),
             )
         )
         val waterfall = CleanupWaterfall(
@@ -560,6 +566,7 @@ class CleanupWaterfallExecutorTest {
         val transport = FakeCleanupHttpTransport(
             mutableListOf(
                 CleanupHttpOutcome.HttpError(529, """{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}"""),
+                CleanupHttpOutcome.HttpError(529, """{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}"""),
                 okOutcome("cleaned via fallback"),
             )
         )
@@ -571,7 +578,7 @@ class CleanupWaterfallExecutorTest {
         )
         val result = execute(waterfall, transport)
         assertEquals("cleaned via fallback", result.text)
-        assertEquals(2, transport.requestedUrls.size)
+        assertEquals(3, transport.requestedUrls.size)
     }
 
     @Test fun `a network timeout on the Anthropic step is classified as a connection failure and falls through`() {

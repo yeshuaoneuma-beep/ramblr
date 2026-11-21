@@ -129,7 +129,7 @@ class CloudCleanupGuardWaterfallTest {
         val cursor = CleanupWaterfallCursor()
         // Step 0 fails outright; step 1 answers but is rejected. The next dictation should still
         // start at step 1, because that provider is the one that is up.
-        val transport = QueueTransport(mutableListOf(CleanupHttpOutcome.HttpError(500, ""), ok("Tell Sarah the delivery is late.")))
+        val transport = QueueTransport(mutableListOf(CleanupHttpOutcome.HttpError(403, ""), ok("Tell Sarah the delivery is late.")))
         val result = run(raw, PostProcessor.NATURAL_PROMPT, transport, cursor = cursor)
         assertNull(result.text)
         assertEquals(1, cursor.startIndex(System.currentTimeMillis()))
