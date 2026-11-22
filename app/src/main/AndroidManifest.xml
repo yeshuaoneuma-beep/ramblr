@@ -358,6 +358,17 @@
             android:excludeFromRecents="true"
             android:noHistory="true" />
 
+        <!-- No-UI translucent trampoline for RamblrQsTileService so tapping the Quick Settings tile
+             collapses the shade via startActivityAndCollapse across API 30-36 without touching
+             IconHiddenState or adding a Recents entry. -->
+        <activity
+            android:name=".QsTileCollapseActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="" />
+
         <!-- #254: no-UI trampoline for the "Ramblr was turned off" notification's tap target.
              Same rationale as RestoreIconActivity above (Activity, not receiver, so the shade
              collapses normally) plus one of its own: the base tier's recovery path is starting

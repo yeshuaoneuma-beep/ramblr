@@ -50,6 +50,10 @@ interface RuntimeListener {
     /** Recording is live: show the RECORDING ring state (red + pulse). Main thread. */
     fun onRecordingStarted()
 
+    /** Non-intrusive recording countdown cue starting at 7:00 (3:00 remaining before the
+     *  10:00 cap) while in RECORDING. Main thread. */
+    fun onRecordingCountdown(remainingMs: Long) {}
+
     /** The pipeline entered TRANSCRIBING: show the busy ring state (grey + spinner). Main
      *  thread (called from `stopAndTranscribe` / the max-duration mint, both main-thread). */
     fun onEnterTranscribingUi()
@@ -215,7 +219,11 @@ class DictationRuntime internal constructor(
     private val nowMs: () -> Long = { System.currentTimeMillis() },
     private val transcriptionRetryBackoffMs: Long = TranscriptionChain.CLOUD_STT_RETRY_BACKOFF_MS,
     private val localSttBudgetMs: Long = TranscriptionChain.LOCAL_STT_BUDGET_MS,
+    private val cloudLiveSessionCutoffMs: Long = CLOUD_LIVE_SESSION_CUTOFF_MS,
     private val elapsedRealtimeMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
+    private val recordingCountdownStartMs: Long = RECORDING_COUNTDOWN_START_MS,
+    private val recordingCapMs: Long = RECORDING_CAP_MS,
+    private val recordingCountdownTickMs: Long = RECORDING_COUNTDOWN_TICK_MS,
     /** Test seam: lets host-side unit tests substitute a fake engine at the capture boundary.
      *  The default is exactly the pre-extraction construction. */
     private val engineFactory: (File, RecordingStateMachine) -> RecordingEngine =
@@ -231,6 +239,12 @@ class DictationRuntime internal constructor(
         /** Backstop: 180s Cloud STT + 180s Local STT + 120s Cloud Cleanup + 300s Local Cleanup + 30s margin. */
         internal const val WATCHDOG_TIMEOUT_MS = 810_000L
         private const val CLOUD_LIVE_FINAL_WAIT_MS = 2_500L
+        /** Proactive 9:00 cutoff ahead of Gemini Live's 10-minute WebSocket limit. */
+        internal const val CLOUD_LIVE_SESSION_CUTOFF_MS = GeminiCloudLiveTranscriptionClient.DEFAULT_MAX_SESSION_MS
+        /** 7:00 mark into the 10:00 recording cap (3:00 remaining). */
+        internal const val RECORDING_COUNTDOWN_START_MS = 420_000L
+        internal const val RECORDING_CAP_MS = RecordingEngine.MAX_DURATION_MS
+        internal const val RECORDING_COUNTDOWN_TICK_MS = 1_000L
 
         private val transcriptionRetryScheduler = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "stt-retry").apply { isDaemon = true }
@@ -257,7 +271,9 @@ class DictationRuntime internal constructor(
         var recordingResult: RecordingEngine.Result? = null
         var token: Int = 0
         var claimed = false
+        @Volatile var liveStreamEnded = false
         var finalWait: Runnable? = null
+        var sessionCutoff: Runnable? = null
         /** Newest [CloudLiveTiming] seen from any callback (#233 item 10). Main-thread only, same
          *  as every other field here. Kept so a fallback that happens because NO terminal ever
          *  arrived can still report that setup landed and interims flowed -- otherwise the most
@@ -420,6 +436,9 @@ class DictationRuntime internal constructor(
     /** The currently-armed transcription watchdog (#L14), held so it can be removed on normal
      *  completion/teardown instead of one accumulating in the handler queue per dictation. */
     private var watchdogRunnable: Runnable? = null
+
+    /** Pending 7:00->10:00 recording countdown tick runnable, cancelled on stop/cancel/reset/shutdown. */
+    @Volatile private var recordingCountdownRunnable: Runnable? = null
 
     /** Single monotonic post-recording deadline anchored once when recording stops (normal stop
      *  or max-duration stop). Never extended/reset on [holdForLeavingHost] or stage transitions;
@@ -654,6 +673,8 @@ class DictationRuntime internal constructor(
         idleUnloadRunnable = null
     }
 
+    internal fun hasPendingIdleUnload(): Boolean = idleUnloadRunnable != null
+
     /** Arms the idle window if the runtime is genuinely idle (no state, no session lease). Main only. */
     private fun scheduleIdleUnloadIfIdle() {
         if (stateMachine.current() == RecordingStateMachine.State.IDLE && sessionLease == null) {
@@ -796,9 +817,11 @@ class DictationRuntime internal constructor(
         }
             val onChunk: (ByteArray, Int) -> Unit = if (liveAttempt == null) existingOnChunk else { buf, len ->
                 existingOnChunk(buf, len)
-                // Cloud live is an optional tee. Its contract copies before returning; failure is
-                // terminal to only that attempt and never interrupts the PCM file write.
-                runCatching { liveAttempt.session?.sendPcm(buf, len) }
+                // Cloud live is an optional tee. Its contract copies before returning; failure or
+                // the 9:00 cutoff ends only the live stream and never interrupts the PCM file write.
+                if (!liveAttempt.liveStreamEnded) {
+                    runCatching { liveAttempt.session?.sendPcm(buf, len) }
+                }
             }
 
             // Loudness for a host that animates the mic (the voice keyboard): measured on the reader
@@ -851,6 +874,7 @@ class DictationRuntime internal constructor(
         // Placed after the `started` check so a failed recorder start never acquires.
             acquireTranscriptionWakeLock()
             listener.onRecordingStarted()
+            startRecordingCountdown(lease)
             // #385: only now -- engine.start succeeded and the UI already knows -- so a failed
             // start never ticks and vibration never sits ahead of recording on the start path.
             // Accepted: the buzz can land in the first ~25 ms of the clip, and (on stop) in at
@@ -858,6 +882,7 @@ class DictationRuntime internal constructor(
             haptics.onRecordingStarted()
         } finally {
             if (!recordingStarted) {
+                cancelRecordingCountdown()
                 cancelCloudLiveAttempt(liveAttempt)
                 releaseSessionLease(lease)
                 // #305: a start that fails never reaches resetToIdle; the window must not stay cancelled.
@@ -888,10 +913,15 @@ class DictationRuntime internal constructor(
                 }
 
                 override fun onTerminal(result: CloudLiveTerminal) {
+                    attempt.liveStreamEnded = true
                     handler.post {
                         if (cloudLiveAttempt !== attempt || sessionLease !== lease || attempt.claimed) return@post
-                        attempt.terminal = result
-                        attempt.lastTiming = result.timing
+                        attempt.sessionCutoff?.let(handler::removeCallbacks)
+                        attempt.sessionCutoff = null
+                        if (attempt.terminal == null) {
+                            attempt.terminal = result
+                            attempt.lastTiming = result.timing
+                        }
                         resolveCloudLiveAttempt(attempt)
                     }
                 }
@@ -905,6 +935,12 @@ class DictationRuntime internal constructor(
             val session = requireNotNull(attempt.session)
             session.connect()
             if (!session.startActivity()) throw IllegalStateException("Cloud-live start rejected")
+            val cutoff = Runnable {
+                attempt.sessionCutoff = null
+                handleCloudLiveSessionCutoff(attempt)
+            }
+            attempt.sessionCutoff = cutoff
+            handler.postDelayed(cutoff, cloudLiveSessionCutoffMs)
             attempt
         } catch (e: Exception) {
             // Never fails the dictation -- cloud-live is an optional tee -- but a silent catch here
@@ -912,24 +948,49 @@ class DictationRuntime internal constructor(
             // disabled the feature with zero diagnostics. Control flow is unchanged; this only
             // makes the cause visible.
             Log.w(TAG, "Cloud-live attempt could not start; continuing with the batch pipeline", e)
+            attempt.sessionCutoff?.let(handler::removeCallbacks)
+            attempt.sessionCutoff = null
+            attempt.liveStreamEnded = true
             if (cloudLiveAttempt === attempt) cloudLiveAttempt = null
             attempt.session?.let { session -> runCatching { session.cancel(); session.close() } }
             null
         }
     }
 
+    /**
+     * Proactive 9:00 cutoff for Cloud Live streaming sessions: closes the live WebSocket cleanly
+     * without stopping [RecordingEngine] or dropping recorded PCM so recording can continue up to
+     * the 10-minute cap and fall back cleanly to the standard batch transcription chain on stop.
+     */
+    private fun handleCloudLiveSessionCutoff(attempt: CloudLiveAttempt) {
+        if (cloudLiveAttempt !== attempt || sessionLease !== attempt.lease || attempt.claimed) return
+        if (attempt.terminal != null) return
+        attempt.liveStreamEnded = true
+        val timing = attempt.lastTiming ?: CloudLiveTiming(connectStartedAtMs = nowMs())
+        attempt.terminal = CloudLiveTerminal.Failure(
+            reason = CloudLiveFailureReason.SESSION_LIMIT,
+            message = "Live transcription session limit reached (9:00)",
+            timing = timing,
+        )
+        attempt.lastTiming = timing
+        Log.i(TAG, "Cloud-live 9:00 cutoff reached; closing live stream and continuing recording for batch fallback")
+        runCatching { attempt.session?.close() }
+        resolveCloudLiveAttempt(attempt)
+    }
+
     /** Flips shared state; the reader thread notices, drains, tears down and hands off via [onRecordingFinished]. */
     internal fun stopAndTranscribe() {
         val lease = sessionLease ?: return
         if (!stateMachine.tryStartTranscribing()) return
+        cancelRecordingCountdown()
         // #385: the one stop path for the ring/IME/tile/automation taps AND silence auto-stop
-        // (which posts here). There is no cancel-while-recording: a long-press while recording is
-        // just a stop tap. Shutdown / keyboard dismissal mid-recording deliberately gives no tick.
+        // (which posts here). Discard-while-recording (3-second hold) routes through cancelRecording()
+        // and deliberately does not play the stop tick; shutdown / keyboard dismissal likewise.
         haptics.onRecordingStopped()
         activeToken = guard.start()
         val deadline = elapsedRealtimeMs() + WATCHDOG_TIMEOUT_MS
         postRecordingDeadlineAtElapsedMs = deadline
-        cloudLiveAttempt?.takeIf { it.lease === lease }?.let { attempt ->
+        cloudLiveAttempt?.takeIf { it.lease === lease && !it.liveStreamEnded }?.let { attempt ->
             runCatching { attempt.session?.endActivity() }
         }
         pipelineTiming.start(PipelineTiming(stopTapAtMs = System.currentTimeMillis(), correlationId = correlationIdFor(activeToken)))
@@ -1003,6 +1064,17 @@ class DictationRuntime internal constructor(
         NetworkWarmup.warmUpAsync(hosts)
     }
 
+    /** 3-second hold while RECORDING: discard the active recording and return to idle without transcribing. */
+    fun cancelRecording(): Boolean {
+        if (stateMachine.current() != RecordingStateMachine.State.RECORDING) return false
+        val lease = sessionLease ?: return false
+        cancelRecordingCountdown()
+        pipelineTiming.abandon()
+        resetToIdle(lease)
+        toast("Recording discarded")
+        return true
+    }
+
     /** Long-press while TRANSCRIBING (see the host's overlay touch listener): abort the in-flight call and return to idle. */
     fun cancelTranscription() {
         if (stateMachine.current() != RecordingStateMachine.State.TRANSCRIBING) return
@@ -1048,10 +1120,44 @@ class DictationRuntime internal constructor(
         watchdogRunnable = null
     }
 
+    private fun startRecordingCountdown(lease: DictationSessionLease) {
+        cancelRecordingCountdown()
+        if (shuttingDown || recordingCapMs <= recordingCountdownStartMs) return
+        val startedAt = elapsedRealtimeMs()
+        val startMs = recordingCountdownStartMs
+        val capMs = recordingCapMs
+        val tickMs = recordingCountdownTickMs.coerceAtLeast(1L)
+        val runnable = object : Runnable {
+            override fun run() {
+                if (recordingCountdownRunnable !== this) return
+                if (shuttingDown || sessionLease !== lease || stateMachine.current() != RecordingStateMachine.State.RECORDING) {
+                    cancelRecordingCountdown()
+                    return
+                }
+                val elapsed = (elapsedRealtimeMs() - startedAt).coerceAtLeast(0L)
+                val remainingMs = (capMs - elapsed).coerceIn(0L, capMs - startMs)
+                listener.onRecordingCountdown(remainingMs)
+                if (remainingMs <= 0L) {
+                    recordingCountdownRunnable = null
+                    return
+                }
+                handler.postDelayed(this, minOf(tickMs, remainingMs))
+            }
+        }
+        recordingCountdownRunnable = runnable
+        handler.postDelayed(runnable, startMs.coerceAtLeast(0L))
+    }
+
+    private fun cancelRecordingCountdown() {
+        recordingCountdownRunnable?.let { handler.removeCallbacks(it) }
+        recordingCountdownRunnable = null
+    }
+
     /** Common teardown for every path back to IDLE: normal completion, cancel, or watchdog. */
     internal fun resetToIdle(expectedLease: DictationSessionLease) {
         if (sessionLease !== expectedLease) return
         try {
+            cancelRecordingCountdown()
             haptics.reset()
             cancelCloudLiveAttempt()
             cancelWatchdog()
@@ -1112,6 +1218,7 @@ class DictationRuntime internal constructor(
         // teardown and leave the new reader keeping the mic hot after the service appears off.
         if (recordingEngine === engine) recordingEngine = null
         if (result.discarded) {
+            result.compressedFile?.delete()
             // The attempt is abandoned with it: nothing downstream will ever claim or time it out
             // (setupTimeout is cancelled once setup lands, finalTimeout is only armed by
             // endActivity, and stopAndTranscribe never ran), so without this the authenticated
@@ -1194,6 +1301,7 @@ class DictationRuntime internal constructor(
         lease: DictationSessionLease,
     ) {
         handler.post {
+            cancelRecordingCountdown()
             if (stateMachine.current() != RecordingStateMachine.State.TRANSCRIBING || activeToken != 0) {
                 // Same abandon-without-resetToIdle shape as the other discard paths.
                 cloudLiveAttempt?.takeIf { it.lease === lease }?.let(::cancelCloudLiveAttempt)
@@ -1208,7 +1316,7 @@ class DictationRuntime internal constructor(
             activeToken = token
             val deadline = elapsedRealtimeMs() + WATCHDOG_TIMEOUT_MS
             postRecordingDeadlineAtElapsedMs = deadline
-            cloudLiveAttempt?.takeIf { it.lease === lease }?.let { attempt ->
+            cloudLiveAttempt?.takeIf { it.lease === lease && !it.liveStreamEnded }?.let { attempt ->
                 runCatching { attempt.session?.endActivity() }
             }
             // #115: max-duration auto-stop has no real user "stop tap" -- the cap itself is the
@@ -1286,8 +1394,11 @@ class DictationRuntime internal constructor(
                     return
                 }
                 attempt.claimed = true
+                attempt.liveStreamEnded = true
                 attempt.finalWait?.let(handler::removeCallbacks)
                 attempt.finalWait = null
+                attempt.sessionCutoff?.let(handler::removeCallbacks)
+                attempt.sessionCutoff = null
                 cloudLiveAttempt = null
                 runCatching { attempt.session?.close() }
                 result.pcmFile.delete()
@@ -1333,8 +1444,11 @@ class DictationRuntime internal constructor(
         val result = attempt.recordingResult ?: return
         if (attempt.claimed || cloudLiveAttempt !== attempt || sessionLease !== attempt.lease) return
         attempt.claimed = true
+        attempt.liveStreamEnded = true
         attempt.finalWait?.let(handler::removeCallbacks)
         attempt.finalWait = null
+        attempt.sessionCutoff?.let(handler::removeCallbacks)
+        attempt.sessionCutoff = null
         cloudLiveAttempt = null
         runCatching { attempt.session?.close() }
         logCloudLiveAttempt(attempt, outcome)
@@ -1346,8 +1460,11 @@ class DictationRuntime internal constructor(
         if (attempt == null) return
         if (cloudLiveAttempt === attempt) cloudLiveAttempt = null
         attempt.claimed = true
+        attempt.liveStreamEnded = true
         attempt.finalWait?.let(handler::removeCallbacks)
         attempt.finalWait = null
+        attempt.sessionCutoff?.let(handler::removeCallbacks)
+        attempt.sessionCutoff = null
         attempt.session?.let { session -> runCatching { session.cancel(); session.close() } }
     }
 
@@ -2279,6 +2396,7 @@ class DictationRuntime internal constructor(
         }
         prefs().unregisterOnSharedPreferenceChangeListener(batchPolicyPrefsListener)
         cancelIdleUnload()
+        cancelRecordingCountdown()
         haptics.reset()
         val lease = sessionLease
         if (recordingEngine != null) shutdownLeaseAwaitingReader = lease

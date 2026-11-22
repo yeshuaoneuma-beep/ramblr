@@ -223,7 +223,7 @@ class DictationRuntimeIdleUnloadTest {
         runtime.onTap()
         runOffMainInOrder()
 
-        assertFalse("the pending idle unload must be cancelled when a recording starts", mainLooperHasPendingWork())
+        assertFalse("the pending idle unload must be cancelled when a recording starts", runtime.hasPendingIdleUnload())
         advance(10, TimeUnit.MINUTES)
         runOffMainInOrder()
         assertEquals(RecordingStateMachine.State.RECORDING, runtime.currentState())
@@ -285,7 +285,7 @@ class DictationRuntimeIdleUnloadTest {
         runOffMainInOrder() // reloads complete while RECORDING and post their arm requests
         mainLooper.idle()
 
-        assertFalse("a load completing mid-recording must not start the idle window", mainLooperHasPendingWork())
+        assertFalse("a load completing mid-recording must not start the idle window", runtime.hasPendingIdleUnload())
     }
 
     @Test
@@ -343,6 +343,7 @@ class DictationRuntimeIdleUnloadTest {
         offMain.clear()
 
         assertFalse("shutdown must cancel the pending idle unload", mainLooperHasPendingWork())
+        assertFalse(runtime.hasPendingIdleUnload())
         advance(10, TimeUnit.MINUTES)
         runOffMainInOrder()
         assertTrue(localReleased.isEmpty())

@@ -41,6 +41,7 @@ enum class CloudLiveFailureReason {
     INVALID_REQUEST,
     SETUP_TIMEOUT,
     FINAL_TIMEOUT,
+    SESSION_LIMIT,
     BUFFER_LIMIT,
     SEND_FAILED,
     PROTOCOL_ERROR,

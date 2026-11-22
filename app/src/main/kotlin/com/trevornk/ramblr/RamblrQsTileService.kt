@@ -1,27 +1,27 @@
 package com.trevornk.ramblr
 
-import android.app.PendingIntent
+import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 
 /**
- * Quick Settings tile (#127): an alternative dictation trigger for users who want to hide the
- * floating ring entirely (swipe down, tap, instead of a screen-obstructing overlay). This is
- * purely a new trigger surface -- it never touches the recording state machine directly, only
+ * Quick Settings tile (#127, Phase 2C): an alternative dictation trigger for users who want to hide
+ * the floating ring entirely (swipe down, tap, instead of a screen-obstructing overlay). This is
+ * purely a trigger surface -- it never touches the recording state machine directly, only
  * [WhisperAccessibilityService.requestToggleRecording] (start-if-idle / stop-if-recording, the
  * same toggle semantics as the ring's own [WhisperAccessibilityService.onTap]).
  *
- * Deliberately NOT the FLAG_REQUEST_ACCESSIBILITY_BUTTON (OS-rendered nav-bar accessibility
- * button) approach -- that wires directly into WhisperAccessibilityService's own flags/service
- * config and risks interacting with other accessibility features. A QS tile is a fully separate
- * Android component with no such coupling, which is why it was scoped out as the safer piece to
- * ship first (see #127).
+ * Tapping while unlocked (or after [unlockAndRun] when tapped over a lock screen) routes cleanly
+ * via [resolveQsTileClickAction] and collapses the Quick Settings shade via
+ * [startActivityAndCollapseCompat] (API 34+ `PendingIntent` overload, API 30-33 `Intent` overload)
+ * so the user immediately sees the underlying app and floating recording bubble.
  */
-class RamblrQsTileService : TileService() {
+open class RamblrQsTileService : TileService() {
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -50,97 +50,82 @@ class RamblrQsTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        val serviceRunning = WhisperAccessibilityService.currentRecordingState() != null
-        if (!serviceRunning) {
-            // #127 requirement 3: accessibility service isn't enabled -- don't crash or silently
-            // no-op forever, deep-link the user to the settings screen where they can turn it on.
-            //
-            // Must be the PendingIntent overload (#136): startActivityAndCollapse(Intent) is
-            // deprecated and throws UnsupportedOperationException unconditionally on
-            // UPSIDE_DOWN_CAKE (API 34) and up, which this app targets. The old Intent call
-            // therefore threw on every device that could install this build, and the broad
-            // catch it replaced swallowed the exception -- making the "tap to enable" affordance
-            // the exact permanent silent no-op it was written to prevent. FLAG_IMMUTABLE mirrors
-            // IconVisibilityNotifications' PendingIntent; the intent is already explicit
-            // (a platform settings action), so nothing here is mutable-by-design.
-            //
-            // The overload split is load-bearing and neither branch is optional: the PendingIntent
-            // overload was only ADDED in API 34, while minSdk is 30. Calling it unguarded throws
-            // NoSuchMethodError on API 30-33, so the #136 fix as originally shipped merely moved
-            // the crash from "Android 14 and up" to "Android 11 through 13" -- the deprecated
-            // Intent overload is still the only one that exists down there, and it does not throw
-            // below 34. Keep both paths until minSdk reaches 34.
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (shouldUsePendingIntentCollapse(android.os.Build.VERSION.SDK_INT)) {
-                val pending = PendingIntent.getActivity(
-                    this, 0, intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-                startActivityAndCollapse(pending)
-            } else {
-                // Lint's StartActivityAndCollapseDeprecated fires here unconditionally: it argues
-                // for the PendingIntent overload, which is exactly what the branch above does. It
-                // has no notion of a minSdk-30 app that must still serve API 30-33, where the
-                // PendingIntent overload does not exist at all. This deprecated call is the only
-                // one that works below 34, and it does not throw there -- so the warning is
-                // correct in general and wrong in this specific branch. Remove along with the
-                // branch when minSdk reaches 34.
-                @Suppress("DEPRECATION", "StartActivityAndCollapseDeprecated")
-                startActivityAndCollapse(intent)
-            }
-            return
+        if (isLocked) {
+            unlockAndRun { handleTileClick() }
+        } else {
+            handleTileClick()
         }
-        WhisperAccessibilityService.requestToggleRecording()
-        // Toggle takes effect on the service's handler asynchronously (RECORDING/TRANSCRIBING
-        // engine start has real I/O in it), so reflect the immediately-known intent right away
-        // and let the next onStartListening/refresh tick reconcile with the real state.
-        handler.postDelayed({ updateTileState() }, TOGGLE_REFLECT_DELAY_MS)
     }
 
-    private fun updateTileState() {
-        val tile = qsTile ?: return
-        val state = WhisperAccessibilityService.currentRecordingState()
-        tile.icon = android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_mic)
-        tile.label = getString(R.string.tile_label)
-        when (state) {
-            null -> {
-                // Accessibility service not enabled/running. Deliberately STATE_INACTIVE, not
-                // STATE_UNAVAILABLE: an unavailable tile is greyed out and the platform may
-                // suppress onClick entirely on some Android versions, which would make the
-                // "tap to deep-link to Settings" affordance below unreachable. INACTIVE keeps
-                // the tile tappable while the subtitle still makes the disabled state clear.
-                tile.state = Tile.STATE_INACTIVE
-                // #254: distinguish "you never turned it on" from "it was on and something
-                // switched it off". The second is the automation-breakage case, and a user whose
-                // macro's re-enable silently failed has no other instant signal -- the QS panel
-                // is the fastest place to see it, since they may already be pulling the shade
-                // down to dictate. Reuses #258's detector rather than a second notion of broken.
-                tile.subtitle = if (
-                    InvocationGuardRail.staleComponentAction(this) != StaleComponentAction.NONE
-                ) {
-                    getString(R.string.tile_subtitle_service_turned_off)
-                } else {
-                    getString(R.string.tile_subtitle_service_disabled)
-                }
+    internal fun handleTileClick() {
+        val active = ActiveDictationHostRegistry.resolveActiveHost()
+        when (resolveQsTileClickAction(active?.second)) {
+            QsTileClickAction.OPEN_ACCESSIBILITY_SETTINGS -> {
+                // Accessibility service isn't enabled -- deep-link to system Accessibility settings
+                // and collapse the shade via the SDK-appropriate overload.
+                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                collapseAndStart(intent, REQUEST_ACCESSIBILITY_SETTINGS)
             }
-            RecordingStateMachine.State.RECORDING -> {
-                tile.state = Tile.STATE_ACTIVE
-                tile.subtitle = getString(R.string.tile_subtitle_recording)
+            QsTileClickAction.TOGGLE_DICTATION_AND_COLLAPSE -> {
+                active?.first?.requestToggleRecording()
+                // Toggle takes effect on the host's handler asynchronously (RECORDING/TRANSCRIBING
+                // engine start has real I/O in it), so reflect the immediately-known intent right away
+                // and let the next onStartListening/refresh tick reconcile with the real state.
+                handler.postDelayed({ updateTileState() }, TOGGLE_REFLECT_DELAY_MS)
+                collapseAndStart(QsTileCollapseActivity.intent(this), REQUEST_COLLAPSE_SHADE)
             }
-            RecordingStateMachine.State.TRANSCRIBING -> {
-                tile.state = Tile.STATE_ACTIVE
-                tile.subtitle = null
-            }
-            RecordingStateMachine.State.IDLE -> {
-                tile.state = Tile.STATE_INACTIVE
-                tile.subtitle = null
+            QsTileClickAction.CANCEL_TRANSCRIPTION_AND_COLLAPSE -> {
+                active?.first?.requestCancelActive()
+                handler.postDelayed({ updateTileState() }, TOGGLE_REFLECT_DELAY_MS)
+                collapseAndStart(QsTileCollapseActivity.intent(this), REQUEST_COLLAPSE_SHADE)
             }
         }
+    }
+
+    internal open fun collapseAndStart(intent: Intent, requestCode: Int) {
+        startActivityAndCollapseCompat(this, intent, requestCode)
+    }
+
+    internal fun updateTileState() {
+        val tile = qsTile ?: return
+        val state = ActiveDictationHostRegistry.currentState()
+        val display = resolveQsTileDisplayState(
+            state = state,
+            serviceTurnedOff = state == null &&
+                InvocationGuardRail.staleComponentAction(this) != StaleComponentAction.NONE,
+        )
+        tile.icon = android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_mic)
+        tile.label = getString(R.string.tile_label)
+        tile.state = display.tileState
+        tile.subtitle = display.subtitleRes?.let { getString(it) }
         tile.updateTile()
     }
 
     companion object {
         private const val REFRESH_INTERVAL_MS = 1000L
         private const val TOGGLE_REFLECT_DELAY_MS = 150L
+        internal const val REQUEST_ACCESSIBILITY_SETTINGS = 0
+        internal const val REQUEST_COLLAPSE_SHADE = 1
+    }
+}
+
+/**
+ * No-UI translucent trampoline Activity used solely by [RamblrQsTileService] to collapse the Quick
+ * Settings shade via `TileService.startActivityAndCollapse` across API 30-36 without touching
+ * [IconHiddenState] or leaving a Recents entry.
+ */
+class QsTileCollapseActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        finish()
+        @Suppress("DEPRECATION")
+        overridePendingTransition(0, 0)
+    }
+
+    companion object {
+        fun intent(context: Context): Intent =
+            Intent(context, QsTileCollapseActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
     }
 }

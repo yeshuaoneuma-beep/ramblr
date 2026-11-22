@@ -117,8 +117,12 @@ class CloudLiveWiringTest {
         configureFullyEnabled()
         val factory = CloudLiveWiring.factoryOrNull(app)
         assertTrue(factory is GeminiCloudLiveTranscriptionClient)
+        val client = factory as GeminiCloudLiveTranscriptionClient
         // Production endpoint only -- the test-endpoint escape hatch must never be wired on.
-        assertFalse((factory as GeminiCloudLiveTranscriptionClient).allowTestEndpoint)
+        assertFalse(client.allowTestEndpoint)
+        // Phase 2C: proactive 9:00 session cutoff ahead of Gemini Live's 10-minute WebSocket cap.
+        assertEquals(GeminiCloudLiveTranscriptionClient.DEFAULT_MAX_SESSION_MS, client.maxSessionMs)
+        assertEquals(540_000L, client.maxSessionMs)
     }
 
     /** An oversized personal vocabulary must degrade to fewer hints, not fail the whole factory

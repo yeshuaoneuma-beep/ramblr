@@ -312,6 +312,7 @@ class GeminiCloudLiveTranscriptionClientTest {
         vocabulary: List<String> = listOf("Ramblr"),
         setupTimeoutMs: Long = 2_000,
         finalTimeoutMs: Long = 2_000,
+        maxSessionMs: Long = GeminiCloudLiveTranscriptionClient.DEFAULT_MAX_SESSION_MS,
         httpClient: OkHttpClient = OkHttpClient(),
     ) = GeminiCloudLiveTranscriptionClient(
         httpClient = httpClient,
@@ -324,6 +325,7 @@ class GeminiCloudLiveTranscriptionClientTest {
         scheduler = scheduler,
         setupTimeoutMs = setupTimeoutMs,
         finalTimeoutMs = finalTimeoutMs,
+        maxSessionMs = maxSessionMs,
         allowTestEndpoint = true,
     )
 
@@ -409,6 +411,50 @@ class GeminiCloudLiveTranscriptionClientTest {
         assertEquals(CloudLiveFailureReason.NETWORK_ERROR, failure.reason)
         assertEquals(1, listener.terminals)
         assertEquals("an interim must never be promoted to a final", listOf("partial words"), listener.interims)
+    }
+
+    @Test fun `default maxSessionMs is 9 minutes and non-positive values are rejected`() {
+        assertEquals(540_000L, GeminiCloudLiveTranscriptionClient.DEFAULT_MAX_SESSION_MS)
+        assertEquals(540_000L, factory().maxSessionMs)
+        assertThrows(IllegalArgumentException::class.java) { factory(maxSessionMs = 0L) }
+        assertThrows(IllegalArgumentException::class.java) { factory(maxSessionMs = -1L) }
+    }
+
+    @Test fun `session limit cutoff fails once with SESSION_LIMIT and rejects subsequent pcm`() {
+        val listener = RecordingListener()
+        scriptedSocket(
+            "{\"setupComplete\":{}}",
+            "{\"serverContent\":{\"interimInputTranscription\":{\"text\":\"still speaking\"}}}",
+        )
+        val session = factory(setupTimeoutMs = 5_000, finalTimeoutMs = 5_000, maxSessionMs = 120).create(listener)
+        session.connect()
+        session.startActivity()
+
+        assertTrue(listener.done.await(5, TimeUnit.SECONDS))
+        Thread.sleep(50)
+
+        val failure = listener.result as CloudLiveTerminal.Failure
+        assertEquals(CloudLiveFailureReason.SESSION_LIMIT, failure.reason)
+        assertEquals(1, listener.terminals)
+        assertFalse("subsequent PCM after 9:00 cutoff must be rejected cleanly", session.sendPcm(byteArrayOf(1, 2, 3, 4), 4))
+        assertEquals("rejected PCM must not emit a second terminal", 1, listener.terminals)
+    }
+
+    @Test fun `normal completion before maxSessionMs cancels the session limit timer`() {
+        val listener = RecordingListener()
+        scriptedSocket(
+            "{\"setupComplete\":{}}",
+            "{\"serverContent\":{\"inputTranscription\":{\"text\":\"finished in time\"}}}",
+        )
+        val session = factory(maxSessionMs = 120).create(listener)
+        session.connect()
+        session.startActivity()
+        session.endActivity()
+
+        assertTrue(listener.done.await(5, TimeUnit.SECONDS))
+        Thread.sleep(200)
+        assertEquals("finished in time", (listener.result as CloudLiveTerminal.Success).text)
+        assertEquals(1, listener.terminals)
     }
 
     private fun scriptedSocket(vararg events: String, delayMs: Long = 0, binary: Boolean = false): ServerScript {

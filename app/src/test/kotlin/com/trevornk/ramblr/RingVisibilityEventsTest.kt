@@ -130,6 +130,48 @@ class RingVisibilityEventsTest {
         assertNull(s.ringAnchorTracker.lastPresent())
     }
 
+    @Test fun `notifyRingVisibilityChanged hops to main when invoked off main thread`() {
+        val app = RuntimeEnvironment.getApplication()
+        app.getSharedPreferences("ramblr", Context.MODE_PRIVATE).edit().clear().commit()
+        val s = service()
+        val instanceField = WhisperAccessibilityService::class.java.getDeclaredField("instance")
+            .apply { isAccessible = true }
+        instanceField.set(null, s)
+        try {
+            s.ringAnchorTracker.update(true)
+            val bg = Thread { WhisperAccessibilityService.notifyRingVisibilityChanged() }
+            bg.start()
+            bg.join(5_000)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertNull(s.ringAnchorTracker.lastPresent())
+        } finally {
+            instanceField.set(null, null)
+        }
+    }
+
+    @Test fun `prefs observer reacts immediately to IconHiddenState changes on live overlay`() {
+        val app = RuntimeEnvironment.getApplication()
+        app.getSharedPreferences("ramblr", Context.MODE_PRIVATE).edit().clear().commit()
+        WhisperAccessibilityService.setMainActivityForeground(false)
+        val s = service()
+        WhisperAccessibilityService::class.java.getDeclaredMethod("showOverlay")
+            .apply { isAccessible = true }
+            .invoke(s)
+        s.startObservingRingMode()
+        val overlay = WhisperAccessibilityService::class.java.getDeclaredField("overlayView")
+            .apply { isAccessible = true }
+            .get(s) as android.view.View
+
+        assertEquals(1f, overlay.alpha, 0.001f)
+        IconHiddenState.setHidden(app, true)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(0f, overlay.alpha, 0.001f)
+
+        IconHiddenState.setHidden(app, false)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1f, overlay.alpha, 0.001f)
+    }
+
     @Test fun `in always mode the service handler ignores window events entirely`() {
         val app = RuntimeEnvironment.getApplication()
         app.getSharedPreferences("ramblr", Context.MODE_PRIVATE).edit().clear().commit()

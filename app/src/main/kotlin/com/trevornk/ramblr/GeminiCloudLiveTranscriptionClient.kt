@@ -40,6 +40,7 @@ class GeminiCloudLiveTranscriptionClient(
     },
     private val setupTimeoutMs: Long = DEFAULT_SETUP_TIMEOUT_MS,
     private val finalTimeoutMs: Long = DEFAULT_FINAL_TIMEOUT_MS,
+    internal val maxSessionMs: Long = DEFAULT_MAX_SESSION_MS,
     private val nowMs: () -> Long = System::currentTimeMillis,
     internal val allowTestEndpoint: Boolean = false,
 ) : CloudLiveTranscriptionSessionFactory {
@@ -53,7 +54,7 @@ class GeminiCloudLiveTranscriptionClient(
         require(MODEL_ID.matches(model) && model == DEFAULT_MODEL) { "Invalid Gemini Live model id" }
         require(languageCodes.all(LANGUAGE_CODE::matches)) { "Invalid language code" }
         require(customVocabulary.size <= MAX_CUSTOM_VOCABULARY && customVocabulary.none { it.isBlank() }) { "Invalid custom vocabulary" }
-        require(setupTimeoutMs > 0 && finalTimeoutMs > 0)
+        require(setupTimeoutMs > 0 && finalTimeoutMs > 0 && maxSessionMs > 0)
     }
 
     override fun create(listener: CloudLiveTranscriptionListener): CloudLiveTranscriptionSession = Session(listener)
@@ -71,6 +72,7 @@ class GeminiCloudLiveTranscriptionClient(
         private var endRequested = false
         private var setupTimeout: ScheduledFuture<*>? = null
         private var finalTimeout: ScheduledFuture<*>? = null
+        private var sessionTimeout: ScheduledFuture<*>? = null
         private var timing = CloudLiveTiming(connectStartedAtMs = nowMs())
 
         override fun connect() {
@@ -83,6 +85,11 @@ class GeminiCloudLiveTranscriptionClient(
                     setupTimeoutMs,
                     TimeUnit.MILLISECONDS,
                 )
+                sessionTimeout = scheduler.schedule(
+                    { fail(CloudLiveFailureReason.SESSION_LIMIT, "Live transcription session limit reached (9:00)") },
+                    maxSessionMs,
+                    TimeUnit.MILLISECONDS,
+                )
                 val request = Request.Builder().url(endpoint).header(API_KEY_HEADER, apiKey).build()
                 socket = httpClient.newWebSocket(request, SocketListener())
             }
@@ -91,6 +98,7 @@ class GeminiCloudLiveTranscriptionClient(
         override fun startActivity(): Boolean = enqueueControl(activityStartJson(), isStart = true)
 
         override fun sendPcm(buffer: ByteArray, length: Int): Boolean {
+            if (terminal.get()) return false
             if (length < 0 || length > buffer.size) {
                 fail(CloudLiveFailureReason.INVALID_REQUEST, "Invalid PCM length")
                 return false
@@ -280,6 +288,7 @@ class GeminiCloudLiveTranscriptionClient(
             synchronized(lock) {
                 setupTimeout?.cancel(false); setupTimeout = null
                 finalTimeout?.cancel(false); finalTimeout = null
+                sessionTimeout?.cancel(false); sessionTimeout = null
                 pending.clear(); pendingBytes = 0
                 socket?.close(NORMAL_CLOSE, "done")
             }
@@ -339,6 +348,8 @@ class GeminiCloudLiveTranscriptionClient(
         const val MAX_CUSTOM_VOCABULARY = 1000
         const val DEFAULT_SETUP_TIMEOUT_MS = 10_000L
         const val DEFAULT_FINAL_TIMEOUT_MS = 2_000L
+        /** Proactive 9:00 cutoff ahead of Gemini Live's 10-minute WebSocket limit. */
+        const val DEFAULT_MAX_SESSION_MS = 540_000L
         const val MAX_PENDING_BYTES = 2L * 1024 * 1024
         const val MAX_WEBSOCKET_QUEUE_BYTES = 4L * 1024 * 1024
         const val MAX_INBOUND_BYTES = 256 * 1024

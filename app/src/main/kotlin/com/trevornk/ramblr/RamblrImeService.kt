@@ -84,6 +84,11 @@ class RamblrImeService : InputMethodService() {
     /** Set while the picker shows the off-device consent question: what to do on "Allow". */
     private var pendingConsent: (() -> Unit)? = null
     private var lastRenderedState: ImeUiState? = null
+    private var recordingCountdownRemainingMs: Long? = null
+    private var imeDetached = false
+    private var activeHostHandle: DictationHostHandle? = null
+    @VisibleForTesting
+    internal var runtimeFactoryForTest: ((Context, RuntimeListener) -> DictationRuntime)? = null
     // #312: cleanup-style picker + quick edit keys.
     private var mainPanel: LinearLayout? = null
     private var pickerView: ImeStylePickerView? = null
@@ -125,6 +130,9 @@ class RamblrImeService : InputMethodService() {
 
     @VisibleForTesting
     internal fun lastRenderedStateForTest(): ImeUiState? = lastRenderedState
+
+    @VisibleForTesting
+    internal fun statusViewForTest(): TextView? = statusView
 
     override fun onCreate() {
         super.onCreate()
@@ -340,6 +348,7 @@ class RamblrImeService : InputMethodService() {
         // a secure-field teardown has to be undone here or the panel stays dead (#241).
         val transition = imeEditorTransition(editorPolicy.allowsDictation, panelController != null)
         if (!transition.blockSecure) {
+            imeDetached = false
             destination.editorChanged(editorGeneration, editorIdentity, currentInputConnection)
             if (transition.rearmRuntime) ensureRuntime()
             panelController?.onEditorChanged(editorGeneration, editorIdentity, currentInputConnection)
@@ -349,6 +358,7 @@ class RamblrImeService : InputMethodService() {
                 if (runtime?.currentState() != RecordingStateMachine.State.TRANSCRIBING) renderState(ImeUiState.IDLE)
             }
         } else {
+            imeDetached = true
             loseLifecycle(ImeLifecycleLoss.INPUT_FINISHED)
             destination.invalidate()
             // #284: a detached (still-transcribing) controller must learn the new editor is secure.
@@ -365,10 +375,12 @@ class RamblrImeService : InputMethodService() {
         editorPolicy = imeEditorPolicy(editorIdentity.inputType, editorIdentity.imeOptions)
         secureEditorBound = !editorPolicy.allowsDictation
         if (editorPolicy.allowsDictation) {
+            imeDetached = false
             destination.editorChanged(editorGeneration, editorIdentity, currentInputConnection)
             ensureRuntime()
             panelController?.onEditorChanged(editorGeneration, editorIdentity, currentInputConnection)
         } else {
+            imeDetached = true
             loseLifecycle(ImeLifecycleLoss.INPUT_FINISHED)
             destination.invalidate()
             panelController?.onEditorChanged(editorGeneration, editorIdentity, currentInputConnection)
@@ -379,6 +391,7 @@ class RamblrImeService : InputMethodService() {
     }
 
     override fun onFinishInput() {
+        imeDetached = true
         backspaceRepeater.release()
         closeStylePicker()
         loseLifecycle(ImeLifecycleLoss.INPUT_FINISHED)
@@ -392,6 +405,7 @@ class RamblrImeService : InputMethodService() {
     }
 
     override fun onWindowHidden() {
+        imeDetached = true
         backspaceRepeater.release()
         closeStylePicker()
         loseLifecycle(ImeLifecycleLoss.HIDDEN)
@@ -402,7 +416,10 @@ class RamblrImeService : InputMethodService() {
 
     override fun onWindowShown() {
         super.onWindowShown()
-        if (editorPolicy.allowsDictation) ensureRuntime()
+        if (editorPolicy.allowsDictation) {
+            imeDetached = false
+            ensureRuntime()
+        }
     }
 
     override fun onEvaluateFullscreenMode(): Boolean = false
@@ -438,6 +455,7 @@ class RamblrImeService : InputMethodService() {
     override fun onDestroy() {
         getSharedPreferences("ramblr", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(stylePrefsListener)
         loseLifecycle(ImeLifecycleLoss.DESTROYED)
+        unregisterActiveHost()
         unregisterNetworkCallback()
         super.onDestroy()
     }
@@ -482,17 +500,19 @@ class RamblrImeService : InputMethodService() {
                 copyToClipboard = { ClipboardUtil.copy(this, it) },
                 postNotice = { BackgroundDictationNotifications.postResult(this, it) },
             ),
+            renderCountdown = ::renderRecordingCountdown,
         )
         // #233 Phase 1: the IME is the first (and only) host to reach the merged cloud-live seam.
         // CloudLiveWiring returns null unless the user opted in, chose cloud transcription, and
         // has a Gemini key -- so the default construction is byte-for-byte the previous behavior.
         // Accessibility stays final-only in this phase and is intentionally not wired.
-        createdRuntime = DictationRuntime(
+        createdRuntime = runtimeFactoryForTest?.invoke(this, controller.listener) ?: DictationRuntime(
             this, controller.listener, cloudLiveFactory = { CloudLiveWiring.factoryOrNull(this) },
             backgroundWork = BackgroundTranscriptionService.work(this),
         )
         panelController = controller
         runtime = createdRuntime
+        registerActiveHost(createdRuntime, controller)
         controller.onEditorChanged(editorGeneration, editorIdentity, currentInputConnection)
         nativeInitialization = ProcessImeNativeRuntimeTasks.enqueueInitialization(
             local = createdRuntime::initLocalModel,
@@ -505,6 +525,58 @@ class RamblrImeService : InputMethodService() {
         )
         this.modelReadyReload = modelReadyReload
         ProcessActiveImeModelReadyReload.register(modelReadyReload)
+    }
+
+    private fun registerActiveHost(createdRuntime: DictationRuntime, controller: ImePanelController) {
+        val handle = object : DictationHostHandle {
+            override val kind = DictationHostKind.IME
+
+            override fun currentState(): RecordingStateMachine.State =
+                if (runtime === createdRuntime) createdRuntime.currentState()
+                else RecordingStateMachine.State.IDLE
+
+            override fun canStartFromIdle(): Boolean =
+                runtime === createdRuntime && editorPolicy.allowsDictation && !imeDetached
+
+            override fun requestToggleRecording(): Boolean {
+                if (runtime !== createdRuntime) return false
+                val run = {
+                    if (runtime === createdRuntime) {
+                        when (createdRuntime.currentState()) {
+                            RecordingStateMachine.State.IDLE -> {
+                                if (panelController === controller) controller.onMicTap()
+                            }
+                            RecordingStateMachine.State.RECORDING -> createdRuntime.stopAndTranscribe()
+                            RecordingStateMachine.State.TRANSCRIBING -> Unit
+                        }
+                    }
+                }
+                if (Looper.myLooper() == Looper.getMainLooper()) run() else mainHandler.post(run)
+                return true
+            }
+
+            override fun requestCancelActive(): Boolean {
+                if (runtime !== createdRuntime) return false
+                val run = {
+                    if (runtime === createdRuntime) {
+                        when (createdRuntime.currentState()) {
+                            RecordingStateMachine.State.RECORDING -> createdRuntime.cancelRecording()
+                            RecordingStateMachine.State.TRANSCRIBING -> createdRuntime.cancelTranscription()
+                            RecordingStateMachine.State.IDLE -> Unit
+                        }
+                    }
+                }
+                if (Looper.myLooper() == Looper.getMainLooper()) run() else mainHandler.post(run)
+                return true
+            }
+        }
+        activeHostHandle = handle
+        ActiveDictationHostRegistry.register(handle)
+    }
+
+    private fun unregisterActiveHost() {
+        activeHostHandle?.let(ActiveDictationHostRegistry::unregister)
+        activeHostHandle = null
     }
 
     /**
@@ -541,6 +613,8 @@ class RamblrImeService : InputMethodService() {
             this.modelReadyReload = null
             ProcessActiveImeModelReadyReload.unregister(modelReadyReload)
         }
+        unregisterActiveHost()
+        recordingCountdownRemainingMs = null
         panelController = null
         runtime = null
         controller.onLifecycleLost(reason)
@@ -556,6 +630,18 @@ class RamblrImeService : InputMethodService() {
         privateImeOptions = info?.privateImeOptions,
     )
 
+    private fun renderRecordingCountdown(remainingMs: Long?) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { renderRecordingCountdown(remainingMs) }
+            return
+        }
+        recordingCountdownRemainingMs = remainingMs
+        if (lastRenderedState != ImeUiState.RECORDING) return
+        statusView?.text = remainingMs?.let {
+            getString(R.string.ime_status_recording_countdown, RecordingCountdown.formatRemaining(it))
+        } ?: getString(R.string.ime_status_recording)
+    }
+
     private fun renderState(requested: ImeUiState) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             statusView?.post { renderState(requested) }
@@ -565,14 +651,19 @@ class RamblrImeService : InputMethodService() {
         // repaint an enabled mic over the secure-field lock.
         val state = if (secureEditorBound && requested != ImeUiState.SECURE_FIELD) ImeUiState.SECURE_FIELD else requested
         lastRenderedState = state
-        statusView?.text = getString(when (state) {
-            ImeUiState.IDLE -> R.string.ime_status_idle
-            ImeUiState.RECORDING -> R.string.ime_status_recording
-            ImeUiState.TRANSCRIBING -> R.string.ime_status_transcribing
-            ImeUiState.CLEANING -> R.string.ime_status_cleaning
-            ImeUiState.ERROR -> R.string.ime_status_error
-            ImeUiState.SECURE_FIELD -> R.string.ime_status_secure_field
-        })
+        if (state != ImeUiState.RECORDING) {
+            recordingCountdownRemainingMs = null
+        }
+        statusView?.text = when (state) {
+            ImeUiState.IDLE -> getString(R.string.ime_status_idle)
+            ImeUiState.RECORDING -> recordingCountdownRemainingMs?.let {
+                getString(R.string.ime_status_recording_countdown, RecordingCountdown.formatRemaining(it))
+            } ?: getString(R.string.ime_status_recording)
+            ImeUiState.TRANSCRIBING -> getString(R.string.ime_status_transcribing)
+            ImeUiState.CLEANING -> getString(R.string.ime_status_cleaning)
+            ImeUiState.ERROR -> getString(R.string.ime_status_error)
+            ImeUiState.SECURE_FIELD -> getString(R.string.ime_status_secure_field)
+        }
         micButton?.contentDescription = getString(when (state) {
             ImeUiState.RECORDING -> R.string.ime_mic_stop
             ImeUiState.SECURE_FIELD -> R.string.ime_status_secure_field

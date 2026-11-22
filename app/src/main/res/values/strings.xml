@@ -17,7 +17,11 @@
          TalkBack per RecordingStateMachine.State, see applyButtonAppearance in
          WhisperAccessibilityService.kt. -->
     <string name="overlay_button_idle_description">Ramblr dictation button. Double-tap to start recording.</string>
-    <string name="overlay_button_recording_description">Ramblr dictation button. Recording. Double-tap to stop and transcribe.</string>
+    <string name="overlay_button_recording_description">Ramblr dictation button. Recording. Double-tap to stop and transcribe, or hold for 3 seconds to discard.</string>
+    <string name="overlay_discard_hold_countdown">Hold to discard (%1$ds)…</string>
+    <string name="overlay_recording_countdown">Recording ends in %1$s</string>
+    <string name="recording_countdown_notification_title">Recording nearing 10 min limit</string>
+    <string name="recording_countdown_notification_text">%1$s remaining before auto-stop</string>
     <string name="overlay_button_transcribing_description">Ramblr dictation button. Transcribing. Double-tap and hold to cancel.</string>
     <string name="overlay_button_cleaning_description">Ramblr dictation button. Cleaning up. Double-tap and hold to cancel.</string>
 
@@ -25,11 +29,13 @@
          floating ring entirely. -->
     <string name="tile_label">Ramblr</string>
     <string name="tile_subtitle_recording">Recording…</string>
+    <string name="tile_subtitle_transcribing">Transcribing… tap to cancel</string>
     <string name="tile_subtitle_service_disabled">Tap to enable accessibility service</string>
     <string name="tile_subtitle_service_turned_off">Turned off — tap to turn back on</string>
     <string name="ime_name">Ramblr Voice</string>
     <string name="ime_status_idle">Ready to dictate</string>
     <string name="ime_status_recording">Recording… tap mic to stop</string>
+    <string name="ime_status_recording_countdown">Recording… %1$s left</string>
     <string name="ime_status_transcribing">Transcribing…</string>
     <string name="ime_status_cleaning">Cleaning up…</string>
     <string name="ime_status_error">Couldn’t complete dictation</string>

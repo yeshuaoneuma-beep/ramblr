@@ -19,6 +19,11 @@ enum class RingGestureOutcome {
     /** The hold outlasted the long-press time but the timer had not run yet (main thread was
      *  busy): the caller must run the long-press action now. Never a tap. */
     HOLD_DUE,
+
+    /** A staged hold (such as the 3-second hold-to-discard while recording) entered its hold
+     *  window and was released before the full timeout elapsed: abort the hold cleanly without
+     *  firing a tap or interrupting the recording. */
+    HOLD_ABORTED,
 }
 
 /** What a MOVE did to the gesture. */
@@ -65,9 +70,12 @@ class RingGestureTracker(
     private var downY = 0f
     private var downTimeMs = 0L
     private var armed = false
+    private var holdFeedbackDelayMs: Long? = null
     private var timerResolved = false
 
     var isDragging = false
+        private set
+    var holdFeedbackActive = false
         private set
     var longPressFired = false
         private set
@@ -80,9 +88,17 @@ class RingGestureTracker(
     var maxDisplacementPx = 0f
         private set
 
-    fun onDown(x: Float, y: Float, timeMs: Long, longPressArmed: Boolean) {
+    fun onDown(
+        x: Float,
+        y: Float,
+        timeMs: Long,
+        longPressArmed: Boolean,
+        holdFeedbackDelayMs: Long? = null,
+    ) {
         downX = x; downY = y; downTimeMs = timeMs
         armed = longPressArmed
+        this.holdFeedbackDelayMs = if (longPressArmed) holdFeedbackDelayMs else null
+        holdFeedbackActive = false
         timerResolved = false
         isDragging = false
         longPressFired = false
@@ -101,6 +117,18 @@ class RingGestureTracker(
         isDragging = true
         dragStartedAfterLongPress = longPressFired
         return RingMoveResult.DRAG_STARTED
+    }
+
+    /**
+     * The staged hold-feedback timer ran (e.g. entering the 3-second cancel-recording hold window).
+     * Returns true when the caller should start visual/haptic hold feedback; false when the gesture
+     * already became a drag or completed. Strict [dragSlopPx] (16 dp) remains in effect during
+     * [holdFeedbackActive]; [postLongPressSlopPx] applies only once [longPressFired] is true.
+     */
+    fun onHoldFeedbackTimer(): Boolean {
+        if (!armed || isDragging || longPressFired || timerResolved) return false
+        holdFeedbackActive = true
+        return true
     }
 
     /**
@@ -126,7 +154,12 @@ class RingGestureTracker(
         if (d > maxDisplacementPx) maxDisplacementPx = d
         if (isDragging) return RingGestureOutcome.DRAG
         if (longPressFired || (armed && timerResolved)) return RingGestureOutcome.HOLD_CONSUMED
-        if (armed && heldMs(timeMs) >= longPressTimeoutMs) return RingGestureOutcome.HOLD_DUE
+        val held = heldMs(timeMs)
+        if (armed && held >= longPressTimeoutMs) return RingGestureOutcome.HOLD_DUE
+        val feedbackDelay = holdFeedbackDelayMs
+        if (armed && (holdFeedbackActive || (feedbackDelay != null && held >= feedbackDelay))) {
+            return RingGestureOutcome.HOLD_ABORTED
+        }
         return RingGestureOutcome.TAP
     }
 
@@ -147,8 +180,14 @@ class RingGestureTracker(
          *  turn slow taps into long-presses. */
         const val MIN_LONG_PRESS_MS = 500L
 
+        /** Continuous hold time required while actively recording to discard the recording. */
+        const val RECORDING_CANCEL_HOLD_MS = 3_000L
+
         fun longPressTimeoutMs(systemLongPressMs: Int): Long =
             maxOf(MIN_LONG_PRESS_MS, systemLongPressMs.toLong())
+
+        fun recordingCancelHoldMs(systemLongPressMs: Int): Long =
+            maxOf(RECORDING_CANCEL_HOLD_MS, systemLongPressMs.toLong())
 
         fun dragSlopPx(density: Float, scaledTouchSlopPx: Int): Float =
             maxOf(DRAG_SLOP_DP * density, scaledTouchSlopPx.toFloat())

@@ -385,22 +385,10 @@ class BehaviorActivity : BaseSettingsActivity() {
         refresh()
     }
 
-    private fun ringVisibilityLabel(mode: RingVisibilityMode): String = getString(
-        when (mode) {
-            RingVisibilityMode.ALWAYS -> R.string.ring_visibility_always
-            RingVisibilityMode.KEYBOARD -> R.string.ring_visibility_keyboard
-            RingVisibilityMode.TEXT_FIELD -> R.string.ring_visibility_text_field
-        },
-    )
+    private fun ringVisibilityLabel(mode: RingVisibilityMode): String = getString(mode.labelRes)
 
     private fun ringVisibilitySummary(): String {
-        val choice = getString(
-            when (RingVisibilityMode.read(this)) {
-                RingVisibilityMode.ALWAYS -> R.string.ring_visibility_always
-                RingVisibilityMode.KEYBOARD -> R.string.ring_visibility_keyboard
-                RingVisibilityMode.TEXT_FIELD -> R.string.ring_visibility_text_field_summary
-            },
-        )
+        val choice = getString(RingVisibilityMode.read(this).summaryRes)
         return getString(R.string.ring_visibility_summary, choice)
     }
 

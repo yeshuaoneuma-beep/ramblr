@@ -121,7 +121,12 @@ class DictationRuntimeTest {
 
         /** Mirrors the real reader thread's end-of-loop handoff: claim TRANSCRIBING if nobody
          *  else has (max-duration/error paths), then report discarded from the current state. */
-        fun finishAs(pcmFile: File?, stopReason: StopReason, superseded: Boolean = false) {
+        fun finishAs(
+            pcmFile: File?,
+            stopReason: StopReason,
+            superseded: Boolean = false,
+            compressedFile: File? = null,
+        ) {
             if (RecorderHandoff.shouldClaimTranscribing(superseded)) stateMachine.tryStartTranscribing()
             val discarded = RecorderHandoff.discarded(superseded, stateMachine.current())
             onFinished!!(
@@ -130,6 +135,7 @@ class DictationRuntimeTest {
                     bytesRecorded = pcmFile?.length() ?: 0L,
                     discarded = discarded,
                     stopReason = stopReason,
+                    compressedFile = compressedFile,
                 )
             )
         }
@@ -773,11 +779,16 @@ class DictationRuntimeTest {
      * an authenticated WSS carrying the user's microphone audio stays open with no reference
      * held anywhere, one per cycle.
      */
-    private fun cloudLiveRuntime(liveFactory: FakeCloudLiveFactory, onFallback: () -> Unit = {}) {
+    private fun cloudLiveRuntime(
+        liveFactory: FakeCloudLiveFactory,
+        cloudLiveSessionCutoffMs: Long = DictationRuntime.CLOUD_LIVE_SESSION_CUTOFF_MS,
+        onFallback: () -> Unit = {},
+    ) {
         runtime = DictationRuntime(
             app, listener, leaseRegistry,
             cloudLiveFactory = { liveFactory },
             onCloudLiveBatchFallback = onFallback,
+            cloudLiveSessionCutoffMs = cloudLiveSessionCutoffMs,
         ) { cacheDir, stateMachine -> FakeRecordingEngine(cacheDir, stateMachine).also { engines += it } }
     }
 
@@ -1074,6 +1085,135 @@ class DictationRuntimeTest {
 
         assertEquals(1, fallbacks)
         assertEquals(listOf("batch rescue"), listener.delivered.map { it.text })
+    }
+
+    // --- Phase 2C: Gemini Live 9:00 cutoff & 3-second recording discard ---
+
+    @Test
+    fun `cloud live session cutoff constant matches 9 minutes`() {
+        assertEquals(540_000L, DictationRuntime.CLOUD_LIVE_SESSION_CUTOFF_MS)
+        assertEquals(GeminiCloudLiveTranscriptionClient.DEFAULT_MAX_SESSION_MS, DictationRuntime.CLOUD_LIVE_SESSION_CUTOFF_MS)
+    }
+
+    @Test
+    fun `proactive 9-minute cutoff closes live stream without stopping recording and falls back to batch with preserved pcm`() {
+        stubBatchProvider("full ten minute batch")
+        val liveFactory = FakeCloudLiveFactory()
+        var fallbacks = 0
+        cloudLiveRuntime(liveFactory, cloudLiveSessionCutoffMs = 200L) { fallbacks++ }
+        val pcm = realSizedPcm()
+
+        runtime.onTap()
+        val session = liveFactory.sessions.single()
+        engines.single().onChunk!!(byteArrayOf(1, 2, 3), 3)
+        assertEquals(1, session.pcm.size)
+
+        // Advance past the 9:00 cutoff while still recording.
+        shadowOf(Looper.getMainLooper()).idleFor(201, TimeUnit.MILLISECONDS)
+
+        assertEquals("recording must continue past the live cutoff", RecordingStateMachine.State.RECORDING, runtime.currentState())
+        assertTrue("cutoff must close the live socket cleanly", session.closes >= 1)
+        assertFalse("cutoff must not reset UI to idle", listener.events.contains("idleUi"))
+
+        // Simulate close() delivering a CANCELLED callback after SESSION_LIMIT was already recorded,
+        // and verify subsequent PCM chunks are NOT sent to the closed live session.
+        session.complete(CloudLiveTerminal.Failure(CloudLiveFailureReason.CANCELLED, "closed", CloudLiveTiming(1)))
+        idleMainLooper()
+        engines.single().onChunk!!(byteArrayOf(4, 5, 6), 3)
+        assertEquals("chunks after cutoff must not be forwarded to the closed live stream", 1, session.pcm.size)
+
+        // User stops later; preserved PCM goes straight to batch without calling endActivity().
+        runtime.onTap()
+        assertEquals("endActivity must not be called after live stream already ended", 0, session.ends)
+        engines.single().finishAs(pcm, RecordingEngine.StopReason.USER)
+        awaitDelivery()
+        awaitIdle()
+
+        assertEquals(1, fallbacks)
+        assertEquals(listOf("full ten minute batch"), listener.delivered.map { it.text })
+        assertFalse("batch pipeline consumed and deleted preserved PCM", pcm.exists())
+    }
+
+    @Test
+    fun `client-initiated SESSION_LIMIT keeps recording alive until 10-minute cap and delivers batch transcript`() {
+        stubBatchProvider("max duration rescue")
+        val liveFactory = FakeCloudLiveFactory()
+        var fallbacks = 0
+        cloudLiveRuntime(liveFactory) { fallbacks++ }
+        val pcm = realSizedPcm()
+
+        runtime.onTap()
+        val session = liveFactory.sessions.single()
+        engines.single().onChunk!!(byteArrayOf(10, 20), 2)
+        assertEquals(1, session.pcm.size)
+
+        // Client's own 9:00 timer fires SESSION_LIMIT while user is still talking.
+        session.complete(
+            CloudLiveTerminal.Failure(
+                CloudLiveFailureReason.SESSION_LIMIT,
+                "Live transcription session limit reached (9:00)",
+                CloudLiveTiming(1),
+            ),
+        )
+        idleMainLooper()
+
+        assertEquals(RecordingStateMachine.State.RECORDING, runtime.currentState())
+        engines.single().onChunk!!(byteArrayOf(30, 40), 2)
+        assertEquals("live stream tee must stop after SESSION_LIMIT", 1, session.pcm.size)
+
+        // Recording continues until the 10-minute max-duration cap fires.
+        engines.single().finishAs(pcm, RecordingEngine.StopReason.MAX_DURATION)
+        awaitDelivery()
+        awaitIdle()
+
+        assertEquals("endActivity must be skipped when live already ended at 9:00", 0, session.ends)
+        assertEquals(1, fallbacks)
+        assertEquals(listOf("max duration rescue"), listener.delivered.map { it.text })
+        assertFalse(pcm.exists())
+    }
+
+    @Test
+    fun `cancelRecording discards active recording, cancels cloud live, deletes compressed file, and releases lease`() {
+        val liveFactory = FakeCloudLiveFactory()
+        cloudLiveRuntime(liveFactory)
+
+        runtime.onTap()
+        val session = liveFactory.sessions.single()
+        val compressed = File.createTempFile("rec_", ".ogg", app.cacheDir).apply { writeBytes(byteArrayOf(1, 2, 3)) }
+
+        assertTrue(runtime.cancelRecording())
+        idleMainLooper()
+
+        assertEquals(RecordingStateMachine.State.IDLE, runtime.currentState())
+        assertEquals(1, session.cancels)
+        assertTrue(session.closes >= 1)
+        assertEquals("Recording discarded", ShadowToast.getTextOfLatestToast())
+        assertNull(runtime.pipelineTiming.consume())
+        assertTrue(listener.delivered.isEmpty())
+        assertTrue(listener.events.contains("idleUi"))
+
+        // Reader thread finishes with discarded=true and a compressed file: must clean it up too.
+        engines.single().finishAs(realSizedPcm(), RecordingEngine.StopReason.USER, superseded = true, compressedFile = compressed)
+        idleMainLooper()
+        assertFalse("discarded compressed audio must be deleted", compressed.exists())
+
+        // Session lease was released so another runtime can record immediately.
+        val contender = DictationRuntime(app, RecordingListener(), leaseRegistry) { cacheDir, stateMachine ->
+            FakeRecordingEngine(cacheDir, stateMachine)
+        }
+        contender.onTap()
+        assertEquals(RecordingStateMachine.State.RECORDING, contender.currentState())
+    }
+
+    @Test
+    fun `cancelRecording while idle or transcribing returns false and is a no-op`() {
+        assertFalse(runtime.cancelRecording())
+        assertEquals(RecordingStateMachine.State.IDLE, runtime.currentState())
+
+        runtime.onTap()
+        runtime.onTap() // TRANSCRIBING
+        assertFalse(runtime.cancelRecording())
+        assertEquals(RecordingStateMachine.State.TRANSCRIBING, runtime.currentState())
     }
 
     /** Points the batch pipeline at a MockWebServer returning [transcript], so the fallback's

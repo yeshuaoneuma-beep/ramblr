@@ -289,9 +289,11 @@ internal object BackgroundDictationNotifications {
     const val WORK_CHANNEL_ID = "background_dictation_work"
     const val RESULT_CHANNEL_ID = "background_dictation_result"
 
-    /** Distinct from IconVisibilityNotifications' 0x1C04 and ServiceRecoveryNotifications' 0x1C05. */
+    /** Distinct from IconVisibilityNotifications' 0x1C04, ServiceRecoveryNotifications' 0x1C05,
+     *  and AudioJobNotifications' 0x1C08. */
     const val ONGOING_ID = 0x1C06
     const val RESULT_ID = 0x1C07
+    const val RECORDING_COUNTDOWN_ID = 0x1C09
 
     fun ensureChannels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
@@ -381,6 +383,43 @@ internal object BackgroundDictationNotifications {
         } catch (_: SecurityException) {
         } catch (e: Exception) {
             Log.w("BgTranscription", "Couldn't post background dictation notice", e)
+        }
+    }
+
+    fun recordingCountdown(ctx: Context, remainingMs: Long): Notification {
+        val text = ctx.getString(
+            R.string.recording_countdown_notification_text,
+            RecordingCountdown.formatRemaining(remainingMs),
+        )
+        return NotificationCompat.Builder(ctx, WORK_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_mic)
+            .setContentTitle(ctx.getString(R.string.recording_countdown_notification_title))
+            .setContentText(text)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setContentIntent(contentIntent(ctx, opensHistory = false))
+            .build()
+    }
+
+    /** Ongoing low-importance countdown cue when locked or screen-off (never leaks transcript text). */
+    fun postRecordingCountdown(ctx: Context, remainingMs: Long) {
+        try {
+            ensureChannels(ctx)
+            NotificationManagerCompat.from(ctx).notify(RECORDING_COUNTDOWN_ID, recordingCountdown(ctx, remainingMs))
+        } catch (_: SecurityException) {
+        } catch (e: Exception) {
+            Log.w("BgTranscription", "Couldn't post recording countdown notice", e)
+        }
+    }
+
+    fun cancelRecordingCountdown(ctx: Context) {
+        try {
+            NotificationManagerCompat.from(ctx).cancel(RECORDING_COUNTDOWN_ID)
+        } catch (_: SecurityException) {
+        } catch (e: Exception) {
+            Log.w("BgTranscription", "Couldn't cancel recording countdown notice", e)
         }
     }
 }

@@ -167,6 +167,8 @@ internal class ImePanelController(
      *  generic "cleanup failed" notice does not hide that it was the translation. Shown only when
      *  nothing more specific was reported for the dictation. */
     private val translationFailedMessage: String = "Translation failed — inserted untranslated text",
+    /** Optional 7:00 recording countdown cue (remaining ms while recording, or null to clear). */
+    private val renderCountdown: (Long?) -> Unit = {},
 ) {
     private var active = true
     private var deliveryTerminal = false
@@ -200,6 +202,7 @@ internal class ImePanelController(
     val listener: RuntimeListener = object : RuntimeListener {
         override fun onRecordingStartRequested() {
             lastMessage = null
+            renderCountdown(null)
             if (!active || !editorPolicy.allowsDictation) return
             dictationTranslation = translationLanguage()
             editorSnapshot?.invoke()?.let { (generation, identity, connection) ->
@@ -214,10 +217,17 @@ internal class ImePanelController(
 
         override fun onRecordingStartFailed() = Unit
         override fun onRecordingStarted() { if (active) renderState(ImeUiState.RECORDING) }
-        override fun onEnterTranscribingUi() { if (active) renderState(ImeUiState.TRANSCRIBING) }
+        override fun onRecordingCountdown(remainingMs: Long) { if (active) renderCountdown(remainingMs) }
+        override fun onEnterTranscribingUi() {
+            if (active) {
+                renderCountdown(null)
+                renderState(ImeUiState.TRANSCRIBING)
+            }
+        }
         override fun onCleaningStarted() { if (active) renderState(ImeUiState.CLEANING) }
         override fun onIdleUi() {
             if (!active) return
+            renderCountdown(null)
             renderState(ImeUiState.IDLE)
             lastMessage?.let(userMessage)
         }
@@ -412,6 +422,7 @@ internal class ImePanelController(
     fun onLifecycleLost(reason: ImeLifecycleLoss) {
         @Suppress("UNUSED_VARIABLE") val lifecycleReason = reason
         if (!active) return
+        renderCountdown(null)
         active = false
         commitPending = false
         lastMessage = null

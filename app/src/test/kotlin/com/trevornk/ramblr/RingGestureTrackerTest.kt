@@ -221,4 +221,83 @@ class RingGestureTrackerTest {
         assertFalse("menu must not be dismissed by 18 px of roll", r.menuDismissed)
         assertEquals(RingGestureOutcome.HOLD_CONSUMED, outcome)
     }
+
+    // ---- Phase 2C: 3-second staged hold-to-discard while recording --------------------------
+
+    @Test fun `recording cancel hold time floors at 3000ms and honours longer system timeout`() {
+        assertEquals(3_000L, RingGestureTracker.RECORDING_CANCEL_HOLD_MS)
+        assertEquals(3_000L, RingGestureTracker.recordingCancelHoldMs(400))
+        assertEquals(3_000L, RingGestureTracker.recordingCancelHoldMs(1_500))
+        assertEquals(3_000L, RingGestureTracker.recordingCancelHoldMs(3_000))
+        assertEquals(4_500L, RingGestureTracker.recordingCancelHoldMs(4_500))
+    }
+
+    @Test fun `staged hold quick release before feedback delay is still a tap`() {
+        val t = tracker(timeout = RingGestureTracker.RECORDING_CANCEL_HOLD_MS)
+        t.onDown(1000f, 1000f, 0L, longPressArmed = true, holdFeedbackDelayMs = 500L)
+        assertEquals(RingGestureOutcome.TAP, t.upAt(350))
+        assertFalse(t.holdFeedbackActive)
+    }
+
+    @Test fun `staged hold released after feedback starts and before 3s aborts without tapping`() {
+        val t = tracker(timeout = RingGestureTracker.RECORDING_CANCEL_HOLD_MS)
+        t.onDown(1000f, 1000f, 0L, longPressArmed = true, holdFeedbackDelayMs = 500L)
+        assertTrue(t.onHoldFeedbackTimer())
+        assertTrue(t.holdFeedbackActive)
+        assertEquals(RingGestureOutcome.HOLD_ABORTED, t.upAt(2_999))
+    }
+
+    @Test fun `staged hold released past feedback delay before 3s aborts even if feedback timer was late`() {
+        val t = tracker(timeout = RingGestureTracker.RECORDING_CANCEL_HOLD_MS)
+        t.onDown(1000f, 1000f, 0L, longPressArmed = true, holdFeedbackDelayMs = 500L)
+        assertFalse(t.holdFeedbackActive)
+        assertEquals(RingGestureOutcome.HOLD_ABORTED, t.upAt(1_200))
+    }
+
+    @Test fun `staged hold reaching 3s completes as hold consumed or hold due`() {
+        val a = tracker(timeout = RingGestureTracker.RECORDING_CANCEL_HOLD_MS)
+        a.onDown(1000f, 1000f, 0L, longPressArmed = true, holdFeedbackDelayMs = 500L)
+        assertTrue(a.onHoldFeedbackTimer())
+        assertTrue(a.onLongPressTimer())
+        a.markLongPressFired()
+        assertEquals(RingGestureOutcome.HOLD_CONSUMED, a.upAt(3_100))
+
+        // Main thread stalled past 3s before timer ran: lift reports HOLD_DUE so caller still discards.
+        val b = tracker(timeout = RingGestureTracker.RECORDING_CANCEL_HOLD_MS)
+        b.onDown(1000f, 1000f, 0L, longPressArmed = true, holdFeedbackDelayMs = 500L)
+        assertEquals(RingGestureOutcome.HOLD_DUE, b.upAt(3_000))
+    }
+
+    @Test fun `active hold feedback keeps strict 16dp drag slop and drag cancels discard`() {
+        val t = tracker(timeout = RingGestureTracker.RECORDING_CANCEL_HOLD_MS)
+        t.onDown(1000f, 1000f, 0L, longPressArmed = true, holdFeedbackDelayMs = 500L)
+        assertTrue(t.onHoldFeedbackTimer())
+        // Inside dragSlopPx (36 px = 16 dp * 2.25) still holds.
+        assertEquals(RingMoveResult.HOLDING, t.moveBy(30f, 0f))
+        assertFalse(t.isDragging)
+        // Crossing 16 dp (36 px) while still inside postLongPressSlopPx (72 px) starts drag immediately.
+        assertEquals(RingMoveResult.DRAG_STARTED, t.moveBy(40f, 0f))
+        assertTrue(t.isDragging)
+        assertFalse(t.dragStartedAfterLongPress)
+        assertFalse(t.onLongPressTimer())
+        assertEquals(RingGestureOutcome.DRAG, t.upAt(3_200, 40f, 0f))
+    }
+
+    @Test fun `hold feedback timer is ignored when unarmed or already dragging and resets on new down`() {
+        val unarmed = tracker(timeout = RingGestureTracker.RECORDING_CANCEL_HOLD_MS)
+        unarmed.onDown(1000f, 1000f, 0L, longPressArmed = false, holdFeedbackDelayMs = 500L)
+        assertFalse(unarmed.onHoldFeedbackTimer())
+        assertEquals(RingGestureOutcome.TAP, unarmed.upAt(2_000))
+
+        val dragged = tracker(timeout = RingGestureTracker.RECORDING_CANCEL_HOLD_MS)
+        dragged.onDown(1000f, 1000f, 0L, longPressArmed = true, holdFeedbackDelayMs = 500L)
+        assertEquals(RingMoveResult.DRAG_STARTED, dragged.moveBy(60f, 0f))
+        assertFalse(dragged.onHoldFeedbackTimer())
+
+        // Reset on subsequent non-staged (idle) gesture leaves idle long-press behavior unchanged.
+        dragged.longPressTimeoutMs = timeoutMs
+        dragged.onDown(1000f, 1000f, 5_000L, longPressArmed = true, holdFeedbackDelayMs = null)
+        assertFalse(dragged.holdFeedbackActive)
+        assertEquals(RingGestureOutcome.TAP, dragged.upAt(5_499))
+    }
 }

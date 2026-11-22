@@ -80,6 +80,7 @@ object CloudLiveWiring {
                 apiKey = apiKey,
                 languageCodes = languageCodes,
                 customVocabulary = vocabulary,
+                maxSessionMs = GeminiCloudLiveTranscriptionClient.DEFAULT_MAX_SESSION_MS,
             )
         } catch (e: IllegalArgumentException) {
             Log.w(TAG, "Cloud-live transcription unavailable: ${e.message}")

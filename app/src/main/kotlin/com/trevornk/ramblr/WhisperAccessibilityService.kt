@@ -182,6 +182,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
          *  idle right now" without exposing the private [runtime] field itself. */
         fun currentRecordingState(): RecordingStateMachine.State? = instance?.runtime?.currentState()
 
+        internal fun activeHostHandleOrNull(): DictationHostHandle? = instance?.hostHandle
+
         /**
          * Cross-component entry point for the Quick Settings tile (#127): [RamblrQsTileService]
          * lives in its own component, not this AccessibilityService, so it can't call
@@ -245,6 +247,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
         fun setMainActivityForeground(foreground: Boolean) {
             mainActivityForeground = foreground
             instance?.let { service -> service.handler.post { service.applyOverlayVisibility() } }
+        }
+
+        /** Nudges the live overlay immediately when [RingVisibilityMode] changes in Settings. */
+        fun notifyRingVisibilityChanged() {
+            instance?.onRingVisibilityModeChanged()
         }
 
         /** See [overlayForceVisibleOverride]'s kdoc. Called by [MainActivity]'s onboarding "Try it
@@ -335,6 +342,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
 
         private const val COLOR_IDLE = 0xDD1C1C1E.toInt()
         private const val COLOR_RECORDING = 0xDDEF4444.toInt()
+        private const val COLOR_DISCARD_HOLD = 0xDDB91C1C.toInt()
+        private const val COLOR_RING_DISCARD = 0xFFFCA5A5.toInt()
         private const val COLOR_BUSY = 0xDD6B6B6B.toInt()
         private const val COLOR_FEEDBACK_BG = 0xEE1C1C1E.toInt()
         /** Warmer/brighter than [COLOR_FEEDBACK_BG] so a clipboard-fallback (#5) visually stands out
@@ -384,6 +393,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
      */
     internal val runtimeListener = object : RuntimeListener {
         override fun onRecordingStartRequested() {
+            clearRecordingCountdownUi()
             // A still-pending preview (#40) from the previous dictation shouldn't linger silently
             // while a new one starts -- resolve it the same safe way a timeout would.
             pendingPreview?.let { resolvePreview { p -> p.timeout() } }
@@ -423,10 +433,19 @@ open class WhisperAccessibilityService : AccessibilityService() {
             reapplyVisibilityModeGate()
         }
 
+        override fun onRecordingCountdown(remainingMs: Long) {
+            updateRecordingCountdownUi(remainingMs)
+        }
+
         override fun onEnterTranscribingUi() {
+            cancelPendingRingHoldRunnables()
+            clearRecordingCountdownUi()
             // #284: remember where this dictation was started, now, while the user is still there.
             captureDictationTarget()
-            handler.post { stopPulse() }
+            handler.post {
+                clearDiscardHoldFeedback(restoreRecordingUi = false)
+                stopPulse()
+            }
             setAppearance(COLOR_BUSY)
             setBusy(true)
         }
@@ -440,7 +459,13 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
 
         override fun onIdleUi() {
+            cancelPendingRingHoldRunnables()
+            clearRecordingCountdownUi()
             clearDictationTarget()
+            handler.post {
+                clearDiscardHoldFeedback(restoreRecordingUi = false)
+                stopPulse()
+            }
             setBusy(false)
             setAppearance(COLOR_IDLE)
             // Posted, not run inline: deliverText() has already posted this dictation's feedback
@@ -783,6 +808,29 @@ open class WhisperAccessibilityService : AccessibilityService() {
             this, runtimeListener, cloudLiveFactory = { CloudLiveWiring.factoryOrNull(this) },
         ).also { runtimeInstance = it }
 
+    private val hostHandle = object : DictationHostHandle {
+        override val kind = DictationHostKind.ACCESSIBILITY
+
+        override fun currentState(): RecordingStateMachine.State =
+            runtimeInstance?.currentState() ?: RecordingStateMachine.State.IDLE
+
+        override fun canStartFromIdle(): Boolean = instance === this@WhisperAccessibilityService
+
+        override fun requestToggleRecording(): Boolean = WhisperAccessibilityService.requestToggleRecording()
+
+        override fun requestCancelActive(): Boolean {
+            if (instance !== this@WhisperAccessibilityService) return false
+            handler.post {
+                when (runtimeInstance?.currentState()) {
+                    RecordingStateMachine.State.RECORDING -> runtime.cancelRecording()
+                    RecordingStateMachine.State.TRANSCRIBING -> runtime.cancelTranscription()
+                    else -> Unit
+                }
+            }
+            return true
+        }
+    }
+
     private var overlayView: FrameLayout? = null
     /** The "ES"-style badge on the ring while a translate target is set; null before the overlay exists. */
     internal var translationBadge: TextView? = null
@@ -790,6 +838,17 @@ open class WhisperAccessibilityService : AccessibilityService() {
     private var spinner: ProgressBar? = null
     /** True while the busy ring shows the cleanup phase (#294). Main thread only. */
     private var cleaningUi = false
+    /** Pending ring touch hold runnables promoted to instance fields so state transitions can cancel them. */
+    private var holdFeedbackAction: Runnable? = null
+    private var longPressAction: Runnable? = null
+    /** Visual/haptic feedback state during the 3-second hold-to-discard gesture while RECORDING. Main thread only. */
+    private var discardHoldFeedbackActive = false
+    private var discardHoldAnimator: android.animation.ValueAnimator? = null
+    private var discardHoldCountdownRunnable: Runnable? = null
+    /** 7:00 recording countdown cue state. Main thread only. */
+    private var recordingCountdownRemainingMs: Long? = null
+    private var countdownPillShowing = false
+    private var countdownNotificationPosted = false
     private var feedbackView: TextView? = null
     /** True from [showFeedback] until [hideFeedback] runs; keeps the keyboard-only gate from
      *  hiding the ring under a bubble that may still need a tap. Main thread only. */
@@ -841,6 +900,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
     private val hideFeedback = Runnable {
         val wasShowing = feedbackShowing
         feedbackShowing = false
+        countdownPillShowing = false
         setFeedbackTouchable(false)
         // alpha only, never GONE (real root cause, verified via UID/window-token-attributed
         // BLASTSyncEngine analysis on-device: this window's WindowToken is type=2032
@@ -955,6 +1015,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         DictationTextWriter.diagnostic = { Log.w(TAG, it) }
         instance = this
+        ActiveDictationHostRegistry.register(hostHandle)
         // #156 guard rail: record that this install has a working service (the signal that
         // separates "killed by the OS shortcut switch" from "never enabled") and re-arm the
         // recovery banner's dismissal for the next fresh detection.
@@ -1169,9 +1230,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
      * transition after e.g. KEYBOARD -> TEXT_FIELD.
      */
     internal fun onRingVisibilityModeChanged() {
-        ringAnchorTracker.reset()
-        ringEventSubscription.apply(RingVisibilityMode.read(this))
-        applyOverlayVisibility()
+        val apply = {
+            ringAnchorTracker.reset()
+            ringEventSubscription.apply(RingVisibilityMode.read(this))
+            applyOverlayVisibility()
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) apply() else handler.post(apply)
     }
 
     /** Subscribes to the saved mode now and to every later change (the Behavior screen just
@@ -1181,9 +1245,15 @@ open class WhisperAccessibilityService : AccessibilityService() {
         val prefs = getSharedPreferences("ramblr", MODE_PRIVATE)
         ringModePrefsListener?.let { prefs.unregisterOnSharedPreferenceChangeListener(it) }
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == RingVisibilityMode.KEY) onRingVisibilityModeChanged()
-            // The keyboard (or Settings) changed the shared "Translate to" choice: keep the badge true.
-            if (key == KeyboardTranslation.KEY_TARGET || key == KeyboardTranslation.KEY_LANGUAGES) refreshTranslationBadge()
+            when (key) {
+                RingVisibilityMode.KEY -> onRingVisibilityModeChanged()
+                IconHiddenState.KEY -> {
+                    if (Looper.myLooper() == Looper.getMainLooper()) applyOverlayVisibility()
+                    else handler.post { applyOverlayVisibility() }
+                }
+                // The keyboard (or Settings) changed the shared "Translate to" choice: keep the badge true.
+                KeyboardTranslation.KEY_TARGET, KeyboardTranslation.KEY_LANGUAGES -> refreshTranslationBadge()
+            }
         }
         ringModePrefsListener = listener
         prefs.registerOnSharedPreferenceChangeListener(listener)
@@ -1202,7 +1272,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        instance = null
+        ActiveDictationHostRegistry.unregister(hostHandle)
+        if (instance === this) instance = null
         ringModePrefsListener?.let {
             getSharedPreferences("ramblr", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(it)
         }
@@ -1249,6 +1320,9 @@ open class WhisperAccessibilityService : AccessibilityService() {
         pendingPreview = null
         pendingPreviewTarget?.node?.recycle()
         pendingPreviewTarget = null
+        cancelPendingRingHoldRunnables()
+        clearRecordingCountdownUi()
+        clearDiscardHoldFeedback(restoreRecordingUi = false)
         dismissStyleMenu()
         removeOverlay()
         super.onDestroy()
@@ -1389,21 +1463,35 @@ open class WhisperAccessibilityService : AccessibilityService() {
             longPressTimeoutMs = RingGestureTracker.longPressTimeoutMs(ViewConfiguration.getLongPressTimeout()),
         )
         // Long-press behavior is entirely state-driven -- see overlayLongPressActionFor's doc for
-        // the full state -> action map (cancel while TRANSCRIBING, undo while IDLE with a pending
-        // injection (#27), or the #53 style/cleanup menu in the one remaining reachable state:
-        // IDLE with nothing pending). RECORDING never arms the timer at all, exactly as before.
+        // the full state -> action map (3-second hold to discard while RECORDING, cancel while
+        // TRANSCRIBING, undo while IDLE with a pending injection (#27), or the #53 style/cleanup
+        // menu when IDLE with nothing pending).
         // The "Long-press cancels and undoes" setting (#361) is read fresh at touch-down and again
         // when the timer fires, so a Settings change applies to the very next touch.
         //
         // Set only when this gesture's long-press actually opened the style menu (#57) -- lets
-        // a hold-then-drag single out "the menu I just opened" from cancel-transcription/undo
-        // already having fired, neither of which is a persistent overlay that needs dismissing.
+        // a hold-then-drag single out "the menu I just opened" from cancel/undo already having
+        // fired, neither of which is a persistent overlay that needs dismissing.
         var styleMenuOpenedByLongPress = false
+        // Pending action captured at ACTION_DOWN so a 3-second recording-discard hold cannot
+        // accidentally misfire as another state's action if recording auto-stops mid-hold.
+        var downPendingAction = OverlayLongPressAction.NONE
         // Set when ACTION_DOWN consumed this gesture as a peek-restore tap (Feature A) -- the rest
         // of the gesture must then no-op instead of falling through to onTap()/drag-snap using
         // tracker state that was never updated for this gesture.
         var consumedByPeekRestore = false
-        val longPressAction = Runnable {
+        val holdFeedback = Runnable {
+            if (downPendingAction != OverlayLongPressAction.CANCEL_RECORDING) return@Runnable
+            if (runtime.currentState() != RecordingStateMachine.State.RECORDING) return@Runnable
+            if (!gesture.onHoldFeedbackTimer()) return@Runnable
+            val feedbackDelay = overlayHoldFeedbackDelayMs(
+                downPendingAction,
+                ViewConfiguration.getLongPressTimeout(),
+            ) ?: 0L
+            val remainingMs = (gesture.longPressTimeoutMs - feedbackDelay).coerceAtLeast(1L)
+            beginDiscardHoldFeedback(remainingMs)
+        }
+        val longPress = Runnable {
             val action = overlayLongPressActionFor(
                 runtime.currentState(),
                 hasPendingInjection = pendingInjection != null,
@@ -1412,16 +1500,28 @@ open class WhisperAccessibilityService : AccessibilityService() {
             // Drag wins (#57): a hold that already became a drag never fires a long-press. Either
             // way the touch can no longer end as a tap (#322).
             if (!gesture.onLongPressTimer()) return@Runnable
+            if (downPendingAction == OverlayLongPressAction.CANCEL_RECORDING &&
+                action != OverlayLongPressAction.CANCEL_RECORDING) {
+                clearDiscardHoldFeedback(restoreRecordingUi = false)
+                return@Runnable
+            }
             if (action == OverlayLongPressAction.NONE) return@Runnable
             gesture.markLongPressFired()
             armIdlePeekTimer()
             when (action) {
+                OverlayLongPressAction.CANCEL_RECORDING -> {
+                    clearDiscardHoldFeedback(restoreRecordingUi = false)
+                    overlay.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
+                    cancelRecording()
+                }
                 OverlayLongPressAction.CANCEL_TRANSCRIPTION -> cancelTranscription()
                 OverlayLongPressAction.UNDO_INJECTION -> undoLastInjection()
                 OverlayLongPressAction.SHOW_STYLE_MENU -> { showStyleMenu(); styleMenuOpenedByLongPress = true }
                 OverlayLongPressAction.NONE -> Unit
             }
         }
+        holdFeedbackAction = holdFeedback
+        longPressAction = longPress
 
         // A drag finished (or was cancelled by the system): settle the ring on the nearest edge.
         fun settleRingAfterDrag(v: View) {
@@ -1487,20 +1587,34 @@ open class WhisperAccessibilityService : AccessibilityService() {
                         hasPendingInjection = pendingInjection != null,
                         cancelAndUndoEnabled = LongPressCancelUndoToggle.isEnabled(this),
                     )
+                    downPendingAction = pendingAction
                     val armed = pendingAction != OverlayLongPressAction.NONE
                     // Honour a longer system long-press delay (accessibility) but never shorten
-                    // below RingGestureTracker.MIN_LONG_PRESS_MS; re-read every touch so a settings change applies
-                    // immediately.
-                    gesture.longPressTimeoutMs = RingGestureTracker.longPressTimeoutMs(ViewConfiguration.getLongPressTimeout())
-                    gesture.onDown(ev.rawX, ev.rawY, ev.eventTime, longPressArmed = armed)
-                    if (armed) handler.postDelayed(longPressAction, gesture.longPressTimeoutMs)
+                    // below RingGestureTracker.MIN_LONG_PRESS_MS (or RECORDING_CANCEL_HOLD_MS for
+                    // active recording discard); re-read every touch so settings apply immediately.
+                    val systemLongPressMs = ViewConfiguration.getLongPressTimeout()
+                    val feedbackDelayMs = overlayHoldFeedbackDelayMs(pendingAction, systemLongPressMs)
+                    gesture.longPressTimeoutMs = overlayLongPressTimeoutMs(pendingAction, systemLongPressMs)
+                    gesture.onDown(
+                        ev.rawX,
+                        ev.rawY,
+                        ev.eventTime,
+                        longPressArmed = armed,
+                        holdFeedbackDelayMs = feedbackDelayMs,
+                    )
+                    handler.removeCallbacks(holdFeedback)
+                    handler.removeCallbacks(longPress)
+                    if (feedbackDelayMs != null) handler.postDelayed(holdFeedback, feedbackDelayMs)
+                    if (armed) handler.postDelayed(longPress, gesture.longPressTimeoutMs)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (consumedByPeekRestore) return@setOnTouchListener true
                     val move = gesture.onMove(ev.rawX, ev.rawY)
                     if (move == RingMoveResult.DRAG_STARTED) {
-                        handler.removeCallbacks(longPressAction)
+                        handler.removeCallbacks(holdFeedback)
+                        handler.removeCallbacks(longPress)
+                        clearDiscardHoldFeedback(restoreRecordingUi = true)
                         // A SingleTapRestoreToggle restore may still be animating the window; the
                         // finger now owns it.
                         peekAnimator?.cancel()
@@ -1525,14 +1639,15 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    handler.removeCallbacks(longPressAction)
+                    handler.removeCallbacks(holdFeedback)
+                    handler.removeCallbacks(longPress)
                     armIdlePeekTimer()
                     if (consumedByPeekRestore) return@setOnTouchListener true
                     val outcome = gesture.onUp(ev.rawX, ev.rawY, ev.eventTime)
                     val stateAtUp = runtime.currentState()
                     // The hold outlasted the long-press time but the main thread hadn't run the
                     // timer yet: run the long-press now rather than mis-reading the lift as a tap.
-                    if (outcome == RingGestureOutcome.HOLD_DUE) longPressAction.run()
+                    if (outcome == RingGestureOutcome.HOLD_DUE) longPress.run()
                     // #322: the missing UP line is why a long-press that recorded was undiagnosable.
                     Log.i(
                         TAG,
@@ -1542,14 +1657,29 @@ open class WhisperAccessibilityService : AccessibilityService() {
                             "max=${gesture.maxDisplacementPx.toInt()}px longPressFired=${gesture.longPressFired} state=$stateAtUp"
                     )
                     when (outcome) {
-                        RingGestureOutcome.TAP -> onTap()
-                        RingGestureOutcome.DRAG -> settleRingAfterDrag(v)
-                        RingGestureOutcome.HOLD_CONSUMED, RingGestureOutcome.HOLD_DUE -> Unit
+                        RingGestureOutcome.TAP -> {
+                            clearDiscardHoldFeedback(restoreRecordingUi = false)
+                            onTap()
+                        }
+                        RingGestureOutcome.DRAG -> {
+                            clearDiscardHoldFeedback(restoreRecordingUi = true)
+                            settleRingAfterDrag(v)
+                        }
+                        RingGestureOutcome.HOLD_ABORTED -> {
+                            // Released before the 3-second cancel hold elapsed: abort cleanly and
+                            // leave recording completely uninterrupted.
+                            clearDiscardHoldFeedback(restoreRecordingUi = true)
+                        }
+                        RingGestureOutcome.HOLD_CONSUMED, RingGestureOutcome.HOLD_DUE -> {
+                            clearDiscardHoldFeedback(restoreRecordingUi = false)
+                        }
                     }
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    handler.removeCallbacks(longPressAction)
+                    handler.removeCallbacks(holdFeedback)
+                    handler.removeCallbacks(longPress)
+                    clearDiscardHoldFeedback(restoreRecordingUi = true)
                     if (!consumedByPeekRestore) {
                         val wasDragging = gesture.onCancel()
                         Log.i(TAG, "Ring touch CANCEL: dragging=$wasDragging max=${gesture.maxDisplacementPx.toInt()}px")
@@ -1841,10 +1971,15 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // "hidden" overlay is alpha=0 (invisible) + non-touchable (can't be interacted with),
         // preserving the exact same keyguard/hide-icon guarantees as the old GONE state.
         overlayView?.alpha = if (visible) 1f else 0f
+        val activeCountdown = recordingCountdownRemainingMs != null &&
+            (runtimeInstance == null || runtimeInstance?.isRecording() == true)
+        val keepCountdownPill = activeCountdown &&
+            RecordingCountdown.accessibilitySurface(keyguardLocked, screenOff) == RecordingCountdownSurface.OVERLAY_PILL
         if (!visible) {
-            handler.post(hideFeedback)
+            if (!keepCountdownPill) handler.post(hideFeedback)
             dismissStyleMenu()
         }
+        reconcileRecordingCountdownSurface(keyguardLocked, screenOff)
     }
 
     /** Whether an on-screen keyboard window is currently showing, for [RingVisibilityMode].
@@ -2155,6 +2290,9 @@ open class WhisperAccessibilityService : AccessibilityService() {
         pendingPostPeekAction = null
         peekAnimator?.cancel()
         peekAnimator = null
+        cancelPendingRingHoldRunnables()
+        holdFeedbackAction = null
+        longPressAction = null
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         // #260: removeOverlay() is now also the unwind path for a failed attach in showOverlay(),
         // so a throw here would defeat that recovery. removeView throws IllegalArgumentException
@@ -2406,6 +2544,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
             view.alpha = 0f
             view.animate().alpha(1f).setDuration(120).start()
             handler.postDelayed(hideFeedback, durationMs)
+            countdownPillShowing = false
             feedbackShowing = true
             // A bubble that appears while the keyboard-only gate has the ring hidden (e.g. the
             // clipboard fallback, where no field and so no keyboard is up) brings the ring back
@@ -3128,6 +3267,179 @@ open class WhisperAccessibilityService : AccessibilityService() {
             return
         }
         runtime.onTap()
+    }
+
+    /** Visual + haptic feedback during the 3-second hold-to-discard gesture while RECORDING. */
+    private fun beginDiscardHoldFeedback(remainingMs: Long) {
+        clearDiscardHoldFeedback(restoreRecordingUi = false)
+        discardHoldFeedbackActive = true
+        overlayView?.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        stopPulse()
+        applyButtonAppearance(COLOR_DISCARD_HOLD)
+        spinner?.indeterminateTintList = ColorStateList.valueOf(COLOR_RING_DISCARD)
+        spinner?.visibility = View.VISIBLE
+        val btn = button
+        if (btn != null) {
+            if (isReducedMotionEnabled()) {
+                btn.scaleX = 0.92f
+                btn.scaleY = 0.92f
+            } else {
+                discardHoldAnimator = android.animation.ValueAnimator.ofFloat(1f, 0.86f).apply {
+                    duration = remainingMs
+                    addUpdateListener { anim ->
+                        val scale = anim.animatedValue as Float
+                        btn.scaleX = scale
+                        btn.scaleY = scale
+                    }
+                    start()
+                }
+            }
+        }
+        val endAtMs = android.os.SystemClock.uptimeMillis() + remainingMs
+        val countdown = object : Runnable {
+            override fun run() {
+                if (!discardHoldFeedbackActive) return
+                val leftMs = (endAtMs - android.os.SystemClock.uptimeMillis()).coerceAtLeast(1L)
+                val secondsLeft = ((leftMs + 999L) / 1000L).toInt().coerceAtLeast(1)
+                showFeedback(
+                    getString(R.string.overlay_discard_hold_countdown, secondsLeft),
+                    durationMs = leftMs + 250L,
+                    touchable = false,
+                    isFallback = true,
+                )
+                if (leftMs > 1000L) {
+                    val nextDelay = ((leftMs - 1L) % 1000L) + 1L
+                    handler.postDelayed(this, nextDelay)
+                }
+            }
+        }
+        discardHoldCountdownRunnable = countdown
+        countdown.run()
+    }
+
+    /** Clears active hold-to-discard visual feedback; restores recording pulse if still recording. */
+    private fun clearDiscardHoldFeedback(restoreRecordingUi: Boolean) {
+        discardHoldAnimator?.cancel()
+        discardHoldAnimator = null
+        discardHoldCountdownRunnable?.let(handler::removeCallbacks)
+        discardHoldCountdownRunnable = null
+        button?.scaleX = 1f
+        button?.scaleY = 1f
+        if (!discardHoldFeedbackActive) return
+        discardHoldFeedbackActive = false
+        spinner?.visibility = View.GONE
+        spinner?.indeterminateTintList = ColorStateList.valueOf(COLOR_RING)
+        handler.removeCallbacks(hideFeedback)
+        hideFeedback.run()
+        if (restoreRecordingUi && runtimeInstance?.isRecording() == true) {
+            applyButtonAppearance(COLOR_RECORDING)
+            startPulse()
+            recordingCountdownRemainingMs?.let { renderRecordingCountdownUi(it) }
+        }
+    }
+
+    private fun cancelPendingRingHoldRunnables() {
+        holdFeedbackAction?.let(handler::removeCallbacks)
+        longPressAction?.let(handler::removeCallbacks)
+    }
+
+    private fun updateRecordingCountdownUi(remainingMs: Long) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { updateRecordingCountdownUi(remainingMs) }
+            return
+        }
+        if (runtimeInstance != null && runtimeInstance?.isRecording() != true) {
+            clearRecordingCountdownUi()
+            return
+        }
+        recordingCountdownRemainingMs = remainingMs
+        renderRecordingCountdownUi(remainingMs)
+    }
+
+    private fun renderRecordingCountdownUi(
+        remainingMs: Long,
+        keyguardLocked: Boolean = isKeyguardLocked(),
+        screenOff: Boolean = isScreenOff(),
+    ) {
+        when (RecordingCountdown.accessibilitySurface(keyguardLocked, screenOff)) {
+            RecordingCountdownSurface.OVERLAY_PILL -> {
+                if (countdownNotificationPosted) {
+                    countdownNotificationPosted = false
+                    BackgroundDictationNotifications.cancelRecordingCountdown(this)
+                }
+                if (discardHoldFeedbackActive) return
+                showCountdownPill(
+                    getString(
+                        R.string.overlay_recording_countdown,
+                        RecordingCountdown.formatRemaining(remainingMs),
+                    )
+                )
+            }
+            RecordingCountdownSurface.LOCKSCREEN_NOTIFICATION -> {
+                hideCountdownPillImmediately()
+                countdownNotificationPosted = true
+                BackgroundDictationNotifications.postRecordingCountdown(this, remainingMs)
+            }
+        }
+    }
+
+    private fun reconcileRecordingCountdownSurface(keyguardLocked: Boolean, screenOff: Boolean) {
+        val remaining = recordingCountdownRemainingMs
+        val recording = runtimeInstance == null || runtimeInstance?.isRecording() == true
+        if (remaining != null && recording) {
+            renderRecordingCountdownUi(remaining, keyguardLocked, screenOff)
+        } else if (!keyguardLocked && !screenOff && countdownNotificationPosted) {
+            countdownNotificationPosted = false
+            BackgroundDictationNotifications.cancelRecordingCountdown(this)
+        }
+    }
+
+    private fun showCountdownPill(text: String) {
+        if (!feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff())) return
+        val view = feedbackView ?: return
+        val bubbleParams = layoutParams ?: return
+        val feedbackParams = feedbackLayoutParams ?: return
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        handler.removeCallbacks(hideFeedback)
+        view.text = text
+        view.background = pill(COLOR_FEEDBACK_BG)
+        setFeedbackTouchable(false)
+        positionFeedback(feedbackParams, bubbleParams, view.height)
+        wm.updateViewLayout(view, feedbackParams)
+        view.post {
+            if (feedbackView === view && countdownPillShowing) {
+                positionFeedback(feedbackParams, bubbleParams, view.height)
+                wm.updateViewLayout(view, feedbackParams)
+            }
+        }
+        view.animate().cancel()
+        view.visibility = View.VISIBLE
+        view.alpha = 1f
+        countdownPillShowing = true
+    }
+
+    private fun hideCountdownPillImmediately() {
+        countdownPillShowing = false
+        handler.removeCallbacks(hideFeedback)
+        setFeedbackTouchable(false)
+        feedbackView?.let {
+            it.animate().cancel()
+            it.visibility = View.VISIBLE
+            it.alpha = 0f
+        }
+    }
+
+    private fun clearRecordingCountdownUi() {
+        recordingCountdownRemainingMs = null
+        if (countdownPillShowing) hideCountdownPillImmediately()
+        countdownNotificationPosted = false
+        BackgroundDictationNotifications.cancelRecordingCountdown(this)
+    }
+
+    /** 3-second hold while RECORDING: discard the active recording without transcribing. */
+    private fun cancelRecording() {
+        runtime.cancelRecording()
     }
 
     /** Long-press while TRANSCRIBING (see overlay.setOnTouchListener): abort the in-flight call and return to idle. */
