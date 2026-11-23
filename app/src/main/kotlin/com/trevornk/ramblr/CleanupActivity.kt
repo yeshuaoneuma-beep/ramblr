@@ -301,6 +301,7 @@ class CleanupActivity : BaseSettingsActivity() {
         cloudCleanupEnabled = CloudFeatureToggle.cleanupEnabled(this),
         allowLocalFallback = DictationModeToggle.allowLocalFallback(this),
         isConfigured = { ProviderCredentialStore.isConfiguredOrLegacy(this, it) },
+        localAvailable = ModelDownloader.localCleanupModelFile(this, LocalCleanupProvider.selectedModel(this)) != null,
     )
 
     /** Applies a change to the local/cleanup toggles, inserting the one-time consent dialog from

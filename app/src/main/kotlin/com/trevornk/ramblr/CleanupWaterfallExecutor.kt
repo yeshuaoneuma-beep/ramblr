@@ -528,8 +528,10 @@ object RealCleanupHttpTransport : CleanupHttpTransport {
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 cancelHolder.clear(call)
-                if (call.isCanceled()) {
+                if (call.isCanceled() && cancelHolder.isCancelled) {
                     callback(CleanupHttpOutcome.Cancelled)
+                } else if (call.isCanceled()) {
+                    callback(CleanupHttpOutcome.ConnectionFailure(normalizedTimeoutError(e)))
                 } else {
                     callback(CleanupHttpOutcome.ConnectionFailure(e.message))
                 }
@@ -550,11 +552,22 @@ object RealCleanupHttpTransport : CleanupHttpTransport {
                             callback(CleanupHttpOutcome.HttpError(response.code, responseBody, retryAfterMs = retryAfterMs))
                         }
                     },
-                    onFailure = { e -> callback(CleanupHttpOutcome.ConnectionFailure(e.message)) },
+                    onFailure = { e ->
+                        if (cancelHolder.isCancelled || (call.isCanceled() && cancelHolder.isCancelled)) {
+                            callback(CleanupHttpOutcome.Cancelled)
+                        } else if (call.isCanceled()) {
+                            callback(CleanupHttpOutcome.ConnectionFailure(normalizedTimeoutError(e)))
+                        } else {
+                            callback(CleanupHttpOutcome.ConnectionFailure(e.message))
+                        }
+                    },
                 )
             }
         })
     }
+
+    private fun normalizedTimeoutError(e: Throwable): String =
+        e.message?.takeIf { it.isNotBlank() && !it.equals("Canceled", ignoreCase = true) } ?: "timeout"
 }
 
 /**
@@ -652,6 +665,8 @@ object CleanupWaterfallExecutor {
         busyRetryMaxRetries: Int = CLEANUP_BUSY_RETRY_MAX_RETRIES,
         busyRetryDelayMs: Long = CLEANUP_BUSY_RETRY_DELAY_MS,
         scheduleRetry: (Long, () -> Unit) -> Unit = ::defaultScheduleCleanupRetry,
+        onStageStatus: (String) -> Unit = {},
+        onStepFailure: ((CleanupStep, Int?, String) -> Unit)? = null,
         callback: (PostProcessor.Result) -> Unit,
     ) {
         val steps = waterfall.steps
@@ -686,7 +701,27 @@ object CleanupWaterfallExecutor {
                 step.credentialSlot()?.let(credentialLookup) ?: ""
             }
 
-        fun attempt(index: Int, lastFailure: String?) {
+        fun groupLabel(group: CleanupStepGroup): String = when (group) {
+            CleanupStepGroup.OPENAI_DIRECT -> "OpenAI"
+            CleanupStepGroup.GEMINI_DIRECT -> "Gemini"
+            CleanupStepGroup.ANTHROPIC_DIRECT -> "Anthropic"
+            CleanupStepGroup.OMNIROUTE -> "OmniRoute"
+            CleanupStepGroup.LOCAL_LLM -> "on-device"
+        }
+
+        fun emitFailoverStatus(previousGroup: CleanupStepGroup?, nextGroup: CleanupStepGroup) {
+            if (previousGroup == null) return
+            val status = when {
+                nextGroup == CleanupStepGroup.LOCAL_LLM && previousGroup != CleanupStepGroup.LOCAL_LLM ->
+                    "Cloud unavailable — trying on-device…"
+                previousGroup != nextGroup ->
+                    "${groupLabel(previousGroup)} failed — trying ${groupLabel(nextGroup)}…"
+                else -> "Cleanup retrying…"
+            }
+            onStageStatus(status)
+        }
+
+        fun attempt(index: Int, lastFailure: String?, previousFailedGroup: CleanupStepGroup? = null) {
             if (index >= steps.size) {
                 // Carry the last step's failure detail (which now includes the provider's own error
                 // message, see toStepOutcome) into the final result, so an all-steps-failed outcome
@@ -705,12 +740,14 @@ object CleanupWaterfallExecutor {
 
             val step = steps[index]
             val stepDeadlineAtMs: Long
+            var lastHttpCode: Int? = null
+            var lastRawHttpErrorBody: String? = null
             val stepTransport: CleanupHttpTransport
             if (step.group != CleanupStepGroup.LOCAL_LLM) {
                 if (cloudProvidersAttempted >= MAX_CLOUD_CLEANUP_PROVIDERS) {
                     val localIndex = nextLocalStepIndex(index)
                     if (localIndex != null) {
-                        attempt(localIndex, lastFailure)
+                        attempt(localIndex, lastFailure, previousFailedGroup)
                     } else {
                         val message = lastFailure?.let { "All cleanup steps failed: $it" } ?: "All cleanup steps failed"
                         callback(PostProcessor.Result(null, message))
@@ -722,25 +759,38 @@ object CleanupWaterfallExecutor {
                     val localIndex = nextLocalStepIndex(index)
                     if (localIndex != null) {
                         // Local Cleanup has its own independent budget starting at 0ms consumed.
-                        attempt(localIndex, lastFailure ?: "Cloud cleanup exceeded time budget")
+                        attempt(localIndex, lastFailure ?: "Cloud cleanup exceeded time budget", previousFailedGroup ?: step.group)
                     } else {
                         callback(PostProcessor.Result(null, "Cleanup waterfall exceeded time budget"))
                     }
                     return
                 }
-                if (resolveCredential(step).isNotBlank()) {
+                val hasKey = resolveCredential(step).isNotBlank()
+                if (hasKey) {
+                    emitFailoverStatus(previousFailedGroup, step.group)
                     cloudProvidersAttempted++
                 }
                 stepDeadlineAtMs = minOf(cloudDeadlineAtMs, now + CLOUD_CLEANUP_PER_PROVIDER_CAP_MS)
-                stepTransport = withBusyRetry(
+                val busyRetryingTransport = withBusyRetry(
                     transport = transport,
                     deadlineAtMs = stepDeadlineAtMs,
                     nowMs = nowMs,
                     maxRetries = busyRetryMaxRetries,
                     delayMs = busyRetryDelayMs,
                     scheduleRetry = scheduleRetry,
+                    onRetry = { onStageStatus("Cleanup retrying…") },
                 )
+                stepTransport = CleanupHttpTransport { url, headers, jsonBody, timeouts, ch, cb ->
+                    busyRetryingTransport.send(url, headers, jsonBody, timeouts, ch) { httpOutcome ->
+                        if (httpOutcome is CleanupHttpOutcome.HttpError) {
+                            lastHttpCode = httpOutcome.code
+                            lastRawHttpErrorBody = httpOutcome.body
+                        }
+                        cb(httpOutcome)
+                    }
+                }
             } else {
+                emitFailoverStatus(previousFailedGroup, step.group)
                 stepDeadlineAtMs = cloudDeadlineAtMs
                 stepTransport = transport
             }
@@ -759,17 +809,25 @@ object CleanupWaterfallExecutor {
                         callback(PostProcessor.Result(outcome.text, null, outcome.partial, outcome.sections))
                     }
                     is CleanupStepOutcome.Rejected -> {
-                        // Normalized to StepFailed above.
-                        attempt(index + 1, "Cloud cleanup output rejected (${outcome.reason.name})")
+                        val msg = "Cloud cleanup output rejected (${outcome.reason.name})"
+                        onStepFailure?.invoke(step, lastHttpCode, msg)
+                        attempt(index + 1, msg, step.group)
                     }
-                    is CleanupStepOutcome.StepFailed -> attempt(index + 1, outcome.message)
-                    is CleanupStepOutcome.ConnectionFailed -> attempt(nextGroupStart(index), outcome.message)
+                    is CleanupStepOutcome.StepFailed -> {
+                        val rawDetail = lastRawHttpErrorBody?.takeIf { it.isNotBlank() } ?: outcome.message ?: "step failed"
+                        onStepFailure?.invoke(step, lastHttpCode, rawDetail)
+                        attempt(index + 1, outcome.message, step.group)
+                    }
+                    is CleanupStepOutcome.ConnectionFailed -> {
+                        onStepFailure?.invoke(step, null, outcome.message ?: "connection failed")
+                        attempt(nextGroupStart(index), outcome.message, step.group)
+                    }
                     is CleanupStepOutcome.Cancelled -> callback(PostProcessor.Result(null, "Cleanup cancelled"))
                 }
             }
         }
 
-        attempt(startIndex, null)
+        attempt(startIndex, null, null)
     }
 
     /** Applies [CloudCleanupFidelityGuard] to a cloud step's successful output (never LOCAL_LLM). */
@@ -961,6 +1019,9 @@ object CleanupWaterfallExecutor {
         // Shared with the other pieces of this job: not restarted at the first-chunk allowance.
         val budget = pace.budgetFor(modelPath, startedAtMs)
         val texts = ArrayList<String>(chunks.size)
+        var cleanedCount = 0
+        var consecutiveTimeouts = 0
+        var lastFailure: String? = null
         for ((index, chunk) in chunks.withIndex()) {
             if (cancelHolder.isCancelled) return CleanupStepOutcome.Cancelled
             val remainingMs = stepDeadlineAtMs - nowMs()
@@ -970,13 +1031,23 @@ object CleanupWaterfallExecutor {
             ) {
                 val reason = "step budget of ${stepBudgetMs}ms cannot fit chunk ${index + 1}/${chunks.size} " +
                     "(${remainingMs}ms left, ~${expectedMs ?: "?"}ms needed)"
+                if (cleanedCount == 0) {
+                    runCatching {
+                        android.util.Log.i(
+                            "CleanupWaterfallExecutor",
+                            "Chunked local cleanup failed at chunk ${index + 1}/${chunks.size} in ${nowMs() - startedAtMs}ms ($reason)",
+                        )
+                    }
+                    return CleanupStepOutcome.StepFailed(reason)
+                }
+                for (rawIdx in index until chunks.size) texts += chunks[rawIdx].text
                 runCatching {
                     android.util.Log.i(
                         "CleanupWaterfallExecutor",
-                        "Chunked local cleanup aborted all-or-nothing at chunk ${index + 1}/${chunks.size} in ${nowMs() - startedAtMs}ms ($reason)",
+                        "Chunked local cleanup delivering ${chunks.size - index} remaining chunk(s) raw at ${nowMs() - startedAtMs}ms ($reason)",
                     )
                 }
-                return CleanupStepOutcome.StepFailed(reason)
+                break
             }
             val chunkStartedAtMs = nowMs()
             val allowedMs = minOf(budget.budgetMs(chunk.text.length), stepDeadlineAtMs - chunkStartedAtMs)
@@ -986,36 +1057,65 @@ object CleanupWaterfallExecutor {
             )
             val tookMs = nowMs() - chunkStartedAtMs
             pace.touch(modelPath, nowMs())
-            when (outcome) {
-                is CleanupStepOutcome.Cancelled -> return outcome
-                is CleanupStepOutcome.Success -> {
-                    texts += outcome.text
-                    budget.recordCompleted(chunk.text.length, tookMs)
-                    logChunk(index, chunks.size, chunk.text.length, outcome.text.length, tookMs, "cleaned", allowedMs)
+            if (cancelHolder.isCancelled || outcome is CleanupStepOutcome.Cancelled) {
+                return CleanupStepOutcome.Cancelled
+            }
+            if (outcome is CleanupStepOutcome.Success) {
+                consecutiveTimeouts = 0
+                cleanedCount++
+                texts += outcome.text
+                budget.recordCompleted(chunk.text.length, tookMs)
+                logChunk(index, chunks.size, chunk.text.length, outcome.text.length, tookMs, "cleaned", allowedMs)
+            } else {
+                val message = when (outcome) {
+                    is CleanupStepOutcome.StepFailed -> outcome.message
+                    is CleanupStepOutcome.ConnectionFailed -> outcome.message
+                    is CleanupStepOutcome.Rejected -> "Local cleanup output rejected (${outcome.reason.name})"
+                    else -> null
                 }
-                else -> {
-                    val message = when (outcome) {
-                        is CleanupStepOutcome.StepFailed -> outcome.message
-                        is CleanupStepOutcome.ConnectionFailed -> outcome.message
-                        is CleanupStepOutcome.Rejected -> "Local cleanup output rejected (${outcome.reason.name})"
-                        else -> null
-                    }
+                val chunkError = message ?: "Local cleanup failed on chunk ${index + 1}/${chunks.size}"
+                lastFailure = chunkError
+                texts += chunk.text
+                if (isTimeoutMessage(message)) {
                     // A timeout is evidence about the device (it ran at least this long); a validator
                     // rejection is not about speed and is left out of the estimate.
-                    if (isTimeoutMessage(message)) budget.recordTimedOut(chunk.text.length, allowedMs)
-                    logChunk(index, chunks.size, chunk.text.length, chunk.text.length, tookMs, "abort: ${message ?: "failed"}", allowedMs)
-                    // All-or-nothing integrity: never return a partial mix of cleaned and raw chunks.
-                    return CleanupStepOutcome.StepFailed(message ?: "Local cleanup failed on chunk ${index + 1}/${chunks.size}")
+                    budget.recordTimedOut(chunk.text.length, allowedMs)
+                    consecutiveTimeouts++
+                    logChunk(index, chunks.size, chunk.text.length, chunk.text.length, tookMs, "timeout fallback: $chunkError", allowedMs)
+                    if (consecutiveTimeouts >= LOCAL_CHUNK_MAX_CONSECUTIVE_TIMEOUTS) {
+                        if (cleanedCount == 0) {
+                            return CleanupStepOutcome.StepFailed(chunkError)
+                        }
+                        for (rawIdx in index + 1 until chunks.size) texts += chunks[rawIdx].text
+                        runCatching {
+                            android.util.Log.i(
+                                "CleanupWaterfallExecutor",
+                                "Chunked local cleanup hit $consecutiveTimeouts consecutive timeouts at chunk ${index + 1}/${chunks.size}; keeping remaining chunks raw",
+                            )
+                        }
+                        break
+                    }
+                } else {
+                    consecutiveTimeouts = 0
+                    logChunk(index, chunks.size, chunk.text.length, chunk.text.length, tookMs, "raw fallback: $chunkError", allowedMs)
                 }
             }
         }
+        if (cleanedCount == 0) {
+            return CleanupStepOutcome.StepFailed(lastFailure ?: "Local cleanup failed")
+        }
+        val partial = if (cleanedCount < chunks.size) PartialCleanup(cleanedCount, chunks.size) else null
         runCatching {
             android.util.Log.i(
                 "CleanupWaterfallExecutor",
-                "Chunked local cleanup: ${chunks.size}/${chunks.size} chunks cleaned in ${nowMs() - startedAtMs}ms",
+                "Chunked local cleanup: $cleanedCount/${chunks.size} chunks cleaned in ${nowMs() - startedAtMs}ms",
             )
         }
-        return CleanupStepOutcome.Success(LocalCleanupChunker.join(chunks, texts), partial = null, sections = PartialCleanup(chunks.size, chunks.size))
+        return CleanupStepOutcome.Success(
+            LocalCleanupChunker.join(chunks, texts),
+            partial = partial,
+            sections = PartialCleanup(cleanedCount, chunks.size),
+        )
     }
 
     /** Failure messages that mean "ran out of time", as opposed to "model said something unusable":
@@ -1197,6 +1297,7 @@ object CleanupWaterfallExecutor {
         maxRetries: Int,
         delayMs: Long,
         scheduleRetry: (Long, () -> Unit) -> Unit,
+        onRetry: () -> Unit = {},
     ): CleanupHttpTransport = CleanupHttpTransport { url, headers, jsonBody, timeouts, cancelHolder, callback ->
         val cancelsAtStart = cancelHolder.cancelCount
 
@@ -1234,6 +1335,7 @@ object CleanupWaterfallExecutor {
                 if (!canRetry || retryDelay == null) {
                     callback(outcome)
                 } else {
+                    onRetry()
                     scheduleRetry(retryDelay) {
                         if (cancelHolder.isCancelled || cancelHolder.cancelCount != cancelsAtStart) {
                             callback(CleanupHttpOutcome.Cancelled)

@@ -262,6 +262,9 @@ internal interface BackgroundWork {
      *  background-dictation notification. Defaults to [begin] for fakes/no-op implementations. */
     fun begin(onCancel: () -> Unit) = begin()
 
+    /** Updates the ongoing background-dictation notification text in place on retry/failover. */
+    fun updateStatus(statusText: String) {}
+
     /** Called when the pipeline reaches any terminal state. Idempotent per [begin]. Must never throw. */
     fun end()
 

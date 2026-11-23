@@ -121,8 +121,16 @@ object ProcessTextCleanupPlanner {
         cloudCleanupEnabled: Boolean,
         allowLocalFallback: Boolean,
         isCredentialConfigured: (ProviderKind) -> Boolean,
+        localModelAvailable: Boolean = false,
+        localModelArchive: String = "",
     ): ProcessTextCleanupPlan {
-        val effective = ProviderChainRuntime.effectiveChainForCleanup(chain, cloudCleanupEnabled, allowLocalFallback)
+        val effective = ProviderChainRuntime.effectiveChainForCleanup(
+            chain = chain,
+            cloudEnabled = cloudCleanupEnabled,
+            allowLocalFallback = allowLocalFallback,
+            localModelAvailable = localModelAvailable,
+            localModelArchive = localModelArchive,
+        )
         val waterfall = ProviderChainRuntime.cleanupWaterfallFor(effective)
         if (waterfall.steps.isEmpty()) {
             val cloudGateIsTheCause = !cloudCleanupEnabled &&

@@ -38,12 +38,13 @@ object VocabularyEchoGuard {
     /**
      * True when [text] is the vocabulary list (or prompt text) coming back instead of speech.
      * [terms] is the ordered list sent to the model; [promptText] is the full prompt when the
-     * path has one (Gemini batch), so reproduced instruction text is caught too. An empty [terms]
-     * never matches: with no vocabulary there is nothing to echo.
+     * path has one (Gemini batch), so reproduced instruction text is caught even when [terms]
+     * is empty.
      */
     fun isEcho(text: String?, terms: List<String>, promptText: String? = null): Boolean {
-        if (text.isNullOrBlank() || terms.isEmpty()) return false
-        return isVocabularyList(text, terms) || reproducesPrompt(text, promptText)
+        if (text.isNullOrBlank()) return false
+        if (terms.isNotEmpty() && isVocabularyList(text, terms)) return true
+        return reproducesPrompt(text, promptText)
     }
 
     private fun canonical(s: String): String = s.trim().lowercase().replace(WHITESPACE, " ")

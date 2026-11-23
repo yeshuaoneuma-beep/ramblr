@@ -113,6 +113,7 @@ class SettingsRegroupInventoryTest {
         /** Rows that start real work (file I/O, share sheets, pickers, the walkthrough). */
         val NOT_NAVIGATION = setOf(
             "Backup all data", "Restore from backup", "Share benchmark log", "Share quality log",
+            "Recent errors", "Share error log",
             "Redo setup walkthrough", "Transcribe an audio file", "Record a note",
         )
 

@@ -474,6 +474,8 @@ Output: The meeting has been moved to Thursday at 2 PM. Please confirm whether y
         // Ceiling on a chunked on-device cleanup of `text`; see [CleanupWaterfallExecutor.execute].
         // Live dictation keeps the default, the audio-file path passes its own larger one.
         localStepBudgetMs: Long = LOCAL_CHUNKED_TOTAL_BUDGET_MS,
+        onStageStatus: (String) -> Unit = {},
+        onStepFailure: ((CleanupStep, Int?, String) -> Unit)? = null,
         callback: (Result) -> Unit,
     ) {
         val waterfall = ProviderChainRuntime.cleanupWaterfallFor(chain)
@@ -499,6 +501,8 @@ Output: The meeting has been moved to Thursday at 2 PM. Please confirm whether y
             benchmarkCorrelationId = benchmarkCorrelationId,
             fidelityGuard = fidelityGuard,
             localStepBudgetMs = localStepBudgetMs,
+            onStageStatus = onStageStatus,
+            onStepFailure = onStepFailure,
             callback = callback,
         )
     }

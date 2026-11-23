@@ -143,6 +143,7 @@ object LocalCleanupOutputValidator {
      * themselves trip this check.
      */
     const val LENGTH_COLLAPSE_MIN_RATIO = 0.5
+    const val LENGTH_COLLAPSE_SELF_CORRECTION_MIN_RATIO = 0.4
 
     /**
      * Inputs shorter than this (normalized) skip the length check entirely. A handful of words
@@ -398,8 +399,10 @@ object LocalCleanupOutputValidator {
         if (inputRuns.isEmpty()) return null
 
         val outputValues = (
-            numericRuns(modelOutput).flatten() + NumericValueExtractor.extract(modelOutput)
-        ).toSet()
+            numericRuns(modelOutput).flatten() +
+                NumericValueExtractor.extract(modelOutput) +
+                if ("one" in plainWords(modelOutput)) listOf("1") else emptyList()
+            ).toSet()
         val missing = inputRuns.firstOrNull { candidates -> candidates.none { it in outputValues } }
             ?: return null
 
@@ -514,24 +517,17 @@ object LocalCleanupOutputValidator {
         return if (sawValue) total + chunk else null
     }
 
-    /** Digit string without leading zeros or a trailing decimal point ("04" -> "4"). */
-    private fun canonicalize(digits: String): String {
-        val trimmed = digits.trimEnd('.')
-        val withoutLeadingZeros = trimmed.trimStart('0')
-        return when {
-            withoutLeadingZeros.isEmpty() -> "0"
-            withoutLeadingZeros.startsWith(".") -> "0$withoutLeadingZeros"
-            else -> withoutLeadingZeros
-        }
-    }
+    /** Digit string without leading zeros or trailing `.0+` decimal ("08" -> "8", "12.00" -> "12"). */
+    private fun canonicalize(digits: String): String = NumericValueExtractor.canonicalize(digits)
 
     private fun stripPunctuation(token: String): String = token.trim { !it.isLetterOrDigit() }
 
     // --- (c) length collapse ---------------------------------------------------------------
 
-    /** Rejects output that kept less than [LENGTH_COLLAPSE_MIN_RATIO] of the input's normalized
-     *  length -- the "My address is four one two Selby Road" -> "Selby Road" failure, where the
-     *  model dropped content instead of cleaning it. */
+    /** Rejects output that kept less than the minimum ratio of the input's normalized length --
+     *  the "My address is four one two Selby Road" -> "Selby Road" failure, where the model dropped
+     *  content instead of cleaning it. Self-correction cues ("actually", "wait no", "sorry") allow
+     *  down to [LENGTH_COLLAPSE_SELF_CORRECTION_MIN_RATIO] (0.4). */
     private fun checkLengthCollapse(
         rawInput: String,
         modelOutput: String,
@@ -540,11 +536,16 @@ object LocalCleanupOutputValidator {
         if (baseline.length < LENGTH_COLLAPSE_MIN_INPUT_CHARS) return null
         val output = normalizeForLength(modelOutput)
         val ratio = output.length.toDouble() / baseline.length
-        if (ratio >= LENGTH_COLLAPSE_MIN_RATIO) return null
+        val minRatio = if (CloudCleanupFidelityGuard.SELF_CORRECTION_CUE.containsMatchIn(rawInput)) {
+            LENGTH_COLLAPSE_SELF_CORRECTION_MIN_RATIO
+        } else {
+            LENGTH_COLLAPSE_MIN_RATIO
+        }
+        if (ratio >= minRatio) return null
         return LocalCleanupValidation.Rejected(
             LocalCleanupValidation.Reason.LENGTH_COLLAPSE,
             "output kept only ${(ratio * 100).toInt()}% of the input's content length " +
-                "(minimum ${(LENGTH_COLLAPSE_MIN_RATIO * 100).toInt()}%)",
+                "(minimum ${(minRatio * 100).toInt()}%)",
         )
     }
 
@@ -567,7 +568,14 @@ object LocalCleanupOutputValidator {
                 index++
                 continue
             }
-            if (word in FILLER_WORDS || word in CURRENCY_WORDS) {
+            if (index + 1 < tokens.size) {
+                val nextWord = stripPunctuation(tokens[index + 1])
+                if ((word == "you" && nextWord == "know") || (word == "i" && nextWord == "mean")) {
+                    index += 2
+                    continue
+                }
+            }
+            if (word in LENGTH_FILLER_WORDS || word in CURRENCY_WORDS) {
                 index++
                 continue
             }
@@ -646,6 +654,8 @@ object LocalCleanupOutputValidator {
         "um", "uh", "erm", "er", "ah", "hmm", "mhm", "eh", "like", "basically", "actually",
         "literally", "sorta", "kinda", "yknow",
     )
+
+    private val LENGTH_FILLER_WORDS = FILLER_WORDS + setOf("so", "okay", "well")
 
     /** Dropped from the length baseline because "four hundred and fifty dollars" -> "$450"
      *  legitimately deletes the currency word along with the numeral spelling. */

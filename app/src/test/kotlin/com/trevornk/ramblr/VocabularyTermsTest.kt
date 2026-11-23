@@ -134,4 +134,16 @@ class VocabularyTermsTest {
         assertTrue(note!!.contains("not used"))
         assertFalse(note.contains("local cleanup don't"))
     }
+
+    @Test
+    fun asTranscriptionPromptCapsAt750CharsPreservingWholeTerms() {
+        val terms = (1..100).map { "ProjectTermNumber$it" }
+        val prompt = VocabularyTerms.asTranscriptionPrompt(terms)
+        assertTrue(prompt.length <= VocabularyTerms.MAX_TRANSCRIPTION_PROMPT_CHARS)
+        assertTrue(prompt.startsWith("ProjectTermNumber1, "))
+        assertFalse(prompt.endsWith(","))
+
+        val oversizedSingle = listOf("A".repeat(900))
+        assertEquals(VocabularyTerms.MAX_TRANSCRIPTION_PROMPT_CHARS, VocabularyTerms.asTranscriptionPrompt(oversizedSingle).length)
+    }
 }

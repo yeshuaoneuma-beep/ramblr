@@ -101,4 +101,37 @@ class RamblrImeServiceLifecycleTest {
             service.editorPolicyForTest().allowsDictation,
         )
     }
+
+    @Test
+    fun `renderStageStatus updates statusView only during TRANSCRIBING or CLEANING and ignores IDLE or SECURE_FIELD`() {
+        val service = serviceWithInputViewShown()
+        val controller = service.panelControllerForTest()!!
+        val statusView = service.statusViewForTest()!!
+        val renderStateMethod = RamblrImeService::class.java
+            .getDeclaredMethod("renderState", ImeUiState::class.java)
+            .apply { isAccessible = true }
+
+        // While IDLE: stage status is ignored.
+        controller.listener.onStageStatus("OpenAI busy — retrying…")
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(service.getString(R.string.ime_status_idle), statusView.text.toString())
+
+        // While TRANSCRIBING: stage status updates statusView.
+        renderStateMethod.invoke(service, ImeUiState.TRANSCRIBING)
+        controller.listener.onStageStatus("OpenAI busy — retrying…")
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals("OpenAI busy — retrying…", statusView.text.toString())
+
+        // While CLEANING: stage status updates statusView.
+        renderStateMethod.invoke(service, ImeUiState.CLEANING)
+        controller.listener.onStageStatus("Cleanup retrying…")
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals("Cleanup retrying…", statusView.text.toString())
+
+        // While SECURE_FIELD: stage status never overwrites secure message.
+        service.onStartInput(secureEditor(), false)
+        controller.listener.onStageStatus("Should not appear")
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(service.getString(R.string.ime_status_secure_field), statusView.text.toString())
+    }
 }

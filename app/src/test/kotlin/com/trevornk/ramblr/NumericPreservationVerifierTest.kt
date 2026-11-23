@@ -85,4 +85,35 @@ class NumericPreservationVerifierTest {
         // Spelling out a number and also adding a different one.
         assertRejected("on the fourth day", "On the fourth day, five hours later.")
     }
+
+    // ---- Phase 2D formatting & bare spoken equivalences ----------------------------------------
+
+    @Test fun `leading zeros and trailing zero decimals compare canonically`() {
+        assertValid("check in at 08", "Check in at 8.")
+        assertValid("the price is 12.00 dollars", "The price is $12.")
+        assertValid("the version is 12.0", "Version 12")
+        assertRejected("version 12.5", "Version 12")
+    }
+
+    @Test fun `on-the-hour clock time matches AM-PM hour rendering while changed minutes still reject`() {
+        assertValid("meet at 12:00", "Meet at 12 PM.")
+        assertValid("alarm at 08:00", "Alarm at 8 AM.")
+        assertRejected("meet at 12:00", "Meet at 12:30.")
+        assertRejected("meet at 12:00", "Meet at 12:05.")
+    }
+
+    @Test fun `one and 1 are equivalent when numeric while altered or dropped explicit 1 is rejected`() {
+        assertValid("pick 1 option", "Pick one option.")
+        assertValid("pick one option", "Pick 1 option.")
+        assertValid("one of the things matters", "The thing matters.")
+        assertRejected("pick 1 option", "Pick 2 options.")
+        assertRejected("pick 1 option", "Pick an option.")
+    }
+
+    @Test fun `context-free spoken clock time matches digit colon rendering and rejects altered time`() {
+        assertValid("four thirty works for me", "4:30 works for me.")
+        assertValid("twelve oh five works for me", "12:05 works for me.")
+        assertRejected("four thirty works for me", "5:30 works for me.")
+        assertRejected("four thirty works for me", "4:45 works for me.")
+    }
 }

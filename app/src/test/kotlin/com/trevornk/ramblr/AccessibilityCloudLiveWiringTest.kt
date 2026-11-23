@@ -57,6 +57,10 @@ class AccessibilityCloudLiveWiringTest {
     private fun configureFullyEnabledCloudLive() {
         CloudLiveToggle.setEnabled(app, true)
         prefs().edit().putBoolean("use_local", false).apply()
+        ProviderChainStore.save(
+            app,
+            ProviderChain(listOf(ProviderChainEntry(ProviderKind.GEMINI, GeminiTranscriberClient.DEFAULT_MODEL))),
+        )
         ProviderCredentialStore.setLegacyByKind(app, ProviderKind.GEMINI, "test-gemini-key")
     }
 

@@ -205,8 +205,8 @@ object GeminiTranscriberClient {
                 val text = parts?.let { arr ->
                     (0 until arr.length())
                         .mapNotNull { arr.optJSONObject(it) }
-                        .filter { !it.optBoolean("thought", false) && it.has("text") }
-                        .joinToString("") { it.getString("text") }
+                        .filter { !it.optBoolean("thought", false) && !it.isNull("text") }
+                        .joinToString("") { it.optString("text", "") }
                 }
                 if (!text.isNullOrBlank()) Result(text.trim(), null)
                 // A model that finished normally with no text is answering "there was no speech"
@@ -302,8 +302,9 @@ object GeminiTranscriberClient {
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     cancelHolder.clear(call)
-                    val cancelled = call.isCanceled()
-                    callback(Result(null, e.message, isTransientIo = !cancelled, isCancelled = cancelled))
+                    val cancelled = call.isCanceled() && cancelHolder.isCancelled
+                    val error = if (!cancelled && call.isCanceled()) normalizedTimeoutError(e) else e.message
+                    callback(Result(null, error, isTransientIo = !cancelled, isCancelled = cancelled))
                 }
 
                 override fun onResponse(call: Call, response: Response) {
@@ -341,8 +342,9 @@ object GeminiTranscriberClient {
                             }
                         },
                         onFailure = { e ->
-                            val cancelled = call.isCanceled()
-                            callback(Result(null, e.message, isTransientIo = !cancelled, isCancelled = cancelled))
+                            val cancelled = call.isCanceled() && cancelHolder.isCancelled
+                            val error = if (!cancelled && call.isCanceled()) normalizedTimeoutError(e) else e.message
+                            callback(Result(null, error, isTransientIo = !cancelled, isCancelled = cancelled))
                         },
                     )
                 }
@@ -350,4 +352,7 @@ object GeminiTranscriberClient {
         }
         send(0)
     }
+
+    private fun normalizedTimeoutError(e: Throwable): String =
+        e.message?.takeIf { it.isNotBlank() && !it.equals("Canceled", ignoreCase = true) } ?: "timeout"
 }

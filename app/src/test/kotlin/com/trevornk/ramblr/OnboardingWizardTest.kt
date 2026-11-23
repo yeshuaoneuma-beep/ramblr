@@ -180,6 +180,27 @@ class OnboardingWizardTest {
         ))
     }
 
+    @Test fun `blank selected local model falls back to installed catalog model readiness`() {
+        assertTrue(OnboardingWizard.isTranscriptionModelReady(
+            transcriptionLocal = true,
+            selectedModel = "",
+            knownModels = listOf("catalog-model", "other-catalog"),
+            installedModels = listOf("other-catalog"),
+        ))
+        assertFalse(OnboardingWizard.isTranscriptionModelReady(
+            transcriptionLocal = true,
+            selectedModel = "",
+            knownModels = listOf("catalog-model"),
+            installedModels = listOf("unknown-model"),
+        ))
+        assertFalse(OnboardingWizard.isTranscriptionModelReady(
+            transcriptionLocal = true,
+            selectedModel = "   ",
+            knownModels = listOf("catalog-model"),
+            installedModels = emptyList(),
+        ))
+    }
+
     @Test fun `cloud transcription does not require a local model selection`() {
         assertTrue(OnboardingWizard.isTranscriptionModelReady(
             transcriptionLocal = false,

@@ -147,6 +147,25 @@ class ProviderChainRuntimeTranscriptionResolverTest {
 
         assertTrue(ProviderChainRuntime.transcriptionCandidates(chain, allowLocalFallback = false).isEmpty())
     }
+
+    @Test fun `allowLocalFallback true appends implicit LOCAL floor when local model is available`() {
+        val openai = ProviderChainEntry(ProviderKind.OPENAI, "gpt-transcribe")
+        val chain = ProviderChain(listOf(openai))
+
+        val withFallback = ProviderChainRuntime.transcriptionCandidates(
+            chain, allowLocalFallback = true, localModelAvailable = true,
+        )
+        assertEquals(listOf(openai, ProviderChainEntry(ProviderKind.LOCAL, "")), withFallback)
+
+        assertEquals(
+            listOf(openai),
+            ProviderChainRuntime.transcriptionCandidates(chain, allowLocalFallback = true, localModelAvailable = false),
+        )
+        assertEquals(
+            listOf(openai),
+            ProviderChainRuntime.transcriptionCandidates(chain, allowLocalFallback = false, localModelAvailable = true),
+        )
+    }
 }
 
 class ProviderChainRuntimeCleanupFallbackTest {
@@ -188,6 +207,47 @@ class ProviderChainRuntimeCleanupFallbackTest {
         val effective = ProviderChainRuntime.effectiveChainForCleanup(chain, cloudEnabled = false, allowLocalFallback = false)
 
         assertEquals(listOf(ProviderChainEntry(ProviderKind.LOCAL, "local-model")), effective.entries)
+    }
+
+    @Test fun `cloud cleanup appends implicit LOCAL floor when localModelAvailable and allowLocalFallback hold`() {
+        val cloudOnly = ProviderChain(listOf(ProviderChainEntry(ProviderKind.OPENAI, "gpt-4o-mini")))
+
+        val withImplicitLocal = ProviderChainRuntime.effectiveChainForCleanup(
+            chain = cloudOnly,
+            cloudEnabled = true,
+            allowLocalFallback = true,
+            localModelAvailable = true,
+            localModelArchive = "lfm2.5-350m-q4_0",
+        )
+        assertEquals(
+            listOf(
+                ProviderChainEntry(ProviderKind.OPENAI, "gpt-4o-mini"),
+                ProviderChainEntry(ProviderKind.LOCAL, "lfm2.5-350m-q4_0"),
+            ),
+            withImplicitLocal.entries,
+        )
+
+        assertEquals(
+            cloudOnly.entries,
+            ProviderChainRuntime.effectiveChainForCleanup(
+                chain = cloudOnly,
+                cloudEnabled = true,
+                allowLocalFallback = false,
+                localModelAvailable = true,
+                localModelArchive = "lfm2.5-350m-q4_0",
+            ).entries,
+        )
+
+        assertEquals(
+            listOf(ProviderChainEntry(ProviderKind.LOCAL, "lfm2.5-350m-q4_0")),
+            ProviderChainRuntime.effectiveChainForCleanup(
+                chain = cloudOnly,
+                cloudEnabled = false,
+                allowLocalFallback = true,
+                localModelAvailable = true,
+                localModelArchive = "lfm2.5-350m-q4_0",
+            ).entries,
+        )
     }
 }
 

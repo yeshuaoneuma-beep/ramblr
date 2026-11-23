@@ -120,7 +120,7 @@ class BackgroundTranscriptionService : Service() {
         ServiceCompat.startForeground(
             this,
             BackgroundDictationNotifications.ONGOING_ID,
-            BackgroundDictationNotifications.ongoing(this),
+            BackgroundDictationNotifications.ongoing(this, Companion.currentStatusText()),
             type,
         )
         true
@@ -159,6 +159,8 @@ class BackgroundTranscriptionService : Service() {
         @Volatile internal var activeRunDeadlineAtElapsedMs: Long = 0L
             private set
 
+        @Volatile private var activeStatusText: String? = null
+
         private val cancelHandlersLock = Any()
         private val activeCancelHandlers = mutableListOf<() -> Unit>()
 
@@ -171,9 +173,12 @@ class BackgroundTranscriptionService : Service() {
             },
             onLastRelease = {
                 activeRunDeadlineAtElapsedMs = 0L
+                activeStatusText = null
                 onMain { stopIfNotWanted() }
             },
         )
+
+        internal fun currentStatusText(): String? = activeStatusText
 
         internal fun heldCount(): Int = holds.held()
 
@@ -196,6 +201,10 @@ class BackgroundTranscriptionService : Service() {
                     holds.acquire()
                 }
 
+                override fun updateStatus(statusText: String) {
+                    updateOngoingStatus(app, statusText)
+                }
+
                 override fun end() {
                     synchronized(cancelHandlersLock) {
                         val removed = if (localCancels.isNotEmpty()) localCancels.removeLast() else null
@@ -203,6 +212,21 @@ class BackgroundTranscriptionService : Service() {
                     }
                     holds.release()
                 }
+            }
+        }
+
+        private fun updateOngoingStatus(ctx: Context, statusText: String) {
+            if (holds.held() == 0 || statusText.isBlank()) return
+            activeStatusText = statusText
+            try {
+                BackgroundDictationNotifications.ensureChannels(ctx)
+                NotificationManagerCompat.from(ctx).notify(
+                    BackgroundDictationNotifications.ONGOING_ID,
+                    BackgroundDictationNotifications.ongoing(ctx, statusText),
+                )
+            } catch (_: SecurityException) {
+            } catch (e: Exception) {
+                Log.w(TAG, "Couldn't update ongoing background notification", e)
             }
         }
 
@@ -267,6 +291,7 @@ class BackgroundTranscriptionService : Service() {
             instance = null
             startRequestedAtMs = 0L
             activeRunDeadlineAtElapsedMs = 0L
+            activeStatusText = null
             elapsedRealtimeMs = { android.os.SystemClock.elapsedRealtime() }
             synchronized(cancelHandlersLock) { activeCancelHandlers.clear() }
         }
@@ -290,10 +315,10 @@ internal object BackgroundDictationNotifications {
     const val RESULT_CHANNEL_ID = "background_dictation_result"
 
     /** Distinct from IconVisibilityNotifications' 0x1C04, ServiceRecoveryNotifications' 0x1C05,
-     *  and AudioJobNotifications' 0x1C08. */
+     *  and AudioJobNotifications' 0x1C08 / 0x1C09. */
     const val ONGOING_ID = 0x1C06
     const val RESULT_ID = 0x1C07
-    const val RECORDING_COUNTDOWN_ID = 0x1C09
+    const val RECORDING_COUNTDOWN_ID = 0x1C0A
 
     fun ensureChannels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
@@ -326,9 +351,9 @@ internal object BackgroundDictationNotifications {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
-    fun ongoing(ctx: Context): Notification = NotificationCompat.Builder(ctx, WORK_CHANNEL_ID)
+    fun ongoing(ctx: Context, statusText: String? = null): Notification = NotificationCompat.Builder(ctx, WORK_CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_mic)
-        .setContentTitle("Ramblr is transcribing")
+        .setContentTitle(statusText?.takeIf { it.isNotBlank() } ?: "Ramblr is transcribing")
         .setContentText("Finishing your dictation in the background.")
         .setOngoing(true)
         .setOnlyAlertOnce(true)

@@ -18,11 +18,18 @@ import org.json.JSONObject
 object GeminiCleanupProvider {
     const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
-    /** [model] is bare (e.g. "gemini-2.5-flash"), not the "models/..." resource name; this builds
-     *  the full resource path. No `?key=` query string: the key travels in the [headers] below
-     *  instead, so it can't leak through a malformed-URL exception message or a logged URL (M-3). */
-    fun endpointUrl(model: String, baseUrl: String = BASE_URL): String =
-        "${PostProcessor.normalizeBaseUrl(baseUrl) ?: BASE_URL}/models/${model.ifBlank { DEFAULT_MODEL }}:generateContent"
+    /** [model] is bare (e.g. "gemini-2.5-flash"), though any leading "models/" prefix is stripped so
+     *  resource names like "models/gemma-4-31b-it" never double up into `/models/models/...`. No
+     *  `?key=` query string: the key travels in the [headers] below instead, so it can't leak
+     *  through a malformed-URL exception message or a logged URL (M-3). */
+    fun endpointUrl(model: String, baseUrl: String = BASE_URL): String {
+        val normalizedModel = model.trim()
+            .replace(MODELS_PREFIX_REGEX, "")
+            .ifBlank { DEFAULT_MODEL }
+        return "${PostProcessor.normalizeBaseUrl(baseUrl) ?: BASE_URL}/models/$normalizedModel:generateContent"
+    }
+
+    private val MODELS_PREFIX_REGEX = Regex("^(?:models/)+", RegexOption.IGNORE_CASE)
 
     /** Gemini accepts the API key in an `x-goog-api-key` header as an alternative to the `?key=`
      *  query parameter (https://ai.google.dev/gemini-api/docs/api-key). Using the header keeps the
@@ -99,8 +106,8 @@ object GeminiCleanupProvider {
                 val text = parts?.let { arr ->
                     (0 until arr.length())
                         .mapNotNull { arr.optJSONObject(it) }
-                        .filter { !it.optBoolean("thought", false) && it.has("text") }
-                        .joinToString("") { it.getString("text") }
+                        .filter { !it.optBoolean("thought", false) && !it.isNull("text") }
+                        .joinToString("") { it.optString("text", "") }
                 }
                 if (!text.isNullOrBlank()) {
                     PostProcessor.Result(text.trim(), null)

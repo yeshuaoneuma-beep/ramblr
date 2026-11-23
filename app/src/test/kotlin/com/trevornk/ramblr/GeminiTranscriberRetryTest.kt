@@ -105,4 +105,57 @@ class GeminiTranscriberRetryTest {
         assertFalse(GeminiTranscriberClient.isOverloaded(429, "Quota exceeded"))
         assertFalse(GeminiTranscriberClient.isOverloaded(400, "API key not valid."))
     }
+
+    @Test fun `okhttp callTimeout without cancelHolder is treated as transient timeout not cancellation`() {
+        server.enqueue(
+            MockResponse.Builder()
+                .body("""{"candidates":[{"content":{"parts":[{"text":"late"}]},"finishReason":"STOP"}]}""")
+                .headersDelay(900, TimeUnit.MILLISECONDS)
+                .build()
+        )
+        val pcm = File(temp.root, "clip.pcm").apply { writeBytes(ByteArray(320)) }
+        val holder = InFlightCall().apply { beginWork() }
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<GeminiTranscriberClient.Result>()
+        GeminiTranscriberClient.transcribe(
+            pcmFile = pcm,
+            apiKey = "key",
+            model = "gemini-3.1-flash-lite",
+            cancelHolder = holder,
+            endpoint = server.url("/v1beta/models/gemini-3.1-flash-lite:generateContent").toString(),
+            retryDelaysMs = emptyList(),
+            callTimeoutMs = 250L,
+        ) { result.set(it); latch.countDown() }
+        assertTrue(latch.await(10, TimeUnit.SECONDS))
+        val r = result.get()
+        assertFalse("callTimeout must not report isCancelled", r.isCancelled)
+        assertTrue(r.isTransientIo)
+        assertEquals(CloudErrorKind.TEMPORARY_BUSY, r.errorKind)
+    }
+
+    @Test fun `explicit cancelHolder cancellation reports isCancelled true`() {
+        server.enqueue(
+            MockResponse.Builder()
+                .body("""{"candidates":[{"content":{"parts":[{"text":"never"}]},"finishReason":"STOP"}]}""")
+                .headersDelay(2_000, TimeUnit.MILLISECONDS)
+                .build()
+        )
+        val pcm = File(temp.root, "clip.pcm").apply { writeBytes(ByteArray(320)) }
+        val holder = InFlightCall().apply { beginWork() }
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<GeminiTranscriberClient.Result>()
+        GeminiTranscriberClient.transcribe(
+            pcmFile = pcm,
+            apiKey = "key",
+            model = "gemini-3.1-flash-lite",
+            cancelHolder = holder,
+            endpoint = server.url("/v1beta/models/gemini-3.1-flash-lite:generateContent").toString(),
+            retryDelaysMs = emptyList(),
+            callTimeoutMs = 5_000L,
+        ) { result.set(it); latch.countDown() }
+        server.takeRequest(5, TimeUnit.SECONDS)
+        holder.cancel()
+        assertTrue(latch.await(10, TimeUnit.SECONDS))
+        assertTrue(result.get().isCancelled)
+    }
 }

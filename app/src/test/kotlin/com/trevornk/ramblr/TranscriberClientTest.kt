@@ -1,9 +1,18 @@
 package com.trevornk.ramblr
 
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class TranscriberClientTest {
+    @get:Rule val temp = TemporaryFolder()
 
     @Test fun `parses success response`() {
         val r = TranscriberClient.parseResponse("""{"text": "Hello world"}""")
@@ -119,5 +128,75 @@ class TranscriberClientTest {
 
     @Test fun `a chosen language is sent as the ISO-639-1 language field`() {
         assertEquals(listOf("language" to "de"), TranscriberClient.languageFormParts("de"))
+    }
+
+    // --- Phase 2D: OkHttp callTimeout vs user cancel ---
+
+    @Test fun `okhttp callTimeout without cancelHolder is treated as transient timeout not user cancellation`() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(
+                MockResponse.Builder()
+                    .body("""{"text":"late"}""")
+                    .headersDelay(900, TimeUnit.MILLISECONDS)
+                    .build()
+            )
+            val pcm = File(temp.root, "clip.pcm").apply { writeBytes(ByteArray(320)) }
+            val holder = InFlightCall().apply { beginWork() }
+            val latch = CountDownLatch(1)
+            val ref = AtomicReference<TranscriberClient.Result>()
+            TranscriberClient.transcribe(
+                pcmFile = pcm,
+                apiKey = "key",
+                cancelHolder = holder,
+                baseUrl = server.url("/v1").toString(),
+                callTimeoutMs = 250L,
+            ) {
+                ref.set(it)
+                latch.countDown()
+            }
+            assertTrue(latch.await(10, TimeUnit.SECONDS))
+            val result = ref.get()
+            assertFalse("callTimeout must never report user cancellation", result.isCancelled)
+            assertTrue("callTimeout must be retryable transient IO", result.isTransientIo)
+            assertEquals(CloudErrorKind.TEMPORARY_BUSY, result.errorKind)
+            assertNotNull(result.error)
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test fun `explicit cancelHolder cancellation still reports isCancelled true`() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            server.enqueue(
+                MockResponse.Builder()
+                    .body("""{"text":"never"}""")
+                    .headersDelay(2_000, TimeUnit.MILLISECONDS)
+                    .build()
+            )
+            val pcm = File(temp.root, "clip.pcm").apply { writeBytes(ByteArray(320)) }
+            val holder = InFlightCall().apply { beginWork() }
+            val latch = CountDownLatch(1)
+            val ref = AtomicReference<TranscriberClient.Result>()
+            TranscriberClient.transcribe(
+                pcmFile = pcm,
+                apiKey = "key",
+                cancelHolder = holder,
+                baseUrl = server.url("/v1").toString(),
+                callTimeoutMs = 5_000L,
+            ) {
+                ref.set(it)
+                latch.countDown()
+            }
+            server.takeRequest(5, TimeUnit.SECONDS)
+            holder.cancel()
+            assertTrue(latch.await(10, TimeUnit.SECONDS))
+            assertTrue(ref.get().isCancelled)
+        } finally {
+            server.close()
+        }
     }
 }

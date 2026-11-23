@@ -38,6 +38,9 @@ interface RuntimeListener {
     /** Cleanup has begun after transcription. Main thread. */
     fun onCleaningStarted() {}
 
+    /** Emitted only when STT or Cleanup retries or fails over (never on happy-path 1st attempt). Main thread. */
+    fun onStageStatus(statusText: String) {}
+
     /** Recording is about to start (permission + warm-ups already done): the host must resolve
      *  any still-pending preview and reset its per-recording streaming/delivery state, exactly
      *  as the pre-extraction `startRecording` prologue did. Main thread. */
@@ -256,6 +259,50 @@ class DictationRuntime internal constructor(
          * reporter's 8 GB phone is a CAPABLE-tier device, so gating by tier would not help.
          */
         internal const val TRANSCRIBER_IDLE_UNLOAD_MS = 5 * 60 * 1000L
+
+        internal fun providerDisplayName(kind: ProviderKind): String = when (kind) {
+            ProviderKind.OPENAI -> "OpenAI"
+            ProviderKind.GEMINI -> "Gemini"
+            ProviderKind.ANTHROPIC -> "Anthropic"
+            ProviderKind.OMNIROUTE -> "OmniRoute"
+            ProviderKind.LOCAL -> "on-device"
+        }
+
+        internal fun isCloudSttEligible(
+            useLocal: Boolean,
+            allowCloudFallback: Boolean,
+            chain: ProviderChain,
+            isConfigured: (ProviderChainEntry) -> Boolean,
+        ): Boolean {
+            if (useLocal && !allowCloudFallback) return false
+            return ProviderChainRuntime.transcriptionCandidates(chain, allowLocalFallback = false).any { entry ->
+                (entry.kind == ProviderKind.OPENAI ||
+                    (entry.kind == ProviderKind.GEMINI &&
+                        GeminiTranscriberClient.supportsAudioTranscription(entry.transcriptionModel))) &&
+                    isConfigured(entry)
+            }
+        }
+
+        internal fun hostsToWarmForDictation(
+            chain: ProviderChain,
+            useLocal: Boolean,
+            allowCloudFallback: Boolean,
+            postProcessingEnabled: Boolean,
+            cloudCleanupEnabled: Boolean,
+            isConfigured: (ProviderChainEntry) -> Boolean,
+        ): Set<String> {
+            val transcriptionCandidates = if (!useLocal || allowCloudFallback) {
+                ProviderChainRuntime.transcriptionCandidates(chain, allowLocalFallback = false)
+            } else {
+                emptyList()
+            }
+            val cleanupChain = if (postProcessingEnabled) {
+                ProviderChainRuntime.effectiveChainForCleanup(chain, cloudCleanupEnabled, allowLocalFallback = false)
+            } else {
+                ProviderChain(emptyList())
+            }
+            return NetworkWarmup.hostsToWarm(transcriptionCandidates, cleanupChain, isConfigured)
+        }
     }
 
     private val stateMachine = RecordingStateMachine()
@@ -777,12 +824,10 @@ class DictationRuntime internal constructor(
         } else null
             silenceAutoStopSession = autoStopSession
 
-        // Compressed-upload AAC encoding (#109): additive and opt-in -- a session (and the
-        // MediaCodec/MediaMuxer it owns) is only ever created when CompressedUploadToggle is on.
-        // Unlike #108's VAD, no model download or extra precondition is needed: AAC-LC is a
-        // built-in platform codec. Toggle off means zero AacEncoderSession instantiation and
-        // byte-for-byte identical recording behavior to before this feature existed.
-            val aacSession = if (CompressedUploadToggle.isEnabled(context)) {
+        // Compressed-upload AAC encoding (#109): additive and opt-in -- only created when
+        // CompressedUploadToggle is on AND a configured cloud STT candidate can actually receive
+        // the encoded upload (local-only mode never uploads audio).
+            val aacSession = if (CompressedUploadToggle.isEnabled(context) && isCloudSttEligibleForCurrentSettings()) {
             try {
                 AacEncoderSession(context.cacheDir)
             } catch (t: Throwable) {
@@ -1014,14 +1059,28 @@ class DictationRuntime internal constructor(
      * this would resident-load a multi-hundred-MB model into memory for a dictation that will
      * never touch it (e.g. cleanup off, or an all-cloud waterfall).
      */
+    private fun isCloudSttEligibleForCurrentSettings(): Boolean = isCloudSttEligible(
+        useLocal = prefs().getBoolean("use_local", true),
+        allowCloudFallback = DictationModeToggle.allowCloudFallback(context),
+        chain = ProviderChainStore.load(context),
+        isConfigured = { ProviderCredentialStore.isConfiguredOrLegacy(context, it) },
+    )
+
     private fun warmUpLocalCleanupModelIfNeeded() {
         if (!LocalCleanupPrewarmDecision.shouldWarmUp(deviceMemoryTier)) return
         if (!PostProcessingToggle.shouldRunCleanup(PostProcessingToggle.isEnabled(context))) return
         val providerChain = ProviderChainStore.load(context)
-        if (!providerChain.usesLocalLlm()) return
-        val modelPath = ModelDownloader.localCleanupModelFile(context, LocalCleanupProvider.selectedModel(context))?.absolutePath
-            ?: return
-        LocalCleanupModelHolder.warmUpAsync(modelPath)
+        val selectedModel = LocalCleanupProvider.selectedModel(context)
+        val modelFile = ModelDownloader.localCleanupModelFile(context, selectedModel) ?: return
+        val effectiveChain = ProviderChainRuntime.effectiveChainForCleanup(
+            chain = providerChain,
+            cloudEnabled = CloudFeatureToggle.cleanupEnabled(context),
+            allowLocalFallback = DictationModeToggle.allowLocalFallback(context),
+            localModelAvailable = true,
+            localModelArchive = selectedModel.archive,
+        )
+        if (!effectiveChain.usesLocalLlm()) return
+        LocalCleanupModelHolder.warmUpAsync(modelFile.absolutePath)
     }
 
     /**
@@ -1055,12 +1114,14 @@ class DictationRuntime internal constructor(
      * api.openai.com on every dictation.
      */
     private fun warmUpCloudConnectionsIfNeeded() {
-        val chain = ProviderChainStore.load(context)
-        val transcriptionCandidates = ProviderChainRuntime.transcriptionCandidates(chain)
-        val cleanupChain = ProviderChainRuntime.effectiveChainForCleanup(chain, CloudFeatureToggle.cleanupEnabled(context))
-        val hosts = NetworkWarmup.hostsToWarm(transcriptionCandidates, cleanupChain) { entry ->
-            ProviderCredentialStore.isConfiguredOrLegacy(context, entry)
-        }
+        val hosts = hostsToWarmForDictation(
+            chain = ProviderChainStore.load(context),
+            useLocal = prefs().getBoolean("use_local", true),
+            allowCloudFallback = DictationModeToggle.allowCloudFallback(context),
+            postProcessingEnabled = PostProcessingToggle.shouldRunCleanup(PostProcessingToggle.isEnabled(context)),
+            cloudCleanupEnabled = CloudFeatureToggle.cleanupEnabled(context),
+            isConfigured = { ProviderCredentialStore.isConfiguredOrLegacy(context, it) },
+        )
         NetworkWarmup.warmUpAsync(hosts)
     }
 
@@ -1733,6 +1794,13 @@ class DictationRuntime internal constructor(
                 file.delete()
             } catch (e: Exception) {
                 Log.e(TAG, "Local transcription failed", e)
+                DiagnosticErrorLog.record(
+                    context = context,
+                    stage = "stt",
+                    provider = ProviderKind.LOCAL.name,
+                    model = localTranscriptionModelId(),
+                    detail = e.toString(),
+                )
                 BenchmarkLogger.log(
                     context = context,
                     correlationId = correlationIdFor(token),
@@ -1826,6 +1894,14 @@ class DictationRuntime internal constructor(
     internal fun finalizeForDelivery(text: String): String =
         SnippetRuntimeSupport.expand(context, ShortUtterancePunctuation.stripTrailingPeriod(text))
 
+    private fun emitStageStatus(token: Int, statusText: String) {
+        handler.post {
+            if (!guard.isCurrent(token)) return@post
+            runCatching { backgroundWork.updateStatus(statusText) }
+            runCatching { listener.onStageStatus(statusText) }
+        }
+    }
+
     private fun transcribeApi(
         file: File,
         token: Int,
@@ -1834,7 +1910,11 @@ class DictationRuntime internal constructor(
     ) {
         val chain = ProviderChainStore.load(context)
         val allowLocalFallback = DictationModeToggle.allowLocalFallback(context)
-        val candidates = ProviderChainRuntime.transcriptionCandidates(chain, allowLocalFallback)
+        val candidates = ProviderChainRuntime.transcriptionCandidates(
+            chain = chain,
+            allowLocalFallback = allowLocalFallback,
+            localModelAvailable = LocalTranscriber.availableModels(context).isNotEmpty(),
+        )
         if (candidates.isEmpty()) {
             file.delete()
             compressedFile?.delete()
@@ -1867,6 +1947,8 @@ class DictationRuntime internal constructor(
         // M5: which compressed .m4a copy (if any) the walk still holds. A LOCAL candidate never
         // uploads, so its branch deletes the compressed copy and nulls this.
         var remainingCompressedFile: File? = compressedFile
+        var lastFailedProvider: ProviderKind? = null
+        var anyCloudAttempted = false
         val walk = TranscriptionChain.Walk(
             cloudCandidates = usableCloudCandidates,
             localCandidate = localCandidate,
@@ -1892,6 +1974,16 @@ class DictationRuntime internal constructor(
             }
             when (val step = walk.nextStep(nowMs())) {
                 is TranscriptionChain.Step.RunCloud -> {
+                    val prevFailed = lastFailedProvider
+                    if (prevFailed != null) {
+                        val status = if (prevFailed == step.entry.kind) {
+                            "${providerDisplayName(step.entry.kind)} busy — retrying…"
+                        } else {
+                            "${providerDisplayName(prevFailed)} failed — trying ${providerDisplayName(step.entry.kind)}…"
+                        }
+                        emitStageStatus(token, status)
+                    }
+                    anyCloudAttempted = true
                     val runAttempt = {
                         dispatchCloudStep(
                             step = step,
@@ -1906,6 +1998,7 @@ class DictationRuntime internal constructor(
                             },
                             onCancelled = { cleanupAudio() },
                             onFailure = { errorKind, errorMsg, httpCode, retryAfterMs ->
+                                lastFailedProvider = step.entry.kind
                                 walk.recordCloudFailure(errorKind, errorMsg, httpCode, retryAfterMs)
                                 dispatchNext()
                             },
@@ -1918,6 +2011,9 @@ class DictationRuntime internal constructor(
                     }
                 }
                 is TranscriptionChain.Step.RunLocal -> {
+                    if (anyCloudAttempted) {
+                        emitStageStatus(token, "Cloud unavailable — trying on-device…")
+                    }
                     thread {
                         if (isStaleOrCancelled()) {
                             cleanupAudio()
@@ -1933,6 +2029,7 @@ class DictationRuntime internal constructor(
                         remainingCompressedFile?.delete()
                         remainingCompressedFile = null
                         transcribeLocal(file, token, lease, budgetMs = step.budgetMs, onChainFailure = { error ->
+                            lastFailedProvider = ProviderKind.LOCAL
                             walk.recordLocalFailure(error)
                             dispatchNext()
                         })
@@ -2018,10 +2115,33 @@ class DictationRuntime internal constructor(
                         rawText = result.text,
                     )
                     when {
-                        result.isCancelled || isCancelledOrStale() -> onCancelled()
+                        isCancelledOrStale() -> onCancelled()
+                        result.isCancelled -> {
+                            val timeoutMsg = result.error?.takeIf { it.isNotBlank() } ?: "timeout"
+                            DiagnosticErrorLog.record(
+                                context = context,
+                                stage = "stt",
+                                provider = entry.kind.name,
+                                model = model,
+                                httpCode = result.httpCode,
+                                detail = timeoutMsg,
+                            )
+                            onFailure(CloudErrorKind.TEMPORARY_BUSY, timeoutMsg, result.httpCode, result.retryAfterMs)
+                        }
                         success -> onSuccessOrNoSpeech(result.text)
                         isNoSpeechTranscript(result.text, result.error) -> onSuccessOrNoSpeech(null)
-                        else -> onFailure(result.errorKind, result.error ?: "empty transcript", result.httpCode, result.retryAfterMs)
+                        else -> {
+                            val err = result.error ?: "empty transcript"
+                            DiagnosticErrorLog.record(
+                                context = context,
+                                stage = "stt",
+                                provider = entry.kind.name,
+                                model = model,
+                                httpCode = result.httpCode,
+                                detail = err,
+                            )
+                            onFailure(result.errorKind, err, result.httpCode, result.retryAfterMs)
+                        }
                     }
                 }
             }
@@ -2029,11 +2149,25 @@ class DictationRuntime internal constructor(
                 val geminiModel = entry.transcriptionModel?.ifBlank { null } ?: GeminiTranscriberClient.DEFAULT_MODEL
                 if (!GeminiTranscriberClient.supportsAudioTranscription(geminiModel)) {
                     Log.w(TAG, "Skipping text-only Gemini/Gemma model for audio transcription: $geminiModel")
+                    DiagnosticErrorLog.record(
+                        context = context,
+                        stage = "stt",
+                        provider = entry.kind.name,
+                        model = geminiModel,
+                        detail = "Model $geminiModel does not support audio transcription",
+                    )
                     onFailure(CloudErrorKind.PERMANENT_OR_QUOTA, "Model $geminiModel does not support audio transcription", null, null)
                     return
                 }
                 if (!GeminiTranscriberClient.canInlineAudio(file, compressedFile)) {
                     Log.w(TAG, "Recording too large for Gemini inline audio (pcm=${file.length()}, compressed=${compressedFile?.length()}); trying next candidate")
+                    DiagnosticErrorLog.record(
+                        context = context,
+                        stage = "stt",
+                        provider = entry.kind.name,
+                        model = geminiModel,
+                        detail = "Recording too large for Gemini transcription",
+                    )
                     onFailure(CloudErrorKind.PERMANENT_OR_QUOTA, "Recording too large for Gemini transcription", null, null)
                     return
                 }
@@ -2077,10 +2211,33 @@ class DictationRuntime internal constructor(
                         rawText = result.text,
                     )
                     when {
-                        result.isCancelled || isCancelledOrStale() -> onCancelled()
+                        isCancelledOrStale() -> onCancelled()
+                        result.isCancelled -> {
+                            val timeoutMsg = result.error?.takeIf { it.isNotBlank() } ?: "timeout"
+                            DiagnosticErrorLog.record(
+                                context = context,
+                                stage = "stt",
+                                provider = entry.kind.name,
+                                model = geminiModel,
+                                httpCode = result.httpCode,
+                                detail = timeoutMsg,
+                            )
+                            onFailure(CloudErrorKind.TEMPORARY_BUSY, timeoutMsg, result.httpCode, result.retryAfterMs)
+                        }
                         success -> onSuccessOrNoSpeech(result.text)
                         isNoSpeechTranscript(result.text, result.error) -> onSuccessOrNoSpeech(null)
-                        else -> onFailure(result.errorKind, result.error ?: "empty transcript", result.httpCode, result.retryAfterMs)
+                        else -> {
+                            val err = result.error ?: "empty transcript"
+                            DiagnosticErrorLog.record(
+                                context = context,
+                                stage = "stt",
+                                provider = entry.kind.name,
+                                model = geminiModel,
+                                httpCode = result.httpCode,
+                                detail = err,
+                            )
+                            onFailure(result.errorKind, err, result.httpCode, result.retryAfterMs)
+                        }
                     }
                 }
             }
@@ -2181,8 +2338,14 @@ class DictationRuntime internal constructor(
             // ProviderChain exactly as Phase 2 verified.
             // A translation runs on its own cloud-only chain (and its own cursor, since the shared
             // cursor's step index belongs to the full waterfall).
+            val selectedLocalCleanupModel = LocalCleanupProvider.selectedModel(context)
+            val localCleanupAvailable = ModelDownloader.localCleanupModelFile(context, selectedLocalCleanupModel) != null
             val providerChain = translation?.chain ?: ProviderChainRuntime.effectiveChainForCleanup(
-                ProviderChainStore.load(context), CloudFeatureToggle.cleanupEnabled(context), DictationModeToggle.allowLocalFallback(context)
+                chain = ProviderChainStore.load(context),
+                cloudEnabled = CloudFeatureToggle.cleanupEnabled(context),
+                allowLocalFallback = DictationModeToggle.allowLocalFallback(context),
+                localModelAvailable = localCleanupAvailable,
+                localModelArchive = selectedLocalCleanupModel.archive,
             )
             val cleanupWaterfall = translation?.waterfall ?: ProviderChainRuntime.cleanupWaterfallFor(providerChain)
             val activeCursor = if (translation != null) translationCursor else cleanupCursor
@@ -2274,6 +2437,17 @@ class DictationRuntime internal constructor(
                     // Translated output shares no words with the transcript, so the wording guard
                     // would reject every translation.
                     fidelityGuard = translation == null && PostProcessor.preservesWording(prompt),
+                    onStageStatus = { status -> emitStageStatus(token, status) },
+                    onStepFailure = { step, httpCode, detail ->
+                        DiagnosticErrorLog.record(
+                            context = context,
+                            stage = "cleanup",
+                            provider = step.group.name,
+                            model = step.model,
+                            httpCode = httpCode,
+                            detail = detail,
+                        )
+                    },
                 ) { result ->
                     handler.post {
                         if (!guard.isCurrent(token)) return@post // cancelled or watchdog already reset the UI

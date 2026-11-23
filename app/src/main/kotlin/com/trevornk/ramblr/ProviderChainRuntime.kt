@@ -54,36 +54,66 @@ object ProviderChainRuntime {
 
     /**
      * Ordered transcription candidates. When [allowLocalFallback] is true (the default,
-     * preserving today's behavior), LOCAL is left in the result so cloud-mode callers can fall
-     * through to the on-device floor if the chain says that is the next usable option. When
-     * false (#100: explicit "fall back to on-device if cloud fails" toggle turned off), LOCAL is
-     * stripped from the cloud candidate list entirely -- every cloud candidate failing means the
-     * caller reports an error instead of silently retrying on-device.
+     * preserving today's behavior), LOCAL is left in the result — and appended implicitly if
+     * [localModelAvailable] is true and the chain has no explicit LOCAL entry yet — so cloud-mode
+     * callers can fall through to the on-device floor. When false (#100: explicit "fall back to
+     * on-device if cloud fails" toggle turned off), LOCAL is stripped from the cloud candidate list
+     * entirely -- every cloud candidate failing means the caller reports an error instead of
+     * silently retrying on-device.
      */
-    fun transcriptionCandidates(chain: ProviderChain, allowLocalFallback: Boolean = true): List<ProviderChainEntry> {
+    fun transcriptionCandidates(
+        chain: ProviderChain,
+        allowLocalFallback: Boolean = true,
+        localModelAvailable: Boolean = false,
+    ): List<ProviderChainEntry> {
         val candidates = chain.capableEntriesFor(needsTranscription = true)
             .filterNot { it.kind in transcriptionKindsNotImplemented }
-        return if (allowLocalFallback) candidates else candidates.filterNot { it.kind == ProviderKind.LOCAL }
+        if (!allowLocalFallback) return candidates.filterNot { it.kind == ProviderKind.LOCAL }
+        return if (localModelAvailable && candidates.none { it.kind == ProviderKind.LOCAL }) {
+            candidates + ProviderChainEntry(ProviderKind.LOCAL, "")
+        } else {
+            candidates
+        }
     }
 
     /**
      * Applies the Phase 3 "Use cloud for Cleanup" toggle ([CloudFeatureToggle.cleanupEnabled|
      * setCleanupEnabled]) ahead of cleanup resolution: when [cloudEnabled] is false, every
      * non-LOCAL entry is dropped from the chain before it's handed to [cleanupWaterfallFor],
-     * so cleanup falls back to on-device (if the chain has a LOCAL entry) or is skipped entirely
-     * (empty result -- the existing "no cleanup steps configured" raw-injection path). When
-     * [cloudEnabled] is true (the default), [chain] passes through unchanged -- zero behavior
-     * change for anyone who never touches the new toggle.
+     * so cleanup falls back to on-device (via the chain's LOCAL entry, or an implicit LOCAL
+     * floor when [localModelAvailable] is true and [chain] is non-empty) or is skipped entirely.
      *
-     * [allowLocalFallback] (#100: explicit "fall back to on-device if cloud fails" toggle) only
-     * matters when [cloudEnabled] is true: when false, the LOCAL floor is stripped from the
-     * cloud chain too, so every cloud step failing means cleanup reports an error/raw-injects
+     * When [cloudEnabled] is true (the default) and [allowLocalFallback] is true, an installed
+     * local model ([localModelAvailable]) also ensures an implicit [ProviderKind.LOCAL] floor even
+     * if the user hasn't manually tapped Local in [CleanupActivity]. When [allowLocalFallback] is
+     * false, any LOCAL entry is stripped so failing cloud steps report an error/raw-inject
      * instead of silently completing on-device.
      */
-    fun effectiveChainForCleanup(chain: ProviderChain, cloudEnabled: Boolean, allowLocalFallback: Boolean = true): ProviderChain =
-        if (cloudEnabled) {
-            if (allowLocalFallback) chain else ProviderChain(chain.entries.filterNot { it.kind == ProviderKind.LOCAL })
+    fun effectiveChainForCleanup(
+        chain: ProviderChain,
+        cloudEnabled: Boolean,
+        allowLocalFallback: Boolean = true,
+        localModelAvailable: Boolean = false,
+        localModelArchive: String = "",
+    ): ProviderChain = if (cloudEnabled) {
+        if (!allowLocalFallback) {
+            ProviderChain(chain.entries.filterNot { it.kind == ProviderKind.LOCAL })
+        } else if (
+            localModelAvailable &&
+            chain.entries.isNotEmpty() &&
+            chain.capableEntriesFor(needsTranscription = false).none { it.kind == ProviderKind.LOCAL }
+        ) {
+            ProviderChain(chain.entries + ProviderChainEntry(ProviderKind.LOCAL, localModelArchive))
         } else {
-            ProviderChain(chain.entries.filter { it.kind == ProviderKind.LOCAL })
+            chain
         }
+    } else {
+        val localEntries = chain.entries.filter { it.kind == ProviderKind.LOCAL }
+        when {
+            localEntries.isNotEmpty() -> ProviderChain(localEntries)
+            localModelAvailable && chain.entries.isNotEmpty() ->
+                ProviderChain(listOf(ProviderChainEntry(ProviderKind.LOCAL, localModelArchive)))
+            else -> ProviderChain(emptyList())
+        }
+    }
 }

@@ -24,6 +24,17 @@ class GeminiCleanupProviderTest {
         assertTrue(url.endsWith("/models/${GeminiCleanupProvider.DEFAULT_MODEL}:generateContent"))
     }
 
+    @Test fun `endpointUrl strips leading models prefix so resource names do not double up`() {
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemma-4-31b-it:generateContent",
+            GeminiCleanupProvider.endpointUrl("models/gemma-4-31b-it"),
+        )
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
+            GeminiCleanupProvider.endpointUrl("  MODELS/gemini-3.5-flash-lite  "),
+        )
+    }
+
     @Test fun `key travels in the x-goog-api-key header`() {
         val headers = GeminiCleanupProvider.headers("secret-key")
         assertEquals("secret-key", headers["x-goog-api-key"])
@@ -88,6 +99,28 @@ class GeminiCleanupProviderTest {
         assertNull(result.text)
         assertTrue(result.error != null)
     }
+
+    @Test fun `parseResponse filters thought parts and ignores explicit json null text`() {
+        val thoughtAndNull = """{
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"text": "internal thought", "thought": true},
+                        {"text": null},
+                        {"text": "cleaned text"}
+                    ]
+                }
+            }]
+        }"""
+        val result = GeminiCleanupProvider.parseResponse(thoughtAndNull)
+        assertEquals("cleaned text", result.text)
+        assertNull(result.error)
+
+        val onlyNull = """{"candidates":[{"content":{"parts":[{"text":null}]}}]}"""
+        val nullResult = GeminiCleanupProvider.parseResponse(onlyNull)
+        assertNull(nullResult.text)
+        assertEquals("No text content in response", nullResult.error)
+    }
 }
 
 class GeminiTranscriberClientTest {
@@ -96,6 +129,18 @@ class GeminiTranscriberClientTest {
         val r = GeminiTranscriberClient.parseResponse("""{"candidates":[{"content":{"parts":[{"text":"hi there"}]}}]}""")
         assertEquals("hi there", r.text)
         assertNull(r.error)
+    }
+
+    @Test fun `parseResponse filters thought parts and ignores explicit json null text`() {
+        val mixed = """{"candidates":[{"content":{"parts":[{"text":"thinking","thought":true},{"text":null},{"text":"spoken words"}]}}]}"""
+        val ok = GeminiTranscriberClient.parseResponse(mixed)
+        assertEquals("spoken words", ok.text)
+        assertNull(ok.error)
+
+        val nullStop = """{"candidates":[{"content":{"parts":[{"text":null}]},"finishReason":"STOP"}]}"""
+        val stop = GeminiTranscriberClient.parseResponse(nullStop)
+        assertEquals("", stop.text)
+        assertNull(stop.error)
     }
 
     @Test fun `small recordings are allowed on the inline-audio path (M6)`() {

@@ -169,6 +169,8 @@ internal class ImePanelController(
     private val translationFailedMessage: String = "Translation failed — inserted untranslated text",
     /** Optional 7:00 recording countdown cue (remaining ms while recording, or null to clear). */
     private val renderCountdown: (Long?) -> Unit = {},
+    /** Live retry/failover status hook (TRANSCRIBING / CLEANING only). */
+    private val renderStageStatus: (String) -> Unit = {},
 ) {
     private var active = true
     private var deliveryTerminal = false
@@ -225,6 +227,11 @@ internal class ImePanelController(
             }
         }
         override fun onCleaningStarted() { if (active) renderState(ImeUiState.CLEANING) }
+        override fun onStageStatus(statusText: String) {
+            postToMain {
+                if (active) renderStageStatus(statusText)
+            }
+        }
         override fun onIdleUi() {
             if (!active) return
             renderCountdown(null)
@@ -384,9 +391,17 @@ internal class ImePanelController(
         } else if (cleanupError != null) {
             // A translating dictation that already got a more specific message this round (e.g.
             // "Not translated: needs a cloud provider") keeps it; the generic failure would hide it.
+            val reason = CleanupFailureNotice.summarize(cleanupError)
             notice(
-                if (dictationTranslation == null) "Cleanup failed — inserted raw transcript"
-                else lastMessage ?: translationFailedMessage,
+                if (dictationTranslation == null) {
+                    "Cleanup failed ($reason) — inserted raw transcript"
+                } else {
+                    lastMessage ?: if (translationFailedMessage.contains(" — ")) {
+                        translationFailedMessage.replaceFirst(" — ", " ($reason) — ")
+                    } else {
+                        "$translationFailedMessage ($reason)"
+                    }
+                },
             )
         }
     }

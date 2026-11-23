@@ -500,4 +500,37 @@ class LocalCleanupOutputValidatorTest {
             prompt = realDevicePrompt,
         )
     }
+
+    // ---- Phase 2D filler normalization, self-correction ratio, and canonical numbers -----------
+
+    @Test fun `multi-word and conversational fillers are stripped from length baseline`() {
+        assertAccepted(
+            "so okay well you know I mean the quarterly roadmap needs one final review before launch",
+            "The quarterly roadmap needs one final review before launch.",
+        )
+        assertAccepted(
+            "well okay so you know I mean the deployment pipeline finished cleanly yesterday",
+            "The deployment pipeline finished cleanly.",
+        )
+    }
+
+    @Test fun `self-correction cues lower length collapse minimum ratio to 0_4`() {
+        // Without a self-correction cue, ~0.43 stays rejected as LENGTH_COLLAPSE.
+        assertRejected(
+            LocalCleanupValidation.Reason.LENGTH_COLLAPSE,
+            "send the message to marketing about the budget tomorrow morning before lunch",
+            "Send the message tomorrow morning.",
+        )
+        // With a self-correction cue ("actually" / "wait no"), >= 0.40 survives cleanly.
+        assertAccepted(
+            "meet on Tuesday wait no actually let us move that meeting to Friday afternoon at three",
+            "Let us move that meeting to Friday afternoon at 3.",
+        )
+    }
+
+    @Test fun `validator accepts trailing-zero decimals and 1 rendered as one`() {
+        assertAccepted("the total was 12.00 dollars", "The total was $12.")
+        assertAccepted("check step 08 next", "Check step 8 next.")
+        assertAccepted("choose 1 option only", "Choose one option only.")
+    }
 }

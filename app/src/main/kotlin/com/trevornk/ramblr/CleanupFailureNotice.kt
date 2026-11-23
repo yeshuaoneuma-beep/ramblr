@@ -61,24 +61,56 @@ object CleanupFailureNotice {
             raw.contains("META_REPLY") -> "model replied instead of cleaning up"
             raw.contains("ENTITY_LOST") -> "model changed a name"
             raw.contains("WORDS_INSERTED") -> "model added words you didn't say"
-            // Local engine outcomes.
-            // Model-missing is the one failure the user can actually act on (re-download in
-            // Settings), so it must not fall through to UNKNOWN_REASON. Two distinct strings
-            // reach here: the executor's own pre-flight ("not downloaded", when the pref names a
-            // model with no resolved path) and LlamaCppInference's FileNotFoundException ("not
-            // found at $modelPath", when the pref resolves but the file is gone underneath it).
-            // Both collapse to one phrase -- and critically, to a *fixed literal*: the second
-            // string carries the full `/data/user/0/...` path, which must never reach a floating
-            // overlay pill.
-            raw.contains("model not found") || raw.contains("model not downloaded") ->
+            // Local & pipeline engine outcomes.
+            // Model-missing carries the full `/data/user/0/...` path in one branch, so keep this a fixed literal.
+            raw.contains("model not found", ignoreCase = true) ||
+                raw.contains("model not downloaded", ignoreCase = true) ->
                 "cleanup model isn't installed"
-            raw.contains("timed out") -> "model timed out"
-            raw.contains("empty response") -> "model returned nothing"
-            raw.contains("exceeded time budget") -> "cleanup took too long"
-            // Cloud step. Deliberately keeps the status code (actionable: 401 means a bad key)
-            // and discards the provider's error body, which is unbounded prose.
-            else -> httpStatusIn(raw)?.let { "server error $it" } ?: UNKNOWN_REASON
+            raw.contains("No credential configured", ignoreCase = true) ->
+                "no API key configured"
+            raw.contains("exceeded time budget", ignoreCase = true) ||
+                raw.contains("wall-clock deadline", ignoreCase = true) ||
+                raw.contains("inference budget exceeded", ignoreCase = true) ->
+                "cleanup took too long"
+            raw.contains("cannot fit chunk", ignoreCase = true) ||
+                raw.contains("context size reached", ignoreCase = true) ->
+                "text too long for model"
+            raw.contains("max response length", ignoreCase = true) ->
+                "response hit length limit"
+            raw.contains("repeating loop", ignoreCase = true) ->
+                "model got stuck repeating"
+            raw.contains("empty response", ignoreCase = true) ||
+                raw.contains("No candidates", ignoreCase = true) ||
+                raw.contains("No choices", ignoreCase = true) ||
+                raw.contains("No text content", ignoreCase = true) ->
+                "model returned nothing"
+            // HTTP status code before generic timeout/connection phrases so HTTP 400/503/504 bodies
+            // mentioning "timeout" or "network" still report their actionable status code.
+            httpStatusIn(raw) != null -> "server error ${httpStatusIn(raw)}"
+            raw.contains("timed out", ignoreCase = true) ||
+                raw.contains("timeout", ignoreCase = true) ->
+                "model timed out"
+            isConnectionError(raw) -> "connection error"
+            else -> UNKNOWN_REASON
         }
+    }
+
+    private fun isConnectionError(raw: String): Boolean {
+        val lower = raw.lowercase()
+        return lower.contains("connection failed") ||
+            lower.contains("unable to resolve host") ||
+            lower.contains("unknownhostexception") ||
+            lower.contains("failed to connect") ||
+            lower.contains("connectexception") ||
+            lower.contains("socketexception") ||
+            lower.contains("sockettimeoutexception") ||
+            lower.contains("eofexception") ||
+            lower.contains("ssl") ||
+            lower.contains("tls") ||
+            lower.contains("handshake") ||
+            lower.contains("certificate") ||
+            lower.contains("dns") ||
+            lower.contains("network")
     }
 
     /** Extracts the `NNN` from an `"HTTP NNN: ..."` step failure, if this was one. */

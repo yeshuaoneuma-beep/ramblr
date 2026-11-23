@@ -40,6 +40,22 @@ object CloudLiveWiring {
     ): Boolean = toggleEnabled && !useLocalTranscription && geminiKey.isNotBlank()
 
     /**
+     * Resolves the active, transcription-enabled Gemini chain entry that has a configured
+     * credential, or null if Gemini is absent/disabled/not enabled for transcription in [chain].
+     */
+    internal fun resolveEligibleGeminiEntry(
+        context: Context,
+        chain: ProviderChain = ProviderChainStore.load(context),
+    ): ProviderChainEntry? = ProviderChainRuntime
+        .transcriptionCandidates(chain, allowLocalFallback = false)
+        .firstOrNull { entry ->
+            entry.kind == ProviderKind.GEMINI &&
+                entry.enabled &&
+                entry.useForTranscription &&
+                ProviderCredentialStore.isConfiguredOrLegacy(context, entry)
+        }
+
+    /**
      * A configured live factory, or null when live transcription is not allowed or cannot be
      * built.
      *
@@ -57,10 +73,10 @@ object CloudLiveWiring {
         if (!enabled) return null
         // Read the existing cloud-vs-local gate exactly as DictationRuntime does; no new pref.
         val useLocal = prefs.getBoolean("use_local", true)
-        // #274: entry-based credential lookup via getForKind -- the Gemini key may now live on a
-        // specific chain entry's per-entry slot rather than (or in addition to) the legacy
-        // per-kind slot; getForKind checks both so this stays correct either way.
-        val apiKey = ProviderCredentialStore.getForKind(context, ProviderChainStore.load(context), ProviderKind.GEMINI)
+        if (useLocal) return null
+        val chain = ProviderChainStore.load(context)
+        val geminiEntry = resolveEligibleGeminiEntry(context, chain) ?: return null
+        val apiKey = ProviderCredentialStore.getOrLegacy(context, geminiEntry)
         if (!isLiveAllowed(enabled, useLocal, apiKey)) return null
 
         // Same terms the batch transcription path biases on (#26/#114), read from the same key.

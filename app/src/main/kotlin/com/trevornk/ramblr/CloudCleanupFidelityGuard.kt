@@ -63,7 +63,7 @@ object CloudCleanupFidelityGuard {
     // Cues that the speaker corrected themselves. Dropping the superseded name or words is then the
     // point of cleanup, so neither the lost-name nor the collapse check applies. Deliberately
     // phrases, not single words: "actually" or "I mean" alone are everyday filler.
-    private val SELF_CORRECTION_CUE = Regex(
+    internal val SELF_CORRECTION_CUE = Regex(
         "\\b(no,? sorry|no,? wait|wait,? no|sorry,? i (meant|mean)|i meant|scratch that|never ?mind|" +
             "actually,? (make|let[\u2019']?s make|change)|make that|or rather|correction)\\b",
         RegexOption.IGNORE_CASE,

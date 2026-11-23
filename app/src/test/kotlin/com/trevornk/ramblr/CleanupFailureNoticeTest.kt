@@ -88,7 +88,21 @@ class CleanupFailureNoticeTest {
         // have been 190+. The bubble has no maxLines, so length is the only bound there is.
         val all = listOf(
             rawPromptEcho, rawLengthCollapse, rawLengthExpansion, rawNumericDivergence,
-            rawTimeout, rawEmpty, rawBudget, rawHttp401, null, "",
+            rawTimeout, rawEmpty, rawBudget, rawHttp401,
+            "All cleanup steps failed: timeout",
+            "All cleanup steps failed: wall-clock deadline exceeded",
+            "All cleanup steps failed: inference budget exceeded",
+            "All cleanup steps failed: step budget cannot fit chunk 2/5",
+            "All cleanup steps failed: No credential configured for OPENAI_DIRECT",
+            "All cleanup steps failed: Model stuck in repeating loop",
+            "All cleanup steps failed: Local model exceeded max response length (512 pieces)",
+            "All cleanup steps failed: Context size reached",
+            "All cleanup steps failed: No candidates in response",
+            "All cleanup steps failed: No choices in response",
+            "All cleanup steps failed: No text content in response",
+            "All cleanup steps failed: Unable to resolve host \"api.openai.com\"",
+            "All cleanup steps failed: javax.net.ssl.SSLHandshakeException: Handshake failed",
+            null, "",
         )
         for (raw in all) {
             for (method in InjectMethod.values()) {
@@ -175,5 +189,24 @@ class CleanupFailureNoticeTest {
         )
         assertFalse("leaked a filesystem path: \"$message\"", message.contains("/data/"))
         assertFalse("leaked the model filename: \"$message\"", message.contains(".gguf"))
+    }
+
+    @Test fun `phase 2d error classes map to concrete non-unknown messages`() {
+        assertEquals("model timed out", CleanupFailureNotice.summarize("timeout"))
+        assertEquals("model timed out", CleanupFailureNotice.summarize("SocketTimeoutException: timeout"))
+        assertEquals("cleanup took too long", CleanupFailureNotice.summarize("wall-clock deadline exceeded"))
+        assertEquals("cleanup took too long", CleanupFailureNotice.summarize("inference budget exceeded"))
+        assertEquals("text too long for model", CleanupFailureNotice.summarize("cannot fit chunk 2/5"))
+        assertEquals("text too long for model", CleanupFailureNotice.summarize("context size reached"))
+        assertEquals("no API key configured", CleanupFailureNotice.summarize("No credential configured for GEMINI_DIRECT"))
+        assertEquals("model got stuck repeating", CleanupFailureNotice.summarize("Model stuck in repeating loop"))
+        assertEquals("response hit length limit", CleanupFailureNotice.summarize("Local model exceeded max response length (512 pieces)"))
+        assertEquals("model returned nothing", CleanupFailureNotice.summarize("No candidates in response"))
+        assertEquals("model returned nothing", CleanupFailureNotice.summarize("No choices in response"))
+        assertEquals("model returned nothing", CleanupFailureNotice.summarize("No text content in response"))
+        assertEquals("connection error", CleanupFailureNotice.summarize("Unable to resolve host \"api.openai.com\": No address associated with hostname"))
+        assertEquals("connection error", CleanupFailureNotice.summarize("javax.net.ssl.SSLHandshakeException: Chain validation failed"))
+        assertEquals("connection error", CleanupFailureNotice.summarize("Connection failed: Failed to connect to /10.0.0.1:443"))
+        assertEquals("server error 503", CleanupFailureNotice.summarize("All cleanup steps failed: HTTP 503: upstream connect timeout"))
     }
 }

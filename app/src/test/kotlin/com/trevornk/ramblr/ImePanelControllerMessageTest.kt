@@ -14,6 +14,7 @@ class ImePanelControllerMessageTest {
         val messages = mutableListOf<String>()
         var translation: String? = null
         val levels = mutableListOf<Float>()
+        val stageStatuses = mutableListOf<String>()
     }
 
     private val identity = ImeEditorIdentity("com.example.app", 0, 0)
@@ -31,6 +32,7 @@ class ImePanelControllerMessageTest {
         translationLanguage = { ui.translation },
         renderLevel = if (withLevels) { l -> ui.levels.add(l) } else null,
         translationFailedMessage = "Translation failed",
+        renderStageStatus = { ui.stageStatuses.add(it) },
     ).also { it.onEditorChanged(1L, identity, Any()) }
 
     @Test fun `an error stays on screen after the idle repaint`() {
@@ -73,7 +75,7 @@ class ImePanelControllerMessageTest {
         listener.deliverText("raw words", rawText = null, paidFallbackGroup = null, cleanupError = "timeout", feedbackDurationMs = 0)
         listener.onIdleUi()
 
-        assertEquals("Cleanup failed — inserted raw transcript", ui.messages.last())
+        assertEquals("Cleanup failed (model timed out) — inserted raw transcript", ui.messages.last())
     }
 
     @Test fun `a message does not follow the user into another field or a hidden keyboard`() {
@@ -119,7 +121,7 @@ class ImePanelControllerMessageTest {
         listener.deliverText("hello", rawText = null, paidFallbackGroup = null, cleanupError = "timeout", feedbackDurationMs = 0)
         listener.onIdleUi()
 
-        assertEquals("Translation failed", ui.messages.last())
+        assertEquals("Translation failed (model timed out)", ui.messages.last())
     }
 
     @Test fun `a more specific translation message is not replaced by the generic failure`() {
@@ -143,5 +145,16 @@ class ImePanelControllerMessageTest {
         assertTrue(withMeter.wantsAudioLevel())
         withMeter.onAudioLevel(0.4f)
         assertEquals(listOf(0.4f), ui.levels)
+    }
+
+    @Test fun `stage status updates reach panel renderer while controller is active`() {
+        val ui = Ui()
+        val c = controller(ui)
+        c.listener.onStageStatus("OpenAI busy — retrying…")
+        assertEquals(listOf("OpenAI busy — retrying…"), ui.stageStatuses)
+
+        c.onLifecycleLost(ImeLifecycleLoss.HIDDEN)
+        c.listener.onStageStatus("ignored after loss")
+        assertEquals(1, ui.stageStatuses.size)
     }
 }

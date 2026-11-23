@@ -98,9 +98,11 @@ class VocabularyEchoGuardTest {
         assertFalse(VocabularyEchoGuard.isEcho("I never output a hint unless it matters", terms, prompt))
     }
 
-    @Test fun `empty vocabulary never matches`() {
+    @Test fun `empty vocabulary never matches list echo, but still catches echoed instruction prompt`() {
         assertFalse(VocabularyEchoGuard.isEcho("Zorbex, Quillfarm, Nimbato", emptyList()))
         assertFalse(VocabularyEchoGuard.isEcho("anything at all", emptyList(), "anything at all and then some more words"))
+        val prompt = GeminiTranscriberClient.transcribePrompt(emptyList())
+        assertTrue(VocabularyEchoGuard.isEcho(prompt, emptyList(), prompt))
     }
 
     @Test fun `a vocabulary shorter than the minimum list cannot be list-echoed`() {

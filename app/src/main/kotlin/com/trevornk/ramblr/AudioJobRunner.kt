@@ -156,7 +156,11 @@ internal class AudioJobRunner(
                 useLocal = prefs.getBoolean("use_local", true),
                 localReady = localModel != null,
                 allowCloudFallback = DictationModeToggle.allowCloudFallback(context),
-                candidates = ProviderChainRuntime.transcriptionCandidates(chain, DictationModeToggle.allowLocalFallback(context)),
+                candidates = ProviderChainRuntime.transcriptionCandidates(
+                    chain = chain,
+                    allowLocalFallback = DictationModeToggle.allowLocalFallback(context),
+                    localModelAvailable = localModel != null,
+                ),
                 hasCredential = { ProviderCredentialStore.getOrLegacy(context, it).isNotBlank() },
             )
             if (plan.routes.isEmpty()) throw Stop(plan.unavailable ?: JobFailure.NO_PROVIDER)
@@ -381,8 +385,14 @@ internal class AudioJobRunner(
      *  a long transcript is far beyond a cleanup model's context window. */
     private fun cleanUp(id: String, raw: String): CleanupOutcome {
         if (!PostProcessingToggle.shouldRunCleanup(PostProcessingToggle.isEnabled(context))) return CleanupOutcome(null, false)
+        val selectedLocalModel = LocalCleanupProvider.selectedModel(context)
+        val localCleanupAvailable = ModelDownloader.localCleanupModelFile(context, selectedLocalModel) != null
         val chain = ProviderChainRuntime.effectiveChainForCleanup(
-            ProviderChainStore.load(context), CloudFeatureToggle.cleanupEnabled(context), DictationModeToggle.allowLocalFallback(context),
+            chain = ProviderChainStore.load(context),
+            cloudEnabled = CloudFeatureToggle.cleanupEnabled(context),
+            allowLocalFallback = DictationModeToggle.allowLocalFallback(context),
+            localModelAvailable = localCleanupAvailable,
+            localModelArchive = selectedLocalModel.archive,
         )
         val waterfall = ProviderChainRuntime.cleanupWaterfallFor(chain)
         if (waterfall.steps.isEmpty()) return CleanupOutcome(null, false)

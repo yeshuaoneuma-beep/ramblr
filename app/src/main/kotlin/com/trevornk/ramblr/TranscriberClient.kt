@@ -207,8 +207,9 @@ object TranscriberClient {
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 cancelHolder.clear(call)
-                val cancelled = call.isCanceled()
-                callback(Result(null, e.message, isTransientIo = !cancelled, isCancelled = cancelled))
+                val cancelled = call.isCanceled() && cancelHolder.isCancelled
+                val error = if (!cancelled && call.isCanceled()) normalizedTimeoutError(e) else e.message
+                callback(Result(null, error, isTransientIo = !cancelled, isCancelled = cancelled))
             }
             override fun onResponse(call: Call, response: Response) {
                 cancelHolder.clear(call)
@@ -234,13 +235,17 @@ object TranscriberClient {
                         }
                     },
                     onFailure = { e ->
-                        val cancelled = call.isCanceled()
-                        callback(Result(null, e.message, isTransientIo = !cancelled, isCancelled = cancelled))
+                        val cancelled = call.isCanceled() && cancelHolder.isCancelled
+                        val error = if (!cancelled && call.isCanceled()) normalizedTimeoutError(e) else e.message
+                        callback(Result(null, error, isTransientIo = !cancelled, isCancelled = cancelled))
                     },
                 )
             }
         })
     }
+
+    private fun normalizedTimeoutError(e: Throwable): String =
+        e.message?.takeIf { it.isNotBlank() && !it.equals("Canceled", ignoreCase = true) } ?: "timeout"
 
     private fun errorFromResponse(body: String, httpCode: Int): String {
         val fromEnvelope = runCatching {

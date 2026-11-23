@@ -81,12 +81,19 @@ object OnboardingWizard {
 
     /**
      * Whether the selected transcription path has a usable local model. Checking the selected
-     * archive prevents an unrelated installed model from making Settings claim the app is ready.
+     * archive prevents an unrelated unknown model from making Settings claim the app is ready,
+     * while a blank selection falls back to any installed catalog model (matching [DictationRuntime]
+     * and [TranscriptionActivity]).
      */
     fun isTranscriptionModelReady(
         transcriptionLocal: Boolean,
         selectedModel: String,
         knownModels: Collection<String>,
         installedModels: Collection<String>,
-    ): Boolean = !transcriptionLocal || selectedModel in knownModels && selectedModel in installedModels
+    ): Boolean {
+        if (!transcriptionLocal) return true
+        val trimmed = selectedModel.trim()
+        if (trimmed.isEmpty()) return knownModels.any { it in installedModels }
+        return trimmed in knownModels && trimmed in installedModels
+    }
 }

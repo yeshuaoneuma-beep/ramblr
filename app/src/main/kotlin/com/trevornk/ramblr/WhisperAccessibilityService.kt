@@ -394,6 +394,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
     internal val runtimeListener = object : RuntimeListener {
         override fun onRecordingStartRequested() {
             clearRecordingCountdownUi()
+            clearStageStatusPill()
             // A still-pending preview (#40) from the previous dictation shouldn't linger silently
             // while a new one starts -- resolve it the same safe way a timeout would.
             pendingPreview?.let { resolvePreview { p -> p.timeout() } }
@@ -458,9 +459,14 @@ open class WhisperAccessibilityService : AccessibilityService() {
             setAppearance(COLOR_BUSY)
         }
 
+        override fun onStageStatus(statusText: String) {
+            showStageStatusPill(statusText)
+        }
+
         override fun onIdleUi() {
             cancelPendingRingHoldRunnables()
             clearRecordingCountdownUi()
+            clearStageStatusPill()
             clearDictationTarget()
             handler.post {
                 clearDiscardHoldFeedback(restoreRecordingUi = false)
@@ -521,6 +527,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
             cleanupError: String?,
             feedbackDurationMs: Long,
         ) {
+            clearStageStatusPill()
             // A password field is never a destination, and nothing about the dictation is kept.
             if (resultTargetsPasswordField(dictationTarget)) {
                 discardPasswordFieldResult()
@@ -848,6 +855,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
     /** 7:00 recording countdown cue state. Main thread only. */
     private var recordingCountdownRemainingMs: Long? = null
     private var countdownPillShowing = false
+    private var stageStatusPillShowing = false
+    private var activeStageStatusText: String? = null
     private var countdownNotificationPosted = false
     private var feedbackView: TextView? = null
     /** True from [showFeedback] until [hideFeedback] runs; keeps the keyboard-only gate from
@@ -901,6 +910,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         val wasShowing = feedbackShowing
         feedbackShowing = false
         countdownPillShowing = false
+        stageStatusPillShowing = false
         setFeedbackTouchable(false)
         // alpha only, never GONE (real root cause, verified via UID/window-token-attributed
         // BLASTSyncEngine analysis on-device: this window's WindowToken is type=2032
@@ -1322,6 +1332,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         pendingPreviewTarget = null
         cancelPendingRingHoldRunnables()
         clearRecordingCountdownUi()
+        clearStageStatusPill()
         clearDiscardHoldFeedback(restoreRecordingUi = false)
         dismissStyleMenu()
         removeOverlay()
@@ -1975,11 +1986,25 @@ open class WhisperAccessibilityService : AccessibilityService() {
             (runtimeInstance == null || runtimeInstance?.isRecording() == true)
         val keepCountdownPill = activeCountdown &&
             RecordingCountdown.accessibilitySurface(keyguardLocked, screenOff) == RecordingCountdownSurface.OVERLAY_PILL
+        val activeStageStatus = activeStageStatusText?.takeIf {
+            runtimeInstance?.currentState() == RecordingStateMachine.State.TRANSCRIBING
+        }
+        val keepStageStatusPill = activeStageStatus != null && feedbackBubbleAllowed(keyguardLocked, screenOff)
         if (!visible) {
-            if (!keepCountdownPill) handler.post(hideFeedback)
+            if (!keepCountdownPill && !keepStageStatusPill) {
+                stageStatusPillShowing = false
+                handler.post(hideFeedback)
+            }
             dismissStyleMenu()
+        } else if (!keepCountdownPill && !keepStageStatusPill && stageStatusPillShowing) {
+            clearStageStatusPillNow(clearActiveText = false)
         }
         reconcileRecordingCountdownSurface(keyguardLocked, screenOff)
+        if (keepStageStatusPill && !stageStatusPillShowing && activeStageStatus != null) {
+            showStageStatusPill(activeStageStatus)
+        } else if (!keepStageStatusPill && stageStatusPillShowing) {
+            clearStageStatusPillNow(clearActiveText = false)
+        }
     }
 
     /** Whether an on-screen keyboard window is currently showing, for [RingVisibilityMode].
@@ -2545,6 +2570,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
             view.animate().alpha(1f).setDuration(120).start()
             handler.postDelayed(hideFeedback, durationMs)
             countdownPillShowing = false
+            stageStatusPillShowing = false
+            activeStageStatusText = null
             feedbackShowing = true
             // A bubble that appears while the keyboard-only gate has the ring hidden (e.g. the
             // clipboard fallback, where no field and so no keyboard is up) brings the ring back
@@ -3435,6 +3462,58 @@ open class WhisperAccessibilityService : AccessibilityService() {
         if (countdownPillShowing) hideCountdownPillImmediately()
         countdownNotificationPosted = false
         BackgroundDictationNotifications.cancelRecordingCountdown(this)
+    }
+
+    private fun showStageStatusPill(text: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { showStageStatusPill(text) }
+            return
+        }
+        activeStageStatusText = text
+        if (!feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff())) return
+        val view = feedbackView ?: return
+        val bubbleParams = layoutParams ?: return
+        val feedbackParams = feedbackLayoutParams ?: return
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        handler.removeCallbacks(hideFeedback)
+        view.text = text
+        view.background = pill(COLOR_FEEDBACK_BG)
+        setFeedbackTouchable(false)
+        positionFeedback(feedbackParams, bubbleParams, view.height)
+        wm.updateViewLayout(view, feedbackParams)
+        view.post {
+            if (feedbackView === view && stageStatusPillShowing) {
+                positionFeedback(feedbackParams, bubbleParams, view.height)
+                wm.updateViewLayout(view, feedbackParams)
+            }
+        }
+        view.animate().cancel()
+        view.visibility = View.VISIBLE
+        view.alpha = 1f
+        countdownPillShowing = false
+        stageStatusPillShowing = true
+    }
+
+    private fun clearStageStatusPill() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { clearStageStatusPill() }
+            return
+        }
+        clearStageStatusPillNow(clearActiveText = true)
+    }
+
+    private fun clearStageStatusPillNow(clearActiveText: Boolean) {
+        if (clearActiveText) activeStageStatusText = null
+        if (!stageStatusPillShowing) return
+        stageStatusPillShowing = false
+        handler.removeCallbacks(hideFeedback)
+        setFeedbackTouchable(false)
+        feedbackView?.let {
+            it.animate().cancel()
+            it.visibility = View.VISIBLE
+            it.alpha = 0f
+        }
     }
 
     /** 3-second hold while RECORDING: discard the active recording without transcribing. */

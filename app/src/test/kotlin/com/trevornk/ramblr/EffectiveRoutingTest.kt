@@ -186,4 +186,29 @@ class EffectiveRoutingTest {
         assertEquals("Cloud (OpenAI) only", summary(setOf("b")))
         assertEquals("Cloud (not configured) only", summary(emptySet()))
     }
+
+    @Test fun `on-device fallback suffix is gated on localAvailable for transcription and cleanup`() {
+        assertEquals(
+            "Cloud (OpenAI) only",
+            EffectiveRouting.transcription(
+                chain = chain(openAiEntry),
+                useLocalTranscription = false,
+                allowLocalFallback = true,
+                allowCloudFallback = false,
+                isConfigured = { it.kind == ProviderKind.OPENAI },
+                localAvailable = false,
+            ),
+        )
+        assertEquals(
+            "Cloud (OpenAI) only",
+            EffectiveRouting.cleanup(
+                chain = chain(openAiEntry),
+                postProcessingEnabled = true,
+                cloudCleanupEnabled = true,
+                allowLocalFallback = true,
+                isConfigured = { it.kind == ProviderKind.OPENAI },
+                localAvailable = false,
+            ),
+        )
+    }
 }

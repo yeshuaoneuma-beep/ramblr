@@ -29,6 +29,7 @@ class DataLogsActivity : BaseSettingsActivity() {
     private lateinit var qualityLogEnabledSwitch: com.google.android.material.materialswitch.MaterialSwitch
     private lateinit var debugVisibilitySwitch: com.google.android.material.materialswitch.MaterialSwitch
     private lateinit var backupRowSub: TextView
+    private lateinit var recentErrorsRowSub: TextView
 
     /** The screens this activity's rows are split across since the settings regroup (see
      *  [EXTRA_SECTION]); no section shows all three, under the old "Data & Logs" title. */
@@ -144,6 +145,18 @@ class DataLogsActivity : BaseSettingsActivity() {
             "Send the saved text pairs and provider/model ids to any app. Contains your real text"
         ) { shareQualityLog() })
 
+        val recentErrorsRow = settingsRow(
+            "Recent errors",
+            recentErrorsSummary()
+        ) { showRecentErrors() }
+        recentErrorsRowSub = recentErrorsRow.findViewWithTag("subtitle")
+        diagnostics.addView(recentErrorsRow)
+
+        diagnostics.addView(settingsRow(
+            "Share error log",
+            "Send recent scrubbed API and pipeline errors to any app. No API keys or dictated text"
+        ) { shareErrorLog() })
+
         for ((section, container) in listOf(Section.HISTORY to history, Section.BACKUP to backup, Section.DIAGNOSTICS to diagnostics)) {
             if (shown == null || shown == section) root.addView(container)
         }
@@ -179,6 +192,7 @@ class DataLogsActivity : BaseSettingsActivity() {
         debugVisibilitySwitch.isChecked = DebugVisibilityToggle.isEnabled(this)
         historyViewerRowSub.text = if (historyOn) "Find an old dictation and tap it to copy"
             else "Saving is off. Shows what was kept from before, if anything"
+        recentErrorsRowSub.text = recentErrorsSummary()
     }
 
     // --- Backup / restore (#103) ---
@@ -464,6 +478,55 @@ class DataLogsActivity : BaseSettingsActivity() {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         startActivity(Intent.createChooser(intent, "Share quality log"))
+    }
+
+    /** Shares files/diagnostic_errors.log via FileProvider (covered by benchmark_log_file_paths.xml). */
+    private fun shareErrorLog() {
+        val recent = DiagnosticErrorLog.readRecent(this)
+        val file = DiagnosticErrorLog.logFile(this)
+        if (recent.isEmpty() || !file.exists() || file.length() == 0L) {
+            toast("No errors logged yet")
+            return
+        }
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(intent, "Share error log"))
+    }
+
+    private fun recentErrorsSummary(): String {
+        val count = DiagnosticErrorLog.readRecent(this).size
+        return if (count == 0) "No recent errors recorded"
+        else "$count recent scrubbed API/pipeline error(s) — tap to inspect"
+    }
+
+    private fun showRecentErrors() {
+        val entries = DiagnosticErrorLog.readRecent(this).asReversed()
+        val body = TextView(this).apply {
+            text = if (entries.isEmpty()) "No recent errors recorded." else entries.joinToString("\n\n")
+            textSize = 12f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(dp(24), dp(16), dp(24), dp(16))
+        }
+        val builder = android.app.AlertDialog.Builder(this)
+            .setTitle("Recent errors")
+            .setView(ScrollView(this).apply { addView(body) })
+            .setNegativeButton("Close", null)
+        if (entries.isNotEmpty()) {
+            builder.setPositiveButton("Copy") { _, _ ->
+                ClipboardUtil.copy(this, entries.joinToString("\n"))
+                toast("Copied to clipboard")
+            }
+            builder.setNeutralButton("Clear") { _, _ ->
+                DiagnosticErrorLog.clear(this)
+                refresh()
+                toast("Error log cleared")
+            }
+        }
+        builder.show()
     }
 
     companion object {

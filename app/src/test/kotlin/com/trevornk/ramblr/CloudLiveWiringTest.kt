@@ -41,10 +41,14 @@ class CloudLiveWiringTest {
         prefs().edit().putBoolean("use_local", useLocal).apply()
     }
 
-    /** All three conditions satisfied: opted in, cloud transcription selected, Gemini key set. */
+    /** All three conditions satisfied: opted in, cloud transcription selected, active Gemini chain entry + key set. */
     private fun configureFullyEnabled() {
         CloudLiveToggle.setEnabled(app, true)
         setUseLocal(false)
+        ProviderChainStore.save(
+            app,
+            ProviderChain(listOf(ProviderChainEntry(ProviderKind.GEMINI, GeminiTranscriberClient.DEFAULT_MODEL))),
+        )
         ProviderCredentialStore.setLegacyByKind(app, ProviderKind.GEMINI, "test-gemini-key")
     }
 
@@ -97,6 +101,38 @@ class CloudLiveWiringTest {
     @Test fun `non-null only when all three conditions hold`() {
         configureFullyEnabled()
         assertNotNull(CloudLiveWiring.factoryOrNull(app))
+    }
+
+    @Test fun `null when Gemini is missing disabled or not enabled for transcription in chain even with legacy key`() {
+        configureFullyEnabled()
+
+        // Chain has only OpenAI (legacy Gemini key present on disk must NOT bypass chain).
+        ProviderChainStore.save(app, ProviderChain(listOf(ProviderChainEntry(ProviderKind.OPENAI, "gpt-transcribe"))))
+        assertNull(CloudLiveWiring.factoryOrNull(app))
+
+        // Disabled Gemini entry.
+        ProviderChainStore.save(
+            app,
+            ProviderChain(listOf(ProviderChainEntry(ProviderKind.GEMINI, GeminiTranscriberClient.DEFAULT_MODEL, enabled = false))),
+        )
+        assertNull(CloudLiveWiring.factoryOrNull(app))
+
+        // Cleanup-only Gemini entry (useForTranscription = false).
+        ProviderChainStore.save(
+            app,
+            ProviderChain(
+                listOf(
+                    ProviderChainEntry(
+                        kind = ProviderKind.GEMINI,
+                        model = GeminiCleanupProvider.DEFAULT_MODEL,
+                        enabled = true,
+                        useForTranscription = false,
+                        useForCleanup = true,
+                    )
+                )
+            ),
+        )
+        assertNull(CloudLiveWiring.factoryOrNull(app))
     }
 
     @Test fun `the constructed factory produces a session`() {

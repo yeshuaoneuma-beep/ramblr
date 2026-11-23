@@ -30,6 +30,8 @@ object VocabularyTerms {
     /** Serializes a term list back to the newline-delimited prefs format. */
     fun serialize(terms: List<String>): String = terms.joinToString("\n")
 
+    const val MAX_TRANSCRIPTION_PROMPT_CHARS = 750
+
     /**
      * Renders [terms] as a comma-joined prompt string for transcription-stage vocabulary
      * biasing (#114): OpenAI's `/v1/audio/transcriptions` `prompt` field and Gemini's
@@ -37,8 +39,28 @@ object VocabularyTerms {
      * a plain comma-joined list is the documented pattern for both APIs, distinct from
      * [PostProcessor.vocabularyClause]'s full sentence used for cleanup-stage prompts. Returns
      * an empty string when [terms] is empty so callers can skip sending anything.
+     *
+     * Capped at [MAX_TRANSCRIPTION_PROMPT_CHARS] (~224 Whisper tokens) so oversized personal lists
+     * never exceed Whisper's prompt token limit or trigger input/echo bloat.
      */
-    fun asTranscriptionPrompt(terms: List<String>): String = terms.joinToString(", ")
+    fun asTranscriptionPrompt(terms: List<String>): String {
+        val out = StringBuilder()
+        for (raw in terms) {
+            val term = raw.trim()
+            if (term.isEmpty()) continue
+            if (out.isEmpty()) {
+                if (term.length > MAX_TRANSCRIPTION_PROMPT_CHARS) {
+                    return term.take(MAX_TRANSCRIPTION_PROMPT_CHARS)
+                }
+                out.append(term)
+            } else if (out.length + 2 + term.length <= MAX_TRANSCRIPTION_PROMPT_CHARS) {
+                out.append(", ").append(term)
+            } else {
+                break
+            }
+        }
+        return out.toString()
+    }
 
     /**
      * Whether the vocabulary terms are actually applied anywhere in the user's current

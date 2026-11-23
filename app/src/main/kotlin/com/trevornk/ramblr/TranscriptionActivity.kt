@@ -417,7 +417,7 @@ class TranscriptionActivity : BaseSettingsActivity() {
     private fun cloudLiveSubtitle(): String = cloudLiveSubtitleText(
         enabled = CloudLiveToggle.isEnabled(this),
         useLocalTranscription = prefs().getBoolean("use_local", true),
-        hasGeminiKey = ProviderCredentialStore.isConfiguredForKind(this, ProviderChainStore.load(this), ProviderKind.GEMINI),
+        hasGeminiKey = CloudLiveWiring.resolveEligibleGeminiEntry(this, ProviderChainStore.load(this)) != null,
     )
 
     /** Persists intent only. The switch never edits `use_local`, the chain, or any credential --
@@ -437,6 +437,7 @@ class TranscriptionActivity : BaseSettingsActivity() {
         allowLocalFallback = DictationModeToggle.allowLocalFallback(this),
         allowCloudFallback = DictationModeToggle.allowCloudFallback(this),
         isConfigured = { ProviderCredentialStore.isConfiguredOrLegacy(this, it) },
+        localAvailable = LocalTranscriber.availableModels(this).isNotEmpty(),
     )
 
     /**
@@ -690,6 +691,22 @@ class TranscriptionActivity : BaseSettingsActivity() {
          *  [CleanupDestination.cloudTranscriptionSubtitleDetail] for the same "provider · model"
          *  detail at a glance). Pure/static so MainActivity can compute it without touching
          *  any view state owned by this Activity. */
+        internal fun resolveInstalledTranscriptionModel(
+            context: android.content.Context,
+            persistIfBlank: Boolean = false,
+        ): Model? {
+            val prefs = context.getSharedPreferences("ramblr", android.content.Context.MODE_PRIVATE)
+            val archive = prefs.getString("model_name", "") ?: ""
+            if (archive.isNotBlank()) {
+                return MODEL_CATALOG.firstOrNull { it.archive == archive && ModelDownloader.isInstalled(context, it) }
+            }
+            val fallback = MODEL_CATALOG.firstOrNull { ModelDownloader.isInstalled(context, it) } ?: return null
+            if (persistIfBlank) {
+                prefs.edit().putString("model_name", fallback.archive).apply()
+            }
+            return fallback
+        }
+
         fun subtitle(context: android.content.Context): String {
             val prefs = context.getSharedPreferences("ramblr", android.content.Context.MODE_PRIVATE)
             val useLocal = prefs.getBoolean("use_local", true)
@@ -698,8 +715,7 @@ class TranscriptionActivity : BaseSettingsActivity() {
                 val entry = CleanupDestination.firstCloudTranscription(chain)
                 return if (entry != null) "Cloud · ${CleanupDestination.cloudTranscriptionSubtitleDetail(chain)}" else "Cloud · set up a provider"
             }
-            val archive = prefs.getString("model_name", "") ?: ""
-            val model = MODEL_CATALOG.firstOrNull { it.archive == archive && ModelDownloader.isInstalled(context, it) }
+            val model = resolveInstalledTranscriptionModel(context, persistIfBlank = false)
             return if (model != null) "Local · ${model.name}" else "Local · no model installed yet"
         }
     }

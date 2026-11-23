@@ -501,6 +501,7 @@ class RamblrImeService : InputMethodService() {
                 postNotice = { BackgroundDictationNotifications.postResult(this, it) },
             ),
             renderCountdown = ::renderRecordingCountdown,
+            renderStageStatus = ::renderStageStatus,
         )
         // #233 Phase 1: the IME is the first (and only) host to reach the merged cloud-live seam.
         // CloudLiveWiring returns null unless the user opted in, chose cloud transcription, and
@@ -702,6 +703,17 @@ class RamblrImeService : InputMethodService() {
 
     private fun showMessage(message: String) {
         statusView?.text = message
+    }
+
+    private fun renderStageStatus(statusText: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { renderStageStatus(statusText) }
+            return
+        }
+        val state = lastRenderedState
+        if (state == ImeUiState.TRANSCRIBING || state == ImeUiState.CLEANING) {
+            statusView?.text = statusText
+        }
     }
 
     private fun registerNetworkCallback() {

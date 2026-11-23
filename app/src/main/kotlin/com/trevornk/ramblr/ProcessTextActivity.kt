@@ -84,11 +84,15 @@ class ProcessTextActivity : Activity() {
             is ProcessTextParse.Accepted -> parse.request
         }
 
+        val localCleanupModel = LocalCleanupProvider.selectedModel(this)
+        val localCleanupAvailable = ModelDownloader.localCleanupModelFile(this, localCleanupModel) != null
         val plan = ProcessTextCleanupPlanner.plan(
             chain = ProviderChainStore.load(this),
             cloudCleanupEnabled = CloudFeatureToggle.cleanupEnabled(this),
             allowLocalFallback = DictationModeToggle.allowLocalFallback(this),
             isCredentialConfigured = { kind -> ProviderCredentialStore.isConfiguredForKind(this, ProviderChainStore.load(this), kind) },
+            localModelAvailable = localCleanupAvailable,
+            localModelArchive = localCleanupModel.archive,
         )
         val ready = when (plan) {
             is ProcessTextCleanupPlan.Unavailable -> {

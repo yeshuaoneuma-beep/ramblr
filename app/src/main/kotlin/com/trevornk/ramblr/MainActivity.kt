@@ -1239,12 +1239,18 @@ class MainActivity : BaseSettingsActivity() {
      * comment on the same issue), which then failed with a confusing "Set API key" error that had
      * nothing to do with the real cause.
      */
-    private fun transcriptionModelReady(): Boolean = OnboardingWizard.isTranscriptionModelReady(
-        transcriptionLocal = prefs().getBoolean("use_local", true),
-        selectedModel = prefs().getString("model_name", "") ?: "",
-        knownModels = MODEL_CATALOG.map { it.archive },
-        installedModels = LocalTranscriber.availableModels(this),
-    )
+    private fun transcriptionModelReady(): Boolean {
+        val useLocal = prefs().getBoolean("use_local", true)
+        if (useLocal && (prefs().getString("model_name", "") ?: "").isBlank()) {
+            TranscriptionActivity.resolveInstalledTranscriptionModel(this, persistIfBlank = true)
+        }
+        return OnboardingWizard.isTranscriptionModelReady(
+            transcriptionLocal = useLocal,
+            selectedModel = prefs().getString("model_name", "") ?: "",
+            knownModels = MODEL_CATALOG.map { it.archive },
+            installedModels = LocalTranscriber.availableModels(this),
+        )
+    }
 
     private fun showOnboardingTryStep() {
         markOnboardingStep(STEP_TRY)

@@ -294,4 +294,44 @@ class BackgroundTranscriptionServiceTest {
         assertEquals(DataLogsActivity::class.java.name, intent.component?.className)
         assertTrue(intent.getBooleanExtra(DataLogsActivity.EXTRA_SHOW_HISTORY, false))
     }
+
+    @Test fun `notification ids are globally distinct across dictation and audio jobs`() {
+        val ids = listOf(
+            BackgroundDictationNotifications.ONGOING_ID,
+            BackgroundDictationNotifications.RESULT_ID,
+            BackgroundDictationNotifications.RECORDING_COUNTDOWN_ID,
+            AudioJobNotifications.ONGOING_ID,
+            AudioJobNotifications.RECORDING_ID,
+            IconVisibilityNotifications.NOTIFICATION_ID,
+            ServiceRecoveryNotifications.NOTIFICATION_ID,
+        )
+        assertEquals(0x1C0A, BackgroundDictationNotifications.RECORDING_COUNTDOWN_ID)
+        assertEquals(ids.size, ids.toSet().size)
+    }
+
+    @Test fun `updateStatus updates ongoing ONGOING_ID notification in place preserving invariants`() {
+        shadowOf(nm()).setNotificationsEnabled(true)
+        val work = BackgroundTranscriptionService.work(app)
+        work.begin()
+        try {
+            Robolectric.buildService(
+                BackgroundTranscriptionService::class.java,
+                Intent(app, BackgroundTranscriptionService::class.java),
+            ).create().startCommand(0, 1).get()
+
+            work.updateStatus("OpenAI busy — retrying…")
+            shadowOf(Looper.getMainLooper()).idle()
+
+            val updated = shadowOf(nm()).getNotification(BackgroundDictationNotifications.ONGOING_ID)
+            assertNotNull(updated)
+            assertEquals(BackgroundDictationNotifications.WORK_CHANNEL_ID, updated.channelId)
+            assertEquals("OpenAI busy — retrying…", updated.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+            assertTrue(updated.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
+            assertEquals(Notification.COLOR_DEFAULT, updated.color)
+            assertEquals(R.drawable.ic_mic, updated.smallIcon.resId)
+            assertEquals("Cancel", updated.actions.single().title.toString())
+        } finally {
+            work.end()
+        }
+    }
 }
