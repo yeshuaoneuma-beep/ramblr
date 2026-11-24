@@ -51,7 +51,7 @@ class TranscriptionChainRetryTest {
 
     // --- Pure TranscriptionChain.Walk state machine tests ---
 
-    @Test fun `multi-cloud walks P1 then P2 then revisits P1 once on 503 before Local and Exhausted`() {
+    @Test fun `2-cloud walks P1 then P2 then Local then Exhausted with no P1 revisit`() {
         val walk = TranscriptionChain.Walk(
             cloudCandidates = listOf(p1OpenAi, p2Gemini),
             localCandidate = localEntry,
@@ -73,19 +73,12 @@ class TranscriptionChainRetryTest {
         assertEquals(60_000L, step2.timeoutMs)
         walk.recordCloudFailure(CloudErrorKind.TEMPORARY_BUSY, "HTTP 503")
 
-        val step3 = walk.nextStep(3_000L) as TranscriptionChain.Step.RunCloud
-        assertEquals(p1OpenAi.id, step3.entry.id)
-        assertTrue(step3.isRevisit)
-        assertEquals(1_000L, step3.backoffMs)
-        assertEquals(60_000L, step3.timeoutMs)
-        walk.recordCloudFailure(CloudErrorKind.TEMPORARY_BUSY, "HTTP 503 again")
-
-        val step4 = walk.nextStep(5_000L) as TranscriptionChain.Step.RunLocal
-        assertEquals(localEntry.id, step4.entry.id)
+        val step3 = walk.nextStep(3_000L) as TranscriptionChain.Step.RunLocal
+        assertEquals(localEntry.id, step3.entry.id)
         walk.recordLocalFailure("local failed")
 
-        val step5 = walk.nextStep(6_000L) as TranscriptionChain.Step.Exhausted
-        assertEquals("local failed", step5.lastError)
+        val step4 = walk.nextStep(4_000L) as TranscriptionChain.Step.Exhausted
+        assertEquals("local failed", step4.lastError)
     }
 
     @Test fun `3 cloud providers walk P1 to P2 to P3 to Local to Error with no P1 revisit`() {
@@ -201,11 +194,11 @@ class TranscriptionChainRetryTest {
         }
     }
 
-    @Test fun `single-cloud bounded retry caps at 2 attempts within 180s budget before Local`() {
+    @Test fun `single-cloud without local bounded retry caps at 2 attempts within 180s budget`() {
         assertEquals(2, TranscriptionChain.SINGLE_CLOUD_MAX_ATTEMPTS)
         val walk = TranscriptionChain.Walk(
             cloudCandidates = listOf(p1OpenAi),
-            localCandidate = localEntry,
+            localCandidate = null,
             startedAtMs = 0L,
             isCompressedUpload = true,
         )
@@ -221,15 +214,16 @@ class TranscriptionChainRetryTest {
         assertEquals(1_000L, a2.backoffMs)
         // Remaining after 1_000ms backoff is 180_000 - 151_000 = 29_000 < 60_000.
         assertEquals(29_000L, a2.timeoutMs)
-        walk.recordCloudFailure(CloudErrorKind.TEMPORARY_BUSY, "503", httpCode = 503)
+        walk.recordCloudFailure(CloudErrorKind.TEMPORARY_BUSY, "503 again", httpCode = 503)
 
-        assertTrue(walk.nextStep(152_000L) is TranscriptionChain.Step.RunLocal)
+        val exhausted = walk.nextStep(152_000L) as TranscriptionChain.Step.Exhausted
+        assertEquals("503 again", exhausted.lastError)
     }
 
-    @Test fun `single-cloud quick 429 retry uses Retry-After backoff and caps at 2 attempts`() {
+    @Test fun `single-cloud without local quick 429 retry uses Retry-After backoff and caps at 2 attempts`() {
         val walk = TranscriptionChain.Walk(
             cloudCandidates = listOf(p1OpenAi),
-            localCandidate = localEntry,
+            localCandidate = null,
             startedAtMs = 0L,
             isCompressedUpload = true,
         )
@@ -243,7 +237,76 @@ class TranscriptionChainRetryTest {
         assertEquals(2_000L, a2.backoffMs)
         walk.recordCloudFailure(CloudErrorKind.PERMANENT_OR_QUOTA, "429", httpCode = 429, retryAfterMs = 1_000L)
 
-        assertTrue(walk.nextStep(5_000L) is TranscriptionChain.Step.RunLocal)
+        assertTrue(walk.nextStep(5_000L) is TranscriptionChain.Step.Exhausted)
+    }
+
+    @Test fun `1-cloud with Local fails over immediately to Local on 503 and quick 429`() {
+        for ((kind, code, retryAfter) in listOf(
+            Triple(CloudErrorKind.TEMPORARY_BUSY, 503, null),
+            Triple(CloudErrorKind.PERMANENT_OR_QUOTA, 429, 1_000L),
+        )) {
+            val walk = TranscriptionChain.Walk(
+                cloudCandidates = listOf(p1OpenAi),
+                localCandidate = localEntry,
+                startedAtMs = 0L,
+                isCompressedUpload = true,
+            )
+            val a1 = walk.nextStep(0L) as TranscriptionChain.Step.RunCloud
+            assertEquals(1, a1.attemptNumber)
+            walk.recordCloudFailure(kind, "HTTP $code", httpCode = code, retryAfterMs = retryAfter)
+
+            val next = walk.nextStep(100L)
+            assertTrue(
+                "1-cloud + Local must fail over immediately after HTTP $code, got $next",
+                next is TranscriptionChain.Step.RunLocal,
+            )
+        }
+    }
+
+    @Test fun `cloudAttemptCapMs and cloudStageBudgetMs scale with audioDurationMs at 30s 5m 10m and preserve null defaults`() {
+        assertEquals(60_000L, TranscriptionChain.cloudAttemptCapMs(isCompressedUpload = true, audioDurationMs = null))
+        assertEquals(75_000L, TranscriptionChain.cloudAttemptCapMs(isCompressedUpload = false, audioDurationMs = null))
+        assertEquals(180_000L, TranscriptionChain.cloudStageBudgetMs(isCompressedUpload = true, audioDurationMs = null))
+        assertEquals(180_000L, TranscriptionChain.cloudStageBudgetMs(isCompressedUpload = false, audioDurationMs = null))
+
+        // 30s clip (<= 60s): compressed = 25s cap / 75s budget; WAV = 35s cap / 75s budget
+        assertEquals(25_000L, TranscriptionChain.cloudAttemptCapMs(isCompressedUpload = true, audioDurationMs = 30_000L))
+        assertEquals(75_000L, TranscriptionChain.cloudStageBudgetMs(isCompressedUpload = true, audioDurationMs = 30_000L))
+        assertEquals(35_000L, TranscriptionChain.cloudAttemptCapMs(isCompressedUpload = false, audioDurationMs = 30_000L))
+        assertEquals(75_000L, TranscriptionChain.cloudStageBudgetMs(isCompressedUpload = false, audioDurationMs = 30_000L))
+
+        // 5m clip (300s -> extraSec = 240): compressed = 25_000 + 240*75 = 43_000 -> budget = 86_000;
+        // WAV = 35_000 + 240*110 = 61_400 -> budget = 122_800
+        assertEquals(43_000L, TranscriptionChain.cloudAttemptCapMs(isCompressedUpload = true, audioDurationMs = 300_000L))
+        assertEquals(86_000L, TranscriptionChain.cloudStageBudgetMs(isCompressedUpload = true, audioDurationMs = 300_000L))
+        assertEquals(61_400L, TranscriptionChain.cloudAttemptCapMs(isCompressedUpload = false, audioDurationMs = 300_000L))
+        assertEquals(122_800L, TranscriptionChain.cloudStageBudgetMs(isCompressedUpload = false, audioDurationMs = 300_000L))
+
+        // 10m clip (600s -> extraSec = 540): capped at 60_000 (compressed) / 75_000 (WAV); budget = 120_000 / 150_000
+        assertEquals(60_000L, TranscriptionChain.cloudAttemptCapMs(isCompressedUpload = true, audioDurationMs = 600_000L))
+        assertEquals(120_000L, TranscriptionChain.cloudStageBudgetMs(isCompressedUpload = true, audioDurationMs = 600_000L))
+        assertEquals(75_000L, TranscriptionChain.cloudAttemptCapMs(isCompressedUpload = false, audioDurationMs = 600_000L))
+        assertEquals(150_000L, TranscriptionChain.cloudStageBudgetMs(isCompressedUpload = false, audioDurationMs = 600_000L))
+
+        val shortWalk = TranscriptionChain.Walk(
+            cloudCandidates = listOf(p1OpenAi),
+            localCandidate = null,
+            startedAtMs = 1_000L,
+            isCompressedUpload = true,
+            audioDurationMs = 30_000L,
+        )
+        assertEquals(76_000L, shortWalk.cloudDeadlineAtMs)
+        val shortStep = shortWalk.nextStep(1_000L) as TranscriptionChain.Step.RunCloud
+        assertEquals(25_000L, shortStep.timeoutMs)
+        assertEquals(
+            35_000L,
+            TranscriptionChain.cloudAttemptTimeoutMs(
+                deadlineAtMs = 100_000L,
+                nowMs = 0L,
+                isCompressedUpload = false,
+                audioDurationMs = 30_000L,
+            ),
+        )
     }
 
     @Test fun `budget exhaustion jumps directly to Local without exceeding 180s`() {
@@ -318,7 +381,7 @@ class TranscriptionChainRetryTest {
         assertTrue("Condition timed out", predicate())
     }
 
-    @Test fun `Gemini P1 503 routes P1 to P2 to P1 with zero Gemini double-retry`() {
+    @Test fun `Gemini P1 503 routes P1 to P2 with zero P1 revisit and zero Gemini double-retry`() {
         val base = server.url("/v1").toString().trimEnd('/')
         val geminiP1 = ProviderChainEntry(ProviderKind.GEMINI, "gemini-3.5-flash-lite", baseUrlOverride = base, transcriptionModel = "gemini-3.1-flash-lite", id = "gem-p1")
         val openAiP2 = ProviderChainEntry(ProviderKind.OPENAI, "gpt-5.4-mini", baseUrlOverride = base, transcriptionModel = "gpt-transcribe", id = "oai-p2")
@@ -329,23 +392,17 @@ class TranscriptionChainRetryTest {
         PostProcessingToggle.setEnabled(app, false)
 
         val requestSequence = Collections.synchronizedList(mutableListOf<String>())
-        val geminiCalls = AtomicInteger(0)
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val target = request.target
                 return when {
                     target.contains(":generateContent") -> {
                         requestSequence += "GEMINI"
-                        val call = geminiCalls.incrementAndGet()
-                        if (call == 1) {
-                            MockResponse.Builder().code(503).body("""{"error":{"code":503,"message":"overloaded","status":"UNAVAILABLE"}}""").build()
-                        } else {
-                            MockResponse.Builder().body("""{"candidates":[{"content":{"parts":[{"text":"gemini revisit ok"}]},"finishReason":"STOP"}]}""").build()
-                        }
+                        MockResponse.Builder().code(503).body("""{"error":{"code":503,"message":"overloaded","status":"UNAVAILABLE"}}""").build()
                     }
                     target.contains("/audio/transcriptions") -> {
                         requestSequence += "OPENAI"
-                        MockResponse.Builder().code(503).body("""{"error":{"message":"busy"}}""").build()
+                        MockResponse.Builder().body("""{"text":"openai fallback ok"}""").build()
                     }
                     else -> MockResponse.Builder().code(404).build()
                 }
@@ -367,8 +424,8 @@ class TranscriptionChainRetryTest {
         engines.single().finish(realSizedPcm())
         awaitCondition { listener.delivered.isNotEmpty() && runtime.currentState() == RecordingStateMachine.State.IDLE }
 
-        assertEquals(listOf("GEMINI", "OPENAI", "GEMINI"), requestSequence)
-        assertEquals("gemini revisit ok", listener.delivered.single().first)
+        assertEquals(listOf("GEMINI", "OPENAI"), requestSequence)
+        assertEquals("openai fallback ok", listener.delivered.single().first)
         runtime.shutdown()
     }
 

@@ -1949,11 +1949,13 @@ class DictationRuntime internal constructor(
         var remainingCompressedFile: File? = compressedFile
         var lastFailedProvider: ProviderKind? = null
         var anyCloudAttempted = false
+        val audioDurationMs = file.length() / 32L
         val walk = TranscriptionChain.Walk(
             cloudCandidates = usableCloudCandidates,
             localCandidate = localCandidate,
             startedAtMs = nowMs(),
             isCompressedUpload = remainingCompressedFile != null,
+            audioDurationMs = audioDurationMs,
             backoffMs = transcriptionRetryBackoffMs,
             localBudgetMs = localSttBudgetMs,
         )
@@ -2063,10 +2065,13 @@ class DictationRuntime internal constructor(
             onCancelled()
             return
         }
+        val pcmBytes = file.length()
+        val compressedBytes = compressedFile?.length() ?: 0L
         val timeoutMs = TranscriptionChain.cloudAttemptTimeoutMs(
             deadlineAtMs = walk.cloudDeadlineAtMs,
             nowMs = nowMs(),
             isCompressedUpload = compressedFile != null,
+            audioDurationMs = pcmBytes / 32L,
         )
         if (timeoutMs == null) {
             onFailure(CloudErrorKind.TEMPORARY_BUSY, "Cloud transcription exceeded time budget", null, null)
@@ -2129,7 +2134,17 @@ class DictationRuntime internal constructor(
                             onFailure(CloudErrorKind.TEMPORARY_BUSY, timeoutMsg, result.httpCode, result.retryAfterMs)
                         }
                         success -> onSuccessOrNoSpeech(result.text)
-                        isNoSpeechTranscript(result.text, result.error) -> onSuccessOrNoSpeech(null)
+                        isNoSpeechTranscript(result.text, result.error) -> {
+                            DiagnosticErrorLog.record(
+                                context = context,
+                                stage = "stt",
+                                provider = entry.kind.name,
+                                model = model,
+                                httpCode = result.httpCode,
+                                detail = "no speech (${result.dropReason ?: "empty_transcript"}, pcmBytes=$pcmBytes, compressedBytes=$compressedBytes)",
+                            )
+                            onSuccessOrNoSpeech(null)
+                        }
                         else -> {
                             val err = result.error ?: "empty transcript"
                             DiagnosticErrorLog.record(
@@ -2225,7 +2240,17 @@ class DictationRuntime internal constructor(
                             onFailure(CloudErrorKind.TEMPORARY_BUSY, timeoutMsg, result.httpCode, result.retryAfterMs)
                         }
                         success -> onSuccessOrNoSpeech(result.text)
-                        isNoSpeechTranscript(result.text, result.error) -> onSuccessOrNoSpeech(null)
+                        isNoSpeechTranscript(result.text, result.error) -> {
+                            DiagnosticErrorLog.record(
+                                context = context,
+                                stage = "stt",
+                                provider = entry.kind.name,
+                                model = geminiModel,
+                                httpCode = result.httpCode,
+                                detail = "no speech (${result.dropReason ?: "empty_transcript"}, pcmBytes=$pcmBytes, compressedBytes=$compressedBytes)",
+                            )
+                            onSuccessOrNoSpeech(null)
+                        }
                         else -> {
                             val err = result.error ?: "empty transcript"
                             DiagnosticErrorLog.record(

@@ -88,6 +88,15 @@ const val CLOUD_CLEANUP_PER_PROVIDER_CAP_MS = 40_000L
 /** Maximum number of configured cloud cleanup providers tried sequentially in Stage 2. */
 const val MAX_CLOUD_CLEANUP_PROVIDERS = 3
 
+/** Length-scaled per-provider cap for Stage 2 cloud cleanup: 20s up to 2,000 chars, +3s per 1,000 chars, capped at 40s. */
+fun cloudCleanupPerProviderCapMs(textLength: Int): Long =
+    if (textLength <= 2_000) 20_000L
+    else (20_000L + ((textLength - 2_000) / 1_000L) * 3_000L).coerceAtMost(40_000L)
+
+/** Length-scaled total Stage 2 cloud cleanup budget: up to 3 providers, hard-capped at 90s. */
+fun cloudCleanupStageBudgetMs(textLength: Int): Long =
+    minOf(90_000L, cloudCleanupPerProviderCapMs(textLength) * MAX_CLOUD_CLEANUP_PROVIDERS)
+
 /**
  * Wall-clock budget for a non-terminal LOCAL_LLM step (#98), keeping a slow local attempt from
  * starving a subsequent cloud step.
@@ -170,15 +179,19 @@ data class PartialCleanup(val cleanedChunks: Int, val totalChunks: Int)
  */
 object CleanupWaterfallPlanner {
     /**
-     * Splits [steps] into runs of consecutive equal-[CleanupStep.group] entries, preserving
-     * overall order. Each inner list is one fail-fast unit for [CleanupWaterfallExecutor].
+     * Splits [steps] into runs of consecutive equal-(group, normalized baseUrlOverride) entries,
+     * preserving overall order. Each inner list is one fail-fast unit for
+     * [CleanupWaterfallExecutor], so distinct hosts (e.g. cloud vs LAN/self-hosted OPENAI_DIRECT)
+     * do not skip each other on a DNS/connection failure.
      */
     fun groupConsecutive(steps: List<CleanupStep>): List<List<CleanupStep>> {
         if (steps.isEmpty()) return emptyList()
         val result = mutableListOf<MutableList<CleanupStep>>()
+        fun keyFor(step: CleanupStep) =
+            step.group to step.baseUrlOverride?.let(PostProcessor::normalizeBaseUrl)
         for (step in steps) {
             val last = result.lastOrNull()
-            if (last != null && last.last().group == step.group) {
+            if (last != null && keyFor(last.last()) == keyFor(step)) {
                 last.add(step)
             } else {
                 result.add(mutableListOf(step))
@@ -466,17 +479,19 @@ object RealLocalInferenceEngine : LocalInferenceEngine {
      * step (or raw-text injection) exactly like a timeout does -- see [LocalInferenceResult.TimedOut]'s
      * kdoc for the live regression caused by conflating the two.
      */
-    private fun validated(systemPrompt: String, userText: String, text: String): LocalInferenceResult =
+    internal fun validated(systemPrompt: String, userText: String, text: String): LocalInferenceResult =
         when (val verdict = LocalCleanupOutputValidator.validate(userText, systemPrompt, text)) {
             is LocalCleanupValidation.Valid -> LocalInferenceResult.Success(text)
             is LocalCleanupValidation.Rejected -> {
                 // Log the reason, not the text: the prompt-echo case exists precisely because
                 // the output can contain the user's private vocabulary terms.
-                android.util.Log.w(
-                    "RealLocalInferenceEngine",
-                    "Rejected local cleanup output: ${verdict.reason} -- ${verdict.detail}",
-                )
-                LocalInferenceResult.Failure("Local cleanup output rejected (${verdict.reason})")
+                runCatching {
+                    android.util.Log.w(
+                        "RealLocalInferenceEngine",
+                        "Rejected local cleanup output: ${verdict.reason} -- ${verdict.detail}",
+                    )
+                }
+                LocalInferenceResult.Failure("Local cleanup output rejected (${verdict.reason}): ${verdict.detail}")
             }
         }
 }
@@ -683,7 +698,9 @@ object CleanupWaterfallExecutor {
         // from a previous dictation, and give the synchronous LOCAL_LLM step the same wall-clock
         // budget the between-step check below enforces.
         cancelHolder.beginWork()
-        val cloudDeadlineAtMs = startedAtMs + CLOUD_CLEANUP_STAGE_BUDGET_MS
+        val perProviderCapMs = cloudCleanupPerProviderCapMs(text.length)
+        val stageBudgetMs = cloudCleanupStageBudgetMs(text.length)
+        val cloudDeadlineAtMs = startedAtMs + stageBudgetMs
         var cloudProvidersAttempted = 0
 
         fun nextGroupStart(index: Int): Int {
@@ -755,7 +772,7 @@ object CleanupWaterfallExecutor {
                     return
                 }
                 val now = nowMs()
-                if (now - startedAtMs >= CLOUD_CLEANUP_STAGE_BUDGET_MS) {
+                if (now - startedAtMs >= stageBudgetMs) {
                     val localIndex = nextLocalStepIndex(index)
                     if (localIndex != null) {
                         // Local Cleanup has its own independent budget starting at 0ms consumed.
@@ -770,13 +787,20 @@ object CleanupWaterfallExecutor {
                     emitFailoverStatus(previousFailedGroup, step.group)
                     cloudProvidersAttempted++
                 }
-                stepDeadlineAtMs = minOf(cloudDeadlineAtMs, now + CLOUD_CLEANUP_PER_PROVIDER_CAP_MS)
+                val hasRunnableCloudFallback = cloudProvidersAttempted < MAX_CLOUD_CLEANUP_PROVIDERS &&
+                    ((index + 1) until steps.size).any { i ->
+                        steps[i].group != CleanupStepGroup.LOCAL_LLM && resolveCredential(steps[i]).isNotBlank()
+                    }
+                val hasRunnableLocalFallback = nextLocalStepIndex(index + 1) != null && !localModelPath().isNullOrBlank()
+                val hasRunnableFallback = hasRunnableCloudFallback || hasRunnableLocalFallback
+                stepDeadlineAtMs = minOf(cloudDeadlineAtMs, now + perProviderCapMs)
                 val busyRetryingTransport = withBusyRetry(
                     transport = transport,
                     deadlineAtMs = stepDeadlineAtMs,
                     nowMs = nowMs,
-                    maxRetries = busyRetryMaxRetries,
+                    maxRetries = if (hasRunnableFallback) 0 else busyRetryMaxRetries,
                     delayMs = busyRetryDelayMs,
+                    perProviderCapMs = perProviderCapMs,
                     scheduleRetry = scheduleRetry,
                     onRetry = { onStageStatus("Cleanup retrying…") },
                 )
@@ -785,6 +809,9 @@ object CleanupWaterfallExecutor {
                         if (httpOutcome is CleanupHttpOutcome.HttpError) {
                             lastHttpCode = httpOutcome.code
                             lastRawHttpErrorBody = httpOutcome.body
+                        } else {
+                            lastHttpCode = null
+                            lastRawHttpErrorBody = null
                         }
                         cb(httpOutcome)
                     }
@@ -795,32 +822,27 @@ object CleanupWaterfallExecutor {
                 stepTransport = transport
             }
 
-            performStep(step, text, prompt, localPrompt, localVocabulary, credentialLookup, entryCredentialLookup, stepTransport, localInference, localModelPath, cancelHolder, stepDeadlineAtMs, nowMs, temperatureCacheContext, isLastStep = index == steps.lastIndex, localStepBudgetMs = localStepBudgetMs, localPace = localPace) { stepOutcome ->
+            performStep(step, text, prompt, localPrompt, localVocabulary, credentialLookup, entryCredentialLookup, stepTransport, localInference, localModelPath, cancelHolder, stepDeadlineAtMs, nowMs, temperatureCacheContext, isLastStep = index == steps.lastIndex, localStepBudgetMs = localStepBudgetMs, localPace = localPace, perProviderCapMs = perProviderCapMs) { stepOutcome ->
                 val guardedOutcome = if (fidelityGuard) guardCloudOutput(step, text, stepOutcome) else stepOutcome
                 logStepOutcome(step, startedAtMs, guardedOutcome, benchmarkContext, benchmarkCorrelationId)
-                val outcome = when (guardedOutcome) {
-                    is CleanupStepOutcome.Rejected ->
-                        CleanupStepOutcome.StepFailed("Cloud cleanup output rejected (${guardedOutcome.reason.name})")
-                    else -> guardedOutcome
-                }
-                when (outcome) {
+                when (guardedOutcome) {
                     is CleanupStepOutcome.Success -> {
                         cursor.recordSuccess(index, nowMs())
-                        callback(PostProcessor.Result(outcome.text, null, outcome.partial, outcome.sections))
+                        callback(PostProcessor.Result(guardedOutcome.text, null, guardedOutcome.partial, guardedOutcome.sections))
                     }
                     is CleanupStepOutcome.Rejected -> {
-                        val msg = "Cloud cleanup output rejected (${outcome.reason.name})"
+                        val msg = "Cloud cleanup output rejected (${guardedOutcome.reason.name})"
                         onStepFailure?.invoke(step, lastHttpCode, msg)
                         attempt(index + 1, msg, step.group)
                     }
                     is CleanupStepOutcome.StepFailed -> {
-                        val rawDetail = lastRawHttpErrorBody?.takeIf { it.isNotBlank() } ?: outcome.message ?: "step failed"
+                        val rawDetail = lastRawHttpErrorBody?.takeIf { it.isNotBlank() } ?: guardedOutcome.message ?: "step failed"
                         onStepFailure?.invoke(step, lastHttpCode, rawDetail)
-                        attempt(index + 1, outcome.message, step.group)
+                        attempt(index + 1, guardedOutcome.message, step.group)
                     }
                     is CleanupStepOutcome.ConnectionFailed -> {
-                        onStepFailure?.invoke(step, null, outcome.message ?: "connection failed")
-                        attempt(nextGroupStart(index), outcome.message, step.group)
+                        onStepFailure?.invoke(step, null, guardedOutcome.message ?: "connection failed")
+                        attempt(nextGroupStart(index), guardedOutcome.message, step.group)
                     }
                     is CleanupStepOutcome.Cancelled -> callback(PostProcessor.Result(null, "Cleanup cancelled"))
                 }
@@ -1157,6 +1179,7 @@ object CleanupWaterfallExecutor {
         isLastStep: Boolean,
         localStepBudgetMs: Long,
         localPace: LocalCleanupPaceStore,
+        perProviderCapMs: Long = CLOUD_CLEANUP_PER_PROVIDER_CAP_MS,
         callback: (CleanupStepOutcome) -> Unit,
     ) {
         // LOCAL_LLM branches before the credential check below: it's the one group with no
@@ -1206,7 +1229,7 @@ object CleanupWaterfallExecutor {
                 AnthropicCleanupProvider.ENDPOINT_URL,
                 AnthropicCleanupProvider.headers(apiKey),
                 AnthropicCleanupProvider.buildRequestBody(text, prompt, step.model).toString(),
-                cloudStepTimeouts(deadlineAtMs, nowMs()),
+                cloudStepTimeouts(deadlineAtMs, nowMs(), perProviderCapMs = perProviderCapMs),
                 cancelHolder,
             ) { httpOutcome -> callback(toStepOutcome(httpOutcome, AnthropicCleanupProvider::parseResponse)) }
             return
@@ -1230,12 +1253,13 @@ object CleanupWaterfallExecutor {
                 cancelHolder = cancelHolder,
                 deadlineAtMs = deadlineAtMs,
                 nowMs = nowMs,
+                perProviderCapMs = perProviderCapMs,
                 cache = cache,
                 identity = identity,
                 parse = GeminiCleanupProvider::parseResponse,
                 hasTemperature = { it.optJSONObject("generationConfig")?.has("temperature") == true },
                 removeTemperature = { it.optJSONObject("generationConfig")?.remove("temperature") },
-                timeoutMs = { cloudStepTimeouts(deadlineAtMs, nowMs()) },
+                timeoutMs = { cloudStepTimeouts(deadlineAtMs, nowMs(), perProviderCapMs = perProviderCapMs) },
                 callback = callback,
             )
             return
@@ -1274,12 +1298,13 @@ object CleanupWaterfallExecutor {
             cancelHolder = cancelHolder,
             deadlineAtMs = deadlineAtMs,
             nowMs = nowMs,
+            perProviderCapMs = perProviderCapMs,
             cache = temperatureStore,
             identity = temperatureIdentity,
             parse = PostProcessor::parseResponse,
             hasTemperature = { it.has("temperature") },
             removeTemperature = { it.remove("temperature") },
-            timeoutMs = { cloudStepTimeouts(deadlineAtMs, nowMs()) },
+            timeoutMs = { cloudStepTimeouts(deadlineAtMs, nowMs(), perProviderCapMs = perProviderCapMs) },
             callback = callback,
         )
     }
@@ -1296,6 +1321,7 @@ object CleanupWaterfallExecutor {
         nowMs: () -> Long,
         maxRetries: Int,
         delayMs: Long,
+        perProviderCapMs: Long = CLOUD_CLEANUP_PER_PROVIDER_CAP_MS,
         scheduleRetry: (Long, () -> Unit) -> Unit,
         onRetry: () -> Unit = {},
     ): CleanupHttpTransport = CleanupHttpTransport { url, headers, jsonBody, timeouts, cancelHolder, callback ->
@@ -1341,7 +1367,7 @@ object CleanupWaterfallExecutor {
                             callback(CleanupHttpOutcome.Cancelled)
                             return@scheduleRetry
                         }
-                        val retryTimeouts = temperatureRetryTimeouts(deadlineAtMs, nowMs())
+                        val retryTimeouts = temperatureRetryTimeouts(deadlineAtMs, nowMs(), perProviderCapMs)
                         if (retryTimeouts == null) {
                             callback(outcome)
                         } else {
@@ -1371,6 +1397,7 @@ object CleanupWaterfallExecutor {
         cancelHolder: InFlightCall,
         deadlineAtMs: Long,
         nowMs: () -> Long,
+        perProviderCapMs: Long = CLOUD_CLEANUP_PER_PROVIDER_CAP_MS,
         cache: TemperatureCapabilityStore?,
         identity: TemperatureCapabilityStore.Identity?,
         parse: (String) -> PostProcessor.Result,
@@ -1393,7 +1420,7 @@ object CleanupWaterfallExecutor {
                 } else {
                     if (cache != null && identity != null && observationSequence != null)
                         cache.record(identity, TemperatureCapabilityStore.State.UNSUPPORTED, observationSequence)
-                    val retryTimeouts = temperatureRetryTimeouts(deadlineAtMs, nowMs())
+                    val retryTimeouts = temperatureRetryTimeouts(deadlineAtMs, nowMs(), perProviderCapMs)
                     if (retryTimeouts == null) callback(toStepOutcome(outcome, parse))
                     else {
                         val retryBody = JSONObject(body.toString()).apply { removeTemperature(this) }.toString()
@@ -1426,7 +1453,7 @@ object CleanupWaterfallExecutor {
             is CleanupHttpOutcome.Ok -> {
                 val result = parse(httpOutcome.body)
                 if (!result.text.isNullOrBlank()) CleanupStepOutcome.Success(result.text)
-                else CleanupStepOutcome.StepFailed(result.error)
+                else CleanupStepOutcome.StepFailed(result.error ?: "HTTP 200: empty response content")
             }
         }
 

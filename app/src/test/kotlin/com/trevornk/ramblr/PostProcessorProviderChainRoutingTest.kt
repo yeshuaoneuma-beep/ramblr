@@ -82,11 +82,12 @@ class PostProcessorProviderChainRoutingTest {
             "connect timeout ${used.connectMs}ms should be a cleanup-sized budget, not an upload-sized one",
             used.connectMs in 1..5_000,
         )
+        val expectedCap = cloudCleanupPerProviderCapMs("raw transcript".length)
         assertTrue(
             "read timeout ${used.readMs}ms should be a cleanup-sized budget (<= ${CLOUD_CLEANUP_PER_PROVIDER_CAP_MS}ms), not an upload-sized one",
             used.readMs in 1..CLOUD_CLEANUP_PER_PROVIDER_CAP_MS,
         )
-        assertEquals(CLOUD_CLEANUP_PER_PROVIDER_CAP_MS, used.callMs)
+        assertEquals(expectedCap, used.callMs)
     }
 
     @Test fun `a multi provider chain still routes through the executor`() {

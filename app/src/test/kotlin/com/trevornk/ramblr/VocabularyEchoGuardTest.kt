@@ -98,6 +98,21 @@ class VocabularyEchoGuardTest {
         assertFalse(VocabularyEchoGuard.isEcho("I never output a hint unless it matters", terms, prompt))
     }
 
+    @Test fun `long real transcript with an 8-word prompt overlap passes while majority prompt echo is caught`() {
+        val prompt = GeminiTranscriberClient.transcribePrompt(terms)
+        val eightWordRun = "transcribe this audio exactly as spoken return only"
+        val sixtyWordRealTranscript =
+            "Yesterday afternoon we met with the engineering team to review the deployment schedule " +
+                "for the mobile dictation app and someone joked $eightWordRun while testing the " +
+                "microphone pipeline across three different phones before checking all the logs " +
+                "to confirm everything worked reliably during normal conversations and long notes."
+        assertTrue(sixtyWordRealTranscript.split(" ").size >= 50)
+        assertFalse(VocabularyEchoGuard.isEcho(sixtyWordRealTranscript, terms, prompt))
+
+        val majorityEcho = "$eightWordRun the transcript text with no commentary"
+        assertTrue(VocabularyEchoGuard.isEcho(majorityEcho, terms, prompt))
+    }
+
     @Test fun `empty vocabulary never matches list echo, but still catches echoed instruction prompt`() {
         assertFalse(VocabularyEchoGuard.isEcho("Zorbex, Quillfarm, Nimbato", emptyList()))
         assertFalse(VocabularyEchoGuard.isEcho("anything at all", emptyList(), "anything at all and then some more words"))
@@ -152,6 +167,7 @@ class VocabularyEchoGuardTest {
         val result = GeminiTranscriberClient.resultFor(geminiBody(terms.joinToString(", ") + "."), terms, prompt)
         assertEquals("", result.text)
         assertNull(result.error)
+        assertEquals("vocabulary_echo_guard", result.dropReason)
         assertTrue(isNoSpeechTranscript(result.text, result.error))
     }
 
@@ -160,6 +176,7 @@ class VocabularyEchoGuardTest {
         val result = GeminiTranscriberClient.resultFor(geminiBody(prompt), terms, prompt)
         assertEquals("", result.text)
         assertNull(result.error)
+        assertEquals("vocabulary_echo_guard", result.dropReason)
     }
 
     @Test fun `gemini batch passes real speech and a single vocabulary term through untouched`() {
@@ -175,13 +192,13 @@ class VocabularyEchoGuardTest {
 
     @Test fun `gemini finishing normally with no text is an empty transcript, other finishes stay errors`() {
         val stop = GeminiTranscriberClient.parseResponse("""{"candidates":[{"content":{"role":"model"},"finishReason":"STOP"}]}""")
-        assertEquals("", stop.text); assertNull(stop.error)
+        assertEquals("", stop.text); assertNull(stop.error); assertEquals("empty_stop(thoughtParts=0)", stop.dropReason)
         val blankPart = GeminiTranscriberClient.parseResponse("""{"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}]}""")
-        assertEquals("", blankPart.text); assertNull(blankPart.error)
+        assertEquals("", blankPart.text); assertNull(blankPart.error); assertEquals("empty_stop(thoughtParts=0)", blankPart.dropReason)
         val safety = GeminiTranscriberClient.parseResponse("""{"candidates":[{"finishReason":"SAFETY"}]}""")
-        assertNull(safety.text); assertEquals("No text content in response", safety.error)
+        assertNull(safety.text); assertEquals("Gemini finished with SAFETY", safety.error)
         val noReason = GeminiTranscriberClient.parseResponse("""{"candidates":[{"content":{"parts":[]}}]}""")
-        assertNull(noReason.text); assertEquals("No text content in response", noReason.error)
+        assertNull(noReason.text); assertEquals("No text content in response (finishReason=unknown)", noReason.error)
     }
 
     // ---- client wire-in: OpenAI batch ---------------------------------------------------------------
@@ -190,6 +207,7 @@ class VocabularyEchoGuardTest {
         val result = TranscriberClient.resultFor("""{"text":"${terms.joinToString(", ")}."}""", terms)
         assertEquals("", result.text)
         assertNull(result.error)
+        assertEquals("vocabulary_echo_guard", result.dropReason)
         assertTrue(isNoSpeechTranscript(result.text, result.error))
     }
 

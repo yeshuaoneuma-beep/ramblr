@@ -6,7 +6,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
+import java.net.NoRouteToHostException
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 
 class CloudErrorClassifierTest {
 
@@ -53,6 +55,38 @@ class CloudErrorClassifierTest {
         assertEquals(CloudErrorKind.TEMPORARY_BUSY, CloudErrorClassifier.classify(IOException("connection reset")))
         assertEquals(CloudErrorKind.TEMPORARY_BUSY, CloudErrorClassifier.classify(httpCode = null, isTransientIo = true))
         assertEquals(CloudErrorKind.TEMPORARY_BUSY, CloudErrorClassifier.classify(httpCode = null, errorText = "Read timed out"))
+    }
+
+    @Test fun `DNS and no-route exceptions and host resolution messages classify as PERMANENT_OR_QUOTA`() {
+        val unknownHost = UnknownHostException("api.openai.com")
+        assertFalse(CloudErrorClassifier.isTransientIoException(unknownHost))
+        assertEquals(CloudErrorKind.PERMANENT_OR_QUOTA, CloudErrorClassifier.classify(unknownHost))
+
+        val wrappedUnknownHost = IOException("failed", RuntimeException("outer", unknownHost))
+        assertFalse(CloudErrorClassifier.isTransientIoException(wrappedUnknownHost))
+        assertEquals(CloudErrorKind.PERMANENT_OR_QUOTA, CloudErrorClassifier.classify(wrappedUnknownHost))
+
+        val noRoute = NoRouteToHostException("No route to host")
+        assertFalse(CloudErrorClassifier.isTransientIoException(noRoute))
+        assertEquals(CloudErrorKind.PERMANENT_OR_QUOTA, CloudErrorClassifier.classify(noRoute))
+
+        // Cyclic cause chain must terminate cleanly without infinite recursion.
+        val c1 = IOException("cycle1")
+        val c2 = IOException("cycle2", c1)
+        c1.initCause(c2)
+        assertTrue(CloudErrorClassifier.isTransientIoException(c1))
+
+        for (msg in listOf(
+            "Unable to resolve host \"api.openai.com\": No address associated with hostname",
+            "No address associated with hostname",
+            "Network is unreachable",
+        )) {
+            assertEquals(
+                "Expected PERMANENT_OR_QUOTA for '$msg' even with isTransientIo=true",
+                CloudErrorKind.PERMANENT_OR_QUOTA,
+                CloudErrorClassifier.classify(httpCode = null, errorText = msg, isTransientIo = true),
+            )
+        }
     }
 
     @Test fun `cleanup executor bounded busy-retry covers all cloud providers`() {
@@ -207,7 +241,7 @@ class CloudErrorClassifierTest {
             credentialLookup = { "test-key" },
             transport = CleanupHttpTransport { _, _, _, _, _, callback ->
                 requestsOnExpired++
-                now = 1_000L + CLOUD_CLEANUP_PER_PROVIDER_CAP_MS - 100L
+                now = 1_000L + cloudCleanupPerProviderCapMs("raw".length) - 100L
                 callback(CleanupHttpOutcome.HttpError(503, "overloaded"))
             },
             nowMs = { now },
@@ -294,12 +328,14 @@ class CloudErrorClassifierTest {
         assertEquals("fallback ok", omniResult?.text)
     }
 
-    @Test fun `AudioJobRunner retries once on TEMPORARY_BUSY or quick-429 only`() {
-        assertTrue(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.TEMPORARY_BUSY))
-        assertFalse(AudioJobRunner.shouldRetryCloudChunk(1, CloudErrorKind.TEMPORARY_BUSY))
-        assertFalse(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA))
+    @Test fun `AudioJobRunner retries once on TEMPORARY_BUSY or quick-429 only when single-route`() {
+        assertTrue(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.TEMPORARY_BUSY, hasNextRoute = false))
+        assertFalse(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.TEMPORARY_BUSY, hasNextRoute = true))
+        assertFalse(AudioJobRunner.shouldRetryCloudChunk(1, CloudErrorKind.TEMPORARY_BUSY, hasNextRoute = false))
+        assertFalse(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA, hasNextRoute = false))
+        assertFalse(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA, hasNextRoute = true))
         assertFalse(AudioJobRunner.shouldRetryCloudChunk(1, CloudErrorKind.PERMANENT_OR_QUOTA))
-        assertTrue(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = null))
+        assertTrue(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = null, hasNextRoute = true))
         assertTrue(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = 2_000L))
         assertFalse(AudioJobRunner.shouldRetryCloudChunk(0, CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = 5_000L))
         assertFalse(AudioJobRunner.shouldRetryCloudChunk(1, CloudErrorKind.PERMANENT_OR_QUOTA, httpCode = 429, retryAfterMs = 1_000L))

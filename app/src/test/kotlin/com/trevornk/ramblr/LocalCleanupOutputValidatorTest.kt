@@ -533,4 +533,34 @@ class LocalCleanupOutputValidatorTest {
         assertAccepted("check step 08 next", "Check step 8 next.")
         assertAccepted("choose 1 option only", "Choose one option only.")
     }
+
+    @Test fun `length collapse rejection detail reports norm and raw char counts without leaking text`() {
+        assertEquals(24, LocalCleanupOutputValidator.LENGTH_COLLAPSE_MIN_INPUT_CHARS)
+        assertEquals(0.5, LocalCleanupOutputValidator.LENGTH_COLLAPSE_MIN_RATIO, 0.0)
+        assertEquals(0.4, LocalCleanupOutputValidator.LENGTH_COLLAPSE_SELF_CORRECTION_MIN_RATIO, 0.0)
+
+        val input = "Please send the confidential Selby Road report to Alice tonight"
+        val output = "Selby Road"
+        val normInputLen = LocalCleanupOutputValidator.normalizeForLength(input).length
+        val normOutputLen = LocalCleanupOutputValidator.normalizeForLength(output).length
+
+        val verdict = LocalCleanupOutputValidator.validate(input, plainPrompt, output)
+            as LocalCleanupValidation.Rejected
+        assertEquals(LocalCleanupValidation.Reason.LENGTH_COLLAPSE, verdict.reason)
+        assertTrue(
+            "expected norm counts in '${verdict.detail}'",
+            verdict.detail.contains("$normOutputLen/$normInputLen norm"),
+        )
+        assertTrue(
+            "expected raw counts in '${verdict.detail}'",
+            verdict.detail.contains("${output.length}/${input.length} raw"),
+        )
+        assertTrue("expected minimum percentage in '${verdict.detail}'", verdict.detail.contains("minimum 50%"))
+        for (secret in listOf("confidential", "Selby", "Alice", "report", "tonight")) {
+            assertTrue(
+                "detail must never leak '$secret': ${verdict.detail}",
+                !verdict.detail.contains(secret, ignoreCase = true),
+            )
+        }
+    }
 }

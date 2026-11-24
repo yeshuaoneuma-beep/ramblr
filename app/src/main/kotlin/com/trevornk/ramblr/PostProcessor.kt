@@ -372,13 +372,44 @@ Output: The meeting has been moved to Thursday at 2 PM. Please confirm whether y
             if (obj.has("choices")) {
                 val choices = obj.getJSONArray("choices")
                 if (choices.length() > 0) {
-                    val message = choices.getJSONObject(0).getJSONObject("message")
-                    Result(message.getString("content").trim(), null)
+                    val choice = choices.getJSONObject(0)
+                    val finishReason = if (choice.isNull("finish_reason")) {
+                        "unknown"
+                    } else {
+                        choice.optString("finish_reason", "").trim().ifBlank { "unknown" }
+                    }
+                    val message = choice.optJSONObject("message")
+                    val content = if (message == null || message.isNull("content")) {
+                        null
+                    } else {
+                        message.optString("content", "").trim()
+                    }
+                    if (!content.isNullOrEmpty()) {
+                        Result(content, null)
+                    } else {
+                        val hasReasoning = message != null && (
+                            (!message.isNull("reasoning") && message.optString("reasoning", "").isNotBlank()) ||
+                                (!message.isNull("reasoning_content") && message.optString("reasoning_content", "").isNotBlank())
+                            )
+                        val hasRefusal = message != null &&
+                            !message.isNull("refusal") &&
+                            message.optString("refusal", "").isNotBlank()
+                        Result(
+                            null,
+                            "Empty content in response (finish_reason=$finishReason, reasoning=$hasReasoning, refusal=$hasRefusal)",
+                        )
+                    }
                 } else {
                     Result(null, "No choices in response")
                 }
             } else if (obj.has("error")) {
-                Result(null, obj.getJSONObject("error").getString("message"))
+                val errorMsg = obj.optJSONObject("error")
+                    ?.takeIf { !it.isNull("message") }
+                    ?.optString("message")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: obj.takeIf { !it.isNull("error") }?.optString("error")?.takeIf { it.isNotBlank() && it != "{}" }
+                    ?: "Unknown provider error"
+                Result(null, errorMsg)
             } else {
                 Result(null, "Unknown response format")
             }

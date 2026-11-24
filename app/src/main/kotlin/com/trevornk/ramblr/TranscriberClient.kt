@@ -18,6 +18,7 @@ object TranscriberClient {
         val isTransientIo: Boolean = false,
         val isCancelled: Boolean = false,
         val retryAfterMs: Long? = null,
+        val dropReason: String? = null,
     ) {
         val errorKind: CloudErrorKind
             get() = CloudErrorClassifier.classify(httpCode, error, isTransientIo)
@@ -132,7 +133,11 @@ object TranscriberClient {
      */
     fun resultFor(responseBody: String, terms: List<String>): Result {
         val parsed = parseResponse(responseBody)
-        return if (VocabularyEchoGuard.isEcho(parsed.text, terms)) Result("", null) else parsed
+        return if (VocabularyEchoGuard.isEcho(parsed.text, terms)) {
+            parsed.copy(text = "", error = null, dropReason = "vocabulary_echo_guard")
+        } else {
+            parsed
+        }
     }
 
     /**
@@ -209,7 +214,14 @@ object TranscriberClient {
                 cancelHolder.clear(call)
                 val cancelled = call.isCanceled() && cancelHolder.isCancelled
                 val error = if (!cancelled && call.isCanceled()) normalizedTimeoutError(e) else e.message
-                callback(Result(null, error, isTransientIo = !cancelled, isCancelled = cancelled))
+                callback(
+                    Result(
+                        null,
+                        error,
+                        isTransientIo = !cancelled && CloudErrorClassifier.isTransientIoException(e),
+                        isCancelled = cancelled,
+                    )
+                )
             }
             override fun onResponse(call: Call, response: Response) {
                 cancelHolder.clear(call)
@@ -237,7 +249,14 @@ object TranscriberClient {
                     onFailure = { e ->
                         val cancelled = call.isCanceled() && cancelHolder.isCancelled
                         val error = if (!cancelled && call.isCanceled()) normalizedTimeoutError(e) else e.message
-                        callback(Result(null, error, isTransientIo = !cancelled, isCancelled = cancelled))
+                        callback(
+                            Result(
+                                null,
+                                error,
+                                isTransientIo = !cancelled && CloudErrorClassifier.isTransientIoException(e),
+                                isCancelled = cancelled,
+                            )
+                        )
                     },
                 )
             }

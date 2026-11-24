@@ -265,7 +265,7 @@ class CleanupWaterfallExecutorTest {
         val transport = CleanupHttpTransport { _, _, _, timeouts, _, callback ->
             requests++
             if (requests == 1) {
-                now = 100L + CLOUD_CLEANUP_PER_PROVIDER_CAP_MS - 150L
+                now = 100L + cloudCleanupPerProviderCapMs("synthetic-independent transcript".length) - 150L
                 callback(CleanupHttpOutcome.HttpError(400,
                     """{"error":{"type":"unsupported_value","code":"unsupported_value","param":"temperature","message":"temperature is unsupported"}}"""))
             } else {
@@ -625,10 +625,9 @@ class CleanupWaterfallExecutorTest {
         assertEquals(1, local.calls.size)
     }
 
-    @Test fun `a 5xx from the Anthropic step falls through to the next step`() {
+    @Test fun `a 5xx from the Anthropic step falls through to the next step without retrying when fallback exists`() {
         val transport = FakeCleanupHttpTransport(
             mutableListOf(
-                CleanupHttpOutcome.HttpError(529, """{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}"""),
                 CleanupHttpOutcome.HttpError(529, """{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}"""),
                 okOutcome("cleaned via fallback"),
             )
@@ -641,7 +640,7 @@ class CleanupWaterfallExecutorTest {
         )
         val result = execute(waterfall, transport)
         assertEquals("cleaned via fallback", result.text)
-        assertEquals(3, transport.requestedUrls.size)
+        assertEquals(2, transport.requestedUrls.size)
     }
 
     @Test fun `a network timeout on the Anthropic step is classified as a connection failure and falls through`() {
@@ -1328,7 +1327,7 @@ class CleanupWaterfallExecutorEntryCredentialTest {
                 localInference = LocalInferenceEngine { _, _, _, _, _ -> LocalInferenceResult.Success("cleaned locally") },
                 localModelPath = { "/fake/model.gguf" },
                 // Leave only ~250ms on the stage deadline so callTimeout fires quickly in test.
-                nowMs = { if (fakeNow == 0L) { fakeNow = 1_000L; 1_000L } else 1_000L + CLOUD_CLEANUP_STAGE_BUDGET_MS - 250L },
+                nowMs = { if (fakeNow == 0L) { fakeNow = 1_000L; 1_000L } else 1_000L + cloudCleanupStageBudgetMs("raw transcript".length) - 250L },
                 onStageStatus = { statuses += it },
                 callback = { wfResult.set(it); wfLatch.countDown() },
             )
@@ -1391,8 +1390,8 @@ class CleanupWaterfallExecutorEntryCredentialTest {
         assertEquals("clean", happyResult?.text)
         assertTrue("happy path must never emit stage status", happyStatuses.isEmpty())
 
-        // 2. Busy retry -> provider failover -> local fallback + onStepFailure captures raw body
-        val retryStatuses = mutableListOf<String>()
+        // 2. Multi-step: 503 skips busy retry -> provider failover -> local fallback + onStepFailure captures raw body
+        val failoverStatuses = mutableListOf<String>()
         val stepFailures = mutableListOf<Triple<CleanupStepGroup, Int?, String>>()
         var failoverResult: PostProcessor.Result? = null
         CleanupWaterfallExecutor.execute(
@@ -1410,8 +1409,7 @@ class CleanupWaterfallExecutorEntryCredentialTest {
             credentialLookup = { "key" },
             transport = FakeCleanupHttpTransport(
                 mutableListOf(
-                    CleanupHttpOutcome.HttpError(503, """{"error":{"message":"busy once"}}"""),
-                    CleanupHttpOutcome.HttpError(503, """{"error":{"message":"still overloaded"}}"""),
+                    CleanupHttpOutcome.HttpError(503, """{"error":{"message":"overloaded once"}}"""),
                     CleanupHttpOutcome.HttpError(400, """{"error":{"message":"bad model payload"}}"""),
                 )
             ),
@@ -1419,25 +1417,326 @@ class CleanupWaterfallExecutorEntryCredentialTest {
             localModelPath = { "/fake/lfm.gguf" },
             busyRetryDelayMs = 0L,
             scheduleRetry = { _, a -> a() },
-            onStageStatus = { retryStatuses += it },
+            onStageStatus = { failoverStatuses += it },
             onStepFailure = { step, code, detail -> stepFailures += Triple(step.group, code, detail) },
             callback = { failoverResult = it },
         )
         assertEquals("local clean", failoverResult?.text)
         assertEquals(
             listOf(
-                "Cleanup retrying…",
                 "OpenAI failed — trying Gemini…",
                 "Cloud unavailable — trying on-device…",
             ),
-            retryStatuses,
+            failoverStatuses,
         )
         assertEquals(2, stepFailures.size)
         assertEquals(CleanupStepGroup.OPENAI_DIRECT, stepFailures[0].first)
         assertEquals(503, stepFailures[0].second)
-        assertTrue(stepFailures[0].third.contains("still overloaded"))
+        assertTrue(stepFailures[0].third.contains("overloaded once"))
         assertEquals(CleanupStepGroup.GEMINI_DIRECT, stepFailures[1].first)
         assertEquals(400, stepFailures[1].second)
         assertTrue(stepFailures[1].third.contains("bad model payload"))
+
+        // 3. Single-step (no runnable fallback): 503 emits Cleanup retrying… and retries once
+        val retryStatuses = mutableListOf<String>()
+        var singleStepResult: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-4o-mini"))),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "key" },
+            transport = FakeCleanupHttpTransport(
+                mutableListOf(
+                    CleanupHttpOutcome.HttpError(503, """{"error":{"message":"busy once"}}"""),
+                    okOutcome("recovered"),
+                )
+            ),
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, a -> a() },
+            onStageStatus = { retryStatuses += it },
+            callback = { singleStepResult = it },
+        )
+        assertEquals("recovered", singleStepResult?.text)
+        assertEquals(listOf("Cleanup retrying…"), retryStatuses)
+    }
+
+    @Test fun `HTTP 200 blank content returns diagnostic without leaking reasoning and clears prior retry HTTP code`() {
+        val failures = mutableListOf<Pair<Int?, String>>()
+        var result: PostProcessor.Result? = null
+        val secretThought = "SENSITIVE_REASONING_SHOULD_NEVER_LOG"
+        val transport = FakeCleanupHttpTransport(
+            mutableListOf(
+                CleanupHttpOutcome.HttpError(
+                    400,
+                    """{"error":{"type":"unsupported_value","code":"unsupported_value","param":"temperature","message":"temperature is unsupported"}}""",
+                ),
+                CleanupHttpOutcome.Ok(
+                    """{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"","reasoning":"$secretThought"}}]}""",
+                ),
+            ),
+        )
+        CleanupWaterfallExecutor.execute(
+            text = "raw transcript",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "reasoning-model"))),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "key" },
+            transport = transport,
+            onStepFailure = { _, httpCode, detail -> failures += httpCode to detail },
+            callback = { result = it },
+        )
+        assertNull(result?.text)
+        val err = result?.error.orEmpty()
+        assertTrue(
+            "expected empty content diagnostic, got '$err'",
+            err.contains("Empty content in response (finish_reason=length, reasoning=true, refusal=false)"),
+        )
+        assertFalse(err.contains(secretThought))
+        val (recordedCode, recordedDetail) = failures.single()
+        assertNull("prior 400 retry must not mislabel subsequent HTTP 200 parse failure", recordedCode)
+        assertTrue(recordedDetail.contains("Empty content in response (finish_reason=length, reasoning=true, refusal=false)"))
+        assertFalse(recordedDetail.contains(secretThought))
+    }
+
+    @Test fun `RealLocalInferenceEngine LENGTH_COLLAPSE detail propagates through executor and preserves notice mapping`() {
+        val rawInput = "Please remind everyone that the team meeting tomorrow morning will cover the quarterly schedule"
+        val truncatedOutput = "Team meeting."
+        val localResult = RealLocalInferenceEngine.validated(
+            PostProcessor.SIMPLE_PROMPT,
+            rawInput,
+            truncatedOutput,
+        ) as LocalInferenceResult.Failure
+        assertTrue(
+            "expected LENGTH_COLLAPSE rejection, got '${localResult.message}'",
+            localResult.message.startsWith("Local cleanup output rejected (LENGTH_COLLAPSE): "),
+        )
+        assertTrue(localResult.message.contains("norm, "))
+        assertTrue(localResult.message.contains("raw; minimum 50%)"))
+
+        var wfResult: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = rawInput,
+            prompt = "clean",
+            waterfall = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.LOCAL_LLM, "local-model"))),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "" },
+            localInference = LocalInferenceEngine { _, _, _, _, _ -> localResult },
+            localModelPath = { "/fake/model.gguf" },
+            callback = { wfResult = it },
+        )
+        assertNull(wfResult?.text)
+        val wfErr = wfResult?.error.orEmpty()
+        assertTrue(wfErr.contains("Local cleanup output rejected (LENGTH_COLLAPSE): "))
+        assertTrue(wfErr.contains("norm, "))
+        assertEquals("model dropped most of the text", CleanupFailureNotice.summarize(wfResult?.error))
+    }
+
+    @Test fun `503 busy retry is skipped when a runnable fallback remains and allowed when none remains`() {
+        // 1. Two cloud steps both with keys: 503 on step 0 skips retry and fails over immediately.
+        var step0Calls = 0
+        var step1Calls = 0
+        var multiCloudResult: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(
+                listOf(
+                    CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m1"),
+                    CleanupStep(CleanupStepGroup.GEMINI_DIRECT, "m2"),
+                )
+            ),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "key" },
+            transport = CleanupHttpTransport { url, _, _, _, _, cb ->
+                if (url.contains("openai")) {
+                    step0Calls++
+                    cb(CleanupHttpOutcome.HttpError(503, "busy"))
+                } else {
+                    step1Calls++
+                    cb(CleanupHttpOutcome.Ok("""{"candidates":[{"content":{"parts":[{"text":"gemini ok"}]}}]}"""))
+                }
+            },
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, a -> a() },
+            callback = { multiCloudResult = it },
+        )
+        assertEquals(1, step0Calls)
+        assertEquals(1, step1Calls)
+        assertEquals("gemini ok", multiCloudResult?.text)
+
+        // 2. One cloud step + available LOCAL_LLM: 503 skips retry and fails over to local.
+        var cloudPlusLocalCalls = 0
+        var localFallbackResult: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(
+                listOf(
+                    CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m1"),
+                    CleanupStep(CleanupStepGroup.LOCAL_LLM, "local"),
+                )
+            ),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "key" },
+            transport = CleanupHttpTransport { _, _, _, _, _, cb ->
+                cloudPlusLocalCalls++
+                cb(CleanupHttpOutcome.HttpError(503, "busy"))
+            },
+            localInference = LocalInferenceEngine { _, _, _, _, _ -> LocalInferenceResult.Success("local ok") },
+            localModelPath = { "/fake/model.gguf" },
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, a -> a() },
+            callback = { localFallbackResult = it },
+        )
+        assertEquals(1, cloudPlusLocalCalls)
+        assertEquals("local ok", localFallbackResult?.text)
+
+        // 3. One cloud step + unconfigured cloud step + unavailable local: step 0 HAS NO runnable fallback, so it retries 503.
+        var unrunnableFallbackCalls = 0
+        var retriedResult: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(
+                listOf(
+                    CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m1", entryId = "e1"),
+                    CleanupStep(CleanupStepGroup.GEMINI_DIRECT, "m2", entryId = "e2"),
+                    CleanupStep(CleanupStepGroup.LOCAL_LLM, "local"),
+                )
+            ),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "" },
+            entryCredentialLookup = { id -> if (id == "e1") "key-1" else "" },
+            transport = CleanupHttpTransport { _, _, _, _, _, cb ->
+                unrunnableFallbackCalls++
+                if (unrunnableFallbackCalls == 1) cb(CleanupHttpOutcome.HttpError(503, "busy"))
+                else cb(okOutcome("retried ok"))
+            },
+            localModelPath = { null },
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, a -> a() },
+            callback = { retriedResult = it },
+        )
+        assertEquals(2, unrunnableFallbackCalls)
+        assertEquals("retried ok", retriedResult?.text)
+
+        // 4. 3rd cloud step with a 4th cloud step beyond MAX_CLOUD_CLEANUP_PROVIDERS (3) and no local: retries 503.
+        val callsByModel = mutableListOf<String>()
+        var capBoundaryResult: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(
+                listOf(
+                    CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m1"),
+                    CleanupStep(CleanupStepGroup.GEMINI_DIRECT, "m2"),
+                    CleanupStep(CleanupStepGroup.ANTHROPIC_DIRECT, "m3"),
+                    CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m4-beyond-cap"),
+                )
+            ),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "key" },
+            transport = CleanupHttpTransport { url, _, body, _, _, cb ->
+                callsByModel += url
+                when {
+                    url.contains("openai") -> cb(CleanupHttpOutcome.HttpError(401, "bad openai"))
+                    url.contains("googleapis") -> cb(CleanupHttpOutcome.HttpError(401, "bad gemini"))
+                    callsByModel.count { it.contains("anthropic") } == 1 -> cb(CleanupHttpOutcome.HttpError(503, "busy"))
+                    else -> cb(CleanupHttpOutcome.Ok("""{"content":[{"type":"text","text":"m3 recovered"}]}"""))
+                }
+            },
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, a -> a() },
+            callback = { capBoundaryResult = it },
+        )
+        assertEquals("m3 recovered", capBoundaryResult?.text)
+        assertEquals(2, callsByModel.count { it.contains("anthropic") })
+    }
+
+    @Test fun `distinct-host OPENAI_DIRECT steps stay in separate fail-fast groups while same-host steps stay merged`() {
+        val cloudOpenAi = CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-5.4-mini", entryId = "e1")
+        val lanSelfHosted = CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "qwen", baseUrlOverride = "http://192.168.1.50:8000/v1", entryId = "e2")
+        val lanTrailingSlash = CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "llama", baseUrlOverride = "http://192.168.1.50:8000/v1/", entryId = "e3")
+
+        val groups = CleanupWaterfallPlanner.groupConsecutive(listOf(cloudOpenAi, lanSelfHosted, lanTrailingSlash))
+        assertEquals(2, groups.size)
+        assertEquals(listOf(cloudOpenAi), groups[0])
+        assertEquals(listOf(lanSelfHosted, lanTrailingSlash), groups[1])
+
+        // Runtime execution: DNS/connection failure on cloud OPENAI_DIRECT does NOT skip LAN OPENAI_DIRECT behind it.
+        val requestedUrls = mutableListOf<String>()
+        var result: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw transcript",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(listOf(cloudOpenAi, lanSelfHosted)),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "key" },
+            transport = CleanupHttpTransport { url, _, _, _, _, cb ->
+                requestedUrls += url
+                if (url.contains("api.openai.com")) cb(CleanupHttpOutcome.ConnectionFailure("Unable to resolve host"))
+                else cb(okOutcome("lan rescued"))
+            },
+            callback = { result = it },
+        )
+        assertEquals(listOf("https://api.openai.com/v1/chat/completions", "http://192.168.1.50:8000/v1/chat/completions"), requestedUrls)
+        assertEquals("lan rescued", result?.text)
+    }
+
+    @Test fun `stage 2 cloud cleanup caps scale with input length`() {
+        assertEquals(20_000L, cloudCleanupPerProviderCapMs(0))
+        assertEquals(20_000L, cloudCleanupPerProviderCapMs(2_000))
+        assertEquals(29_000L, cloudCleanupPerProviderCapMs(5_000))
+        assertEquals(40_000L, cloudCleanupPerProviderCapMs(9_000))
+        assertEquals(40_000L, cloudCleanupPerProviderCapMs(20_000))
+
+        assertEquals(60_000L, cloudCleanupStageBudgetMs(500))
+        assertEquals(60_000L, cloudCleanupStageBudgetMs(2_000))
+        assertEquals(87_000L, cloudCleanupStageBudgetMs(5_000))
+        assertEquals(90_000L, cloudCleanupStageBudgetMs(9_000))
+        assertEquals(90_000L, cloudCleanupStageBudgetMs(20_000))
+
+        val shortTimeouts = mutableListOf<CleanupStepTimeouts>()
+        CleanupWaterfallExecutor.execute(
+            text = "short transcript",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-5.4-mini"))),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "key" },
+            transport = CleanupHttpTransport { _, _, _, timeouts, _, cb ->
+                shortTimeouts += timeouts
+                cb(okOutcome("ok"))
+            },
+            nowMs = { 1_000L },
+            callback = {},
+        )
+        assertEquals(20_000L, shortTimeouts.single().callMs)
+
+        val longTimeouts = mutableListOf<CleanupStepTimeouts>()
+        CleanupWaterfallExecutor.execute(
+            text = "a".repeat(9_000),
+            prompt = "clean",
+            waterfall = CleanupWaterfall(listOf(CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-5.4-mini"))),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "key" },
+            transport = CleanupHttpTransport { _, _, _, timeouts, _, cb ->
+                longTimeouts += timeouts
+                cb(okOutcome("ok"))
+            },
+            nowMs = { 1_000L },
+            callback = {},
+        )
+        assertEquals(40_000L, longTimeouts.single().callMs)
     }
 }

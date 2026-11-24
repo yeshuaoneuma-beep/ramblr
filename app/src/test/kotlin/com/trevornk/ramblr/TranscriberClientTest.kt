@@ -199,4 +199,26 @@ class TranscriberClientTest {
             server.close()
         }
     }
+
+    @Test fun `DNS failure sets isTransientIo false and PERMANENT_OR_QUOTA`() {
+        val pcm = File(temp.root, "clip.pcm").apply { writeBytes(ByteArray(320)) }
+        val holder = InFlightCall().apply { beginWork() }
+        val latch = CountDownLatch(1)
+        val ref = AtomicReference<TranscriberClient.Result>()
+        TranscriberClient.transcribe(
+            pcmFile = pcm,
+            apiKey = "key",
+            cancelHolder = holder,
+            baseUrl = "https://nonexistent.invalid/v1",
+            callTimeoutMs = 5_000L,
+        ) {
+            ref.set(it)
+            latch.countDown()
+        }
+        assertTrue(latch.await(10, TimeUnit.SECONDS))
+        val result = ref.get()
+        assertFalse(result.isCancelled)
+        assertFalse("UnknownHostException must not be marked transient IO", result.isTransientIo)
+        assertEquals(CloudErrorKind.PERMANENT_OR_QUOTA, result.errorKind)
+    }
 }

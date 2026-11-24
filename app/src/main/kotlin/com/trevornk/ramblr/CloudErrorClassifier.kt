@@ -1,6 +1,10 @@
 package com.trevornk.ramblr
 
 import java.io.IOException
+import java.net.NoRouteToHostException
+import java.net.UnknownHostException
+import java.util.Collections
+import java.util.IdentityHashMap
 
 enum class CloudErrorKind {
     TEMPORARY_BUSY,
@@ -51,16 +55,25 @@ object CloudErrorClassifier {
             // Quota/auth/client codes fail over immediately even if the body mentions demand/load.
             if (httpCode in PERMANENT_OR_QUOTA_HTTP_CODES) return CloudErrorKind.PERMANENT_OR_QUOTA
         }
+        val lowerError = errorText?.lowercase()
+        if (
+            httpCode == null && lowerError != null && (
+                "unable to resolve host" in lowerError ||
+                    "no address associated with hostname" in lowerError ||
+                    "network is unreachable" in lowerError
+                )
+        ) {
+            return CloudErrorKind.PERMANENT_OR_QUOTA
+        }
         if (isTransientIo) return CloudErrorKind.TEMPORARY_BUSY
-        if (errorText != null) {
-            val lower = errorText.lowercase()
-            if ("overloaded" in lower || "high demand" in lower) return CloudErrorKind.TEMPORARY_BUSY
+        if (lowerError != null) {
+            if ("overloaded" in lowerError || "high demand" in lowerError) return CloudErrorKind.TEMPORARY_BUSY
             if (
                 httpCode == null && (
-                    "timed out" in lower ||
-                        "timeout" in lower ||
-                        "connection reset" in lower ||
-                        "unexpected end of stream" in lower
+                    "timed out" in lowerError ||
+                        "timeout" in lowerError ||
+                        "connection reset" in lowerError ||
+                        "unexpected end of stream" in lowerError
                     )
             ) {
                 return CloudErrorKind.TEMPORARY_BUSY
@@ -80,5 +93,18 @@ object CloudErrorClassifier {
 
     fun isTemporaryBusy(error: Throwable): Boolean = classify(error) == CloudErrorKind.TEMPORARY_BUSY
 
-    fun isTransientIoException(error: Throwable): Boolean = error is IOException
+    fun isNonTransientNetworkException(error: Throwable): Boolean {
+        val visited = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
+        var current: Throwable? = error
+        var depth = 0
+        while (current != null && depth < 16 && visited.add(current)) {
+            if (current is UnknownHostException || current is NoRouteToHostException) return true
+            current = current.cause
+            depth++
+        }
+        return false
+    }
+
+    fun isTransientIoException(error: Throwable): Boolean =
+        error is IOException && !isNonTransientNetworkException(error)
 }

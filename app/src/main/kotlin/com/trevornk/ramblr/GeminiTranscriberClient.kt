@@ -31,6 +31,7 @@ object GeminiTranscriberClient {
         val isTransientIo: Boolean = false,
         val isCancelled: Boolean = false,
         val retryAfterMs: Long? = null,
+        val dropReason: String? = null,
     ) {
         val errorKind: CloudErrorKind
             get() = CloudErrorClassifier.classify(httpCode, error, isTransientIo)
@@ -97,7 +98,11 @@ object GeminiTranscriberClient {
      */
     fun resultFor(responseBody: String, terms: List<String>, prompt: String): Result {
         val parsed = parseResponse(responseBody)
-        return if (VocabularyEchoGuard.isEcho(parsed.text, terms, prompt)) Result("", null) else parsed
+        return if (VocabularyEchoGuard.isEcho(parsed.text, terms, prompt)) {
+            parsed.copy(text = "", error = null, dropReason = "vocabulary_echo_guard")
+        } else {
+            parsed
+        }
     }
 
     /**
@@ -189,6 +194,8 @@ object GeminiTranscriberClient {
         }
     }
 
+    private val REJECTED_FINISH_REASONS = setOf("MAX_TOKENS", "SAFETY", "RECITATION")
+
     /** Same `candidates[0].content.parts[].text` shape as [GeminiCleanupProvider.parseResponse],
      *  extracted independently so the two providers' response contracts (transcript text vs.
      *  cleaned-up text) stay decoupled even though the wire format happens to match today. */
@@ -200,20 +207,33 @@ object GeminiTranscriberClient {
                 Result(null, "No candidates in response")
             } else {
                 val candidate = candidates.getJSONObject(0)
+                val finishReason = if (candidate.isNull("finishReason")) "" else candidate.optString("finishReason", "").trim()
+                if (finishReason in REJECTED_FINISH_REASONS) {
+                    return Result(null, "Gemini finished with $finishReason")
+                }
                 val content = candidate.optJSONObject("content")
                 val parts = content?.optJSONArray("parts")
+                var thoughtCount = 0
                 val text = parts?.let { arr ->
-                    (0 until arr.length())
-                        .mapNotNull { arr.optJSONObject(it) }
-                        .filter { !it.optBoolean("thought", false) && !it.isNull("text") }
-                        .joinToString("") { it.optString("text", "") }
+                    buildString {
+                        for (i in 0 until arr.length()) {
+                            val part = arr.optJSONObject(i) ?: continue
+                            if (part.optBoolean("thought", false)) {
+                                thoughtCount++
+                                continue
+                            }
+                            if (!part.isNull("text")) {
+                                append(part.optString("text", ""))
+                            }
+                        }
+                    }
                 }
                 if (!text.isNullOrBlank()) Result(text.trim(), null)
                 // A model that finished normally with no text is answering "there was no speech"
                 // (the prompt asks for exactly that, #306): an empty transcript, not a provider
                 // failure. Any other finish reason (SAFETY, MAX_TOKENS, ...) stays an error.
-                else if (candidate.optString("finishReason") == "STOP") Result("", null)
-                else Result(null, "No text content in response")
+                else if (finishReason == "STOP") Result("", null, dropReason = "empty_stop(thoughtParts=$thoughtCount)")
+                else Result(null, "No text content in response (finishReason=${finishReason.ifBlank { "unknown" }})")
             }
         } else if (obj.has("error")) {
             Result(null, obj.getJSONObject("error").optString("message", "Unknown Gemini error"))
@@ -304,7 +324,14 @@ object GeminiTranscriberClient {
                     cancelHolder.clear(call)
                     val cancelled = call.isCanceled() && cancelHolder.isCancelled
                     val error = if (!cancelled && call.isCanceled()) normalizedTimeoutError(e) else e.message
-                    callback(Result(null, error, isTransientIo = !cancelled, isCancelled = cancelled))
+                    callback(
+                        Result(
+                            null,
+                            error,
+                            isTransientIo = !cancelled && CloudErrorClassifier.isTransientIoException(e),
+                            isCancelled = cancelled,
+                        )
+                    )
                 }
 
                 override fun onResponse(call: Call, response: Response) {
@@ -344,7 +371,14 @@ object GeminiTranscriberClient {
                         onFailure = { e ->
                             val cancelled = call.isCanceled() && cancelHolder.isCancelled
                             val error = if (!cancelled && call.isCanceled()) normalizedTimeoutError(e) else e.message
-                            callback(Result(null, error, isTransientIo = !cancelled, isCancelled = cancelled))
+                            callback(
+                                Result(
+                                    null,
+                                    error,
+                                    isTransientIo = !cancelled && CloudErrorClassifier.isTransientIoException(e),
+                                    isCancelled = cancelled,
+                                )
+                            )
                         },
                     )
                 }

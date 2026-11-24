@@ -64,6 +64,33 @@ object TranscriptionChain {
     const val SINGLE_CLOUD_MAX_ATTEMPTS = 2
 
     /**
+     * Returns the per-attempt cloud STT timeout cap in milliseconds.
+     * Preserves the legacy 60s/75s defaults when [audioDurationMs] is null, and scales
+     * short/medium clips proportionally while keeping the 60s (compressed) / 75s (WAV) ceilings.
+     */
+    fun cloudAttemptCapMs(isCompressedUpload: Boolean, audioDurationMs: Long? = null): Long {
+        if (audioDurationMs == null) {
+            return if (isCompressedUpload) CLOUD_STT_ATTEMPT_CAP_COMPRESSED_MS else CLOUD_STT_ATTEMPT_CAP_WAV_MS
+        }
+        val extraSec = (audioDurationMs - 60_000L).coerceAtLeast(0L) / 1_000L
+        return if (isCompressedUpload) {
+            (25_000L + extraSec * 75L).coerceAtMost(CLOUD_STT_ATTEMPT_CAP_COMPRESSED_MS)
+        } else {
+            (35_000L + extraSec * 110L).coerceAtMost(CLOUD_STT_ATTEMPT_CAP_WAV_MS)
+        }
+    }
+
+    /**
+     * Returns the shared Stage 1 cloud STT stage budget in milliseconds.
+     * Preserves [CLOUD_STT_STAGE_BUDGET_MS] (180s) when [audioDurationMs] is null, and scales
+     * with clip duration within [75s, 150s] otherwise.
+     */
+    fun cloudStageBudgetMs(isCompressedUpload: Boolean, audioDurationMs: Long? = null): Long {
+        if (audioDurationMs == null) return CLOUD_STT_STAGE_BUDGET_MS
+        return minOf(150_000L, maxOf(75_000L, cloudAttemptCapMs(isCompressedUpload, audioDurationMs) * 2))
+    }
+
+    /**
      * Returns the per-attempt timeout in milliseconds clamped to [deadlineAtMs], or null when the
      * shared Stage 1 cloud STT budget is already spent.
      */
@@ -71,14 +98,11 @@ object TranscriptionChain {
         deadlineAtMs: Long,
         nowMs: Long,
         isCompressedUpload: Boolean,
+        audioDurationMs: Long? = null,
     ): Long? {
         val remainingMs = deadlineAtMs - nowMs
         if (remainingMs <= 0L) return null
-        val capMs = if (isCompressedUpload) {
-            CLOUD_STT_ATTEMPT_CAP_COMPRESSED_MS
-        } else {
-            CLOUD_STT_ATTEMPT_CAP_WAV_MS
-        }
+        val capMs = cloudAttemptCapMs(isCompressedUpload, audioDurationMs)
         return minOf(capMs, remainingMs)
     }
 
@@ -101,18 +125,19 @@ object TranscriptionChain {
 
     /**
      * Deterministic Stage 1 state machine:
-     *  - 3+ cloud providers: P1 -> P2 -> P3 (-> ...) -> Local -> Error (no P1 revisit).
-     *  - 2 cloud providers: P1 -> P2 -> revisit P1 once (if P1 failed TEMPORARY_BUSY and has < 2 attempts) -> Local -> Error.
-     *  - 1 cloud provider: P1 -> P1 (TEMPORARY_BUSY or quick-429 only, max 2 attempts) -> Local -> Error.
+     *  - 2+ cloud providers: P1 -> P2 (-> P3 ...) -> Local -> Error (no P1 revisit).
+     *  - 1 cloud provider with Local fallback: P1 -> Local -> Error (no same-provider retry).
+     *  - 1 cloud provider with no Local fallback: P1 -> P1 (TEMPORARY_BUSY or quick-429 only, max 2 attempts) -> Error.
      *  - Every provider is hard-capped at [MAX_ATTEMPTS_PER_PROVIDER] (2) total attempts within the
-     *    stage, so a quick HTTP 429 retry on P1 consumes P1's revisit slot (never 3 calls).
+     *    stage.
      */
     class Walk(
         private val cloudCandidates: List<ProviderChainEntry>,
         private val localCandidate: ProviderChainEntry?,
         startedAtMs: Long,
         private val isCompressedUpload: Boolean,
-        cloudBudgetMs: Long = CLOUD_STT_STAGE_BUDGET_MS,
+        private val audioDurationMs: Long? = null,
+        cloudBudgetMs: Long = cloudStageBudgetMs(isCompressedUpload, audioDurationMs),
         private val backoffMs: Long = CLOUD_STT_RETRY_BACKOFF_MS,
         private val singleCloudMaxAttempts: Int = SINGLE_CLOUD_MAX_ATTEMPTS,
         private val localBudgetMs: Long = LOCAL_STT_BUDGET_MS,
@@ -123,8 +148,6 @@ object TranscriptionChain {
         private var cloudIndex = 0
         private var pendingQuickRetryIndex: Int? = null
         private var pendingQuickRetryBackoffMs: Long = 0L
-        private var p1FailedTemporaryBusy = false
-        private var p1Revisited = false
         private var cloudExhausted = cloudCandidates.isEmpty()
         private var localAttempted = false
         private var pendingStep: Step? = null
@@ -158,7 +181,7 @@ object TranscriptionChain {
                 }
                 if (quickIdx in attemptsByIndex.indices && attemptsByIndex[quickIdx] < maxForProvider) {
                     val delayMs = pendingQuickRetryBackoffMs
-                    val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs + delayMs, isCompressedUpload)
+                    val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs + delayMs, isCompressedUpload, audioDurationMs)
                     if (timeoutMs != null) {
                         pendingCloudIndex = quickIdx
                         return Step.RunCloud(
@@ -177,7 +200,7 @@ object TranscriptionChain {
 
             if (cloudCandidates.size == 1) {
                 if (attemptsByIndex[0] > 0) return null
-                val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs, isCompressedUpload)
+                val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs, isCompressedUpload, audioDurationMs)
                     ?: return null
                 pendingCloudIndex = 0
                 return Step.RunCloud(
@@ -191,31 +214,13 @@ object TranscriptionChain {
 
             if (cloudIndex < cloudCandidates.size) {
                 val idx = cloudIndex
-                val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs, isCompressedUpload) ?: return null
+                val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs, isCompressedUpload, audioDurationMs) ?: return null
                 pendingCloudIndex = idx
                 return Step.RunCloud(
                     entry = cloudCandidates[idx],
                     attemptNumber = attemptsByIndex[idx] + 1,
                     isRevisit = false,
                     backoffMs = 0L,
-                    timeoutMs = timeoutMs,
-                )
-            }
-
-            if (
-                cloudCandidates.size == 2 &&
-                p1FailedTemporaryBusy &&
-                !p1Revisited &&
-                attemptsByIndex[0] < MAX_ATTEMPTS_PER_PROVIDER
-            ) {
-                val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs + backoffMs, isCompressedUpload)
-                    ?: return null
-                pendingCloudIndex = 0
-                return Step.RunCloud(
-                    entry = cloudCandidates[0],
-                    attemptNumber = attemptsByIndex[0] + 1,
-                    isRevisit = true,
-                    backoffMs = backoffMs,
                     timeoutMs = timeoutMs,
                 )
             }
@@ -229,7 +234,7 @@ object TranscriptionChain {
             httpCode: Int? = null,
             retryAfterMs: Long? = null,
         ) {
-            val step = pendingStep as? Step.RunCloud ?: return
+            pendingStep as? Step.RunCloud ?: return
             val idx = pendingCloudIndex
             pendingStep = null
             pendingCloudIndex = -1
@@ -240,6 +245,10 @@ object TranscriptionChain {
             val quick429 = CloudErrorClassifier.isQuickRetryable429(httpCode, retryAfterMs)
 
             if (cloudCandidates.size == 1) {
+                if (localCandidate != null) {
+                    cloudExhausted = true
+                    return
+                }
                 val maxAttempts = minOf(singleCloudMaxAttempts, MAX_ATTEMPTS_PER_PROVIDER)
                 if (attemptsByIndex[0] >= maxAttempts) {
                     cloudExhausted = true
@@ -259,22 +268,14 @@ object TranscriptionChain {
                 return
             }
 
-            if (!step.isRevisit) {
-                val canAttemptAgain = attemptsByIndex[idx] < MAX_ATTEMPTS_PER_PROVIDER
-                if (quick429 && canAttemptAgain) {
-                    // Quick 429 retry stays on this provider and consumes its 2nd attempt / revisit slot.
-                    pendingQuickRetryIndex = idx
-                    pendingQuickRetryBackoffMs = CloudErrorClassifier.quick429BackoffMs(retryAfterMs)
-                    return
-                }
-                if (idx == 0 && errorKind == CloudErrorKind.TEMPORARY_BUSY && canAttemptAgain) {
-                    p1FailedTemporaryBusy = true
-                }
-                cloudIndex = idx + 1
-            } else {
-                p1Revisited = true
-                cloudExhausted = true
+            val canAttemptAgain = attemptsByIndex[idx] < MAX_ATTEMPTS_PER_PROVIDER
+            if (quick429 && canAttemptAgain) {
+                // Quick 429 retry stays on this provider and consumes its 2nd attempt.
+                pendingQuickRetryIndex = idx
+                pendingQuickRetryBackoffMs = CloudErrorClassifier.quick429BackoffMs(retryAfterMs)
+                return
             }
+            cloudIndex = idx + 1
         }
 
         fun recordLocalFailure(errorMessage: String?) {

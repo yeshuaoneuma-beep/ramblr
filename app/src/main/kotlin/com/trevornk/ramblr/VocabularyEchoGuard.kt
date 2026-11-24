@@ -92,9 +92,14 @@ object VocabularyEchoGuard {
         if (prompt.size < PROMPT_ECHO_MIN_WORDS || output.size < PROMPT_ECHO_MIN_WORDS) return false
         val promptRuns = HashSet<List<String>>()
         for (i in 0..prompt.size - PROMPT_ECHO_MIN_WORDS) promptRuns.add(prompt.subList(i, i + PROMPT_ECHO_MIN_WORDS))
+        val covered = BooleanArray(output.size)
         for (i in 0..output.size - PROMPT_ECHO_MIN_WORDS) {
-            if (output.subList(i, i + PROMPT_ECHO_MIN_WORDS) in promptRuns) return true
+            if (output.subList(i, i + PROMPT_ECHO_MIN_WORDS) in promptRuns) {
+                for (j in i until i + PROMPT_ECHO_MIN_WORDS) {
+                    covered[j] = true
+                }
+            }
         }
-        return false
+        return covered.count { it } * 2 >= output.size
     }
 }

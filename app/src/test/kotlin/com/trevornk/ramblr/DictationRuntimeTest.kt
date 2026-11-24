@@ -1067,6 +1067,75 @@ class DictationRuntimeTest {
     }
 
     @Test
+    fun `no speech logs privacy-safe dropReason and byte sizes to DiagnosticErrorLog for OpenAI and Gemini`() {
+        DiagnosticErrorLog.clear(app)
+
+        // 1. OpenAI empty_transcript
+        stubBatchProvider("")
+        runtime.shutdown()
+        batchRuntime()
+        val pcmEmpty = realSizedPcm()
+        val expectedEmptyPcmBytes = pcmEmpty.length()
+        runtime.onTap(); runtime.onTap()
+        engines.last().finishAs(pcmEmpty, RecordingEngine.StopReason.USER)
+        awaitToast("No speech detected")
+        awaitIdle()
+
+        val emptyEntry = DiagnosticErrorLog.readRecent(app).last()
+        assertTrue(emptyEntry, emptyEntry.contains("[stt OPENAI/gpt-transcribe HTTP 200]"))
+        assertTrue(emptyEntry, emptyEntry.contains("no speech (empty_transcript, pcmBytes=$expectedEmptyPcmBytes, compressedBytes=0)"))
+
+        // 2. OpenAI vocabulary_echo_guard with compressed file
+        DiagnosticErrorLog.clear(app)
+        useEchoVocabulary()
+        stubBatchProvider(echoVocabulary.joinToString(", ") + ".")
+        runtime.shutdown()
+        batchRuntime()
+        val pcmEcho = realSizedPcm()
+        val compressedEcho = File.createTempFile("rec_", ".m4a", app.cacheDir).apply { writeBytes(ByteArray(1234)) }
+        val expectedEchoPcmBytes = pcmEcho.length()
+        runtime.onTap(); runtime.onTap()
+        engines.last().finishAs(pcmEcho, RecordingEngine.StopReason.USER, compressedFile = compressedEcho)
+        awaitToast("No speech detected")
+        awaitIdle()
+
+        val echoEntry = DiagnosticErrorLog.readRecent(app).last()
+        assertTrue(echoEntry, echoEntry.contains("no speech (vocabulary_echo_guard, pcmBytes=$expectedEchoPcmBytes, compressedBytes=1234)"))
+        for (term in echoVocabulary) {
+            assertFalse("vocabulary term '$term' must never leak to diagnostic log", echoEntry.contains(term))
+        }
+
+        // 3. Gemini empty_stop(thoughtParts=1)
+        DiagnosticErrorLog.clear(app)
+        val base = batchServer.url("/v1").toString().trimEnd('/')
+        ProviderChainStore.save(
+            app,
+            ProviderChain(listOf(ProviderChainEntry(ProviderKind.GEMINI, "gemini-3.5-flash-lite", baseUrlOverride = base, transcriptionModel = "gemini-3.1-flash-lite", id = "gem-diag"))),
+        )
+        ProviderCredentialStore.set(app, "gem-diag", "gem-key")
+        val secretThought = "PRIVATE_GEMINI_THOUGHT_MUST_NOT_LEAK"
+        batchServer.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                MockResponse.Builder().body(
+                    """{"candidates":[{"content":{"parts":[{"text":"$secretThought","thought":true}]},"finishReason":"STOP"}]}""",
+                ).build()
+        }
+        runtime.shutdown()
+        batchRuntime()
+        val pcmGemini = realSizedPcm()
+        val expectedGeminiBytes = pcmGemini.length()
+        runtime.onTap(); runtime.onTap()
+        engines.last().finishAs(pcmGemini, RecordingEngine.StopReason.USER)
+        awaitToast("No speech detected")
+        awaitIdle()
+
+        val geminiEntry = DiagnosticErrorLog.readRecent(app).last()
+        assertTrue(geminiEntry, geminiEntry.contains("[stt GEMINI/gemini-3.1-flash-lite HTTP 200]"))
+        assertTrue(geminiEntry, geminiEntry.contains("no speech (empty_stop(thoughtParts=1), pcmBytes=$expectedGeminiBytes, compressedBytes=0)"))
+        assertFalse(geminiEntry.contains(secretThought))
+    }
+
+    @Test
     fun `a live final that is the vocabulary list is rejected and the batch fallback delivers instead`() {
         useEchoVocabulary()
         stubBatchProvider("batch rescue")

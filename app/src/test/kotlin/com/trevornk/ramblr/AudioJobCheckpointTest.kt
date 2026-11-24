@@ -2,6 +2,10 @@ package com.trevornk.ramblr
 
 import android.app.Application
 import android.content.Context
+import mockwebserver3.Dispatcher
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
+import mockwebserver3.RecordedRequest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -14,6 +18,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.Collections
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -277,5 +282,73 @@ class AudioJobCheckpointTest {
         assertEquals(1, history.size)
         assertEquals("checkpoint raw only", history.single().rawText)
         assertNull(history.single().cleanedText)
+    }
+
+    @Test fun `multi-route TEMPORARY_BUSY fails over immediately without retrying and DNS failure does not retry`() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            app.getSharedPreferences("ramblr", Context.MODE_PRIVATE).edit()
+                .putBoolean("use_local", false)
+                .commit()
+            DictationModeToggle.setAllowLocalFallback(app, false)
+            PostProcessingToggle.setEnabled(app, false)
+
+            val p1 = ProviderChainEntry(ProviderKind.OPENAI, "gpt-5.4-mini", baseUrlOverride = server.url("/route1/v1").toString().trimEnd('/'), transcriptionModel = "gpt-transcribe", id = "aj-oai-1")
+            val p2 = ProviderChainEntry(ProviderKind.OPENAI, "gpt-5.4-mini", baseUrlOverride = server.url("/route2/v1").toString().trimEnd('/'), transcriptionModel = "gpt-transcribe", id = "aj-oai-2")
+            ProviderChainStore.save(app, ProviderChain(listOf(p1, p2)))
+            ProviderCredentialStore.set(app, "aj-oai-1", "k1")
+            ProviderCredentialStore.set(app, "aj-oai-2", "k2")
+
+            val requests = Collections.synchronizedList(mutableListOf<String>())
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when {
+                    request.target.contains("/route1/") -> {
+                        requests += "ROUTE1"
+                        MockResponse.Builder().code(503).body("""{"error":{"message":"busy"}}""").build()
+                    }
+                    request.target.contains("/route2/") -> {
+                        requests += "ROUTE2"
+                        MockResponse.Builder().body("""{"text":"route 2 ok"}""").build()
+                    }
+                    else -> MockResponse.Builder().code(404).build()
+                }
+            }
+
+            val jobId1 = "job-multi-route-503"
+            AudioJobFiles.sourceFile(app.filesDir, jobId1).apply { parentFile?.mkdirs(); writeBytes(ByteArray(64) { 1 }) }
+            val job1 = AudioJob(jobId1, "multi.m4a", JobKind.IMPORTED, JobStatus.QUEUED, 10L, hasLocalAudio = true)
+            store.upsert(job1)
+            val runner = AudioJobRunner(
+                context = app,
+                store = store,
+                isCancelled = { false },
+                onStatus = {},
+                decodeAudio = { _, pcm, _, _ ->
+                    pcm.writeBytes(ByteArray(32_000))
+                    AudioFileDecoder.Result(pcmBytes = 32_000L, durationMs = 1_000L)
+                },
+            )
+            runner.run(job1)
+            assertEquals(JobStatus.DONE, store.get(jobId1)?.status)
+            assertEquals(listOf("ROUTE1", "ROUTE2"), requests)
+            assertEquals("route 2 ok", DictationHistoryStore.forContext(app).all().single().rawText)
+
+            // Single route with DNS failure: must fail without sleeping/retrying.
+            val badHost = ProviderChainEntry(ProviderKind.OPENAI, "gpt-5.4-mini", baseUrlOverride = "https://nonexistent.invalid/v1", transcriptionModel = "gpt-transcribe", id = "aj-bad-dns")
+            ProviderChainStore.save(app, ProviderChain(listOf(badHost)))
+            ProviderCredentialStore.set(app, "aj-bad-dns", "k-bad")
+            val jobId2 = "job-single-dns-fail"
+            AudioJobFiles.sourceFile(app.filesDir, jobId2).apply { parentFile?.mkdirs(); writeBytes(ByteArray(64) { 2 }) }
+            val job2 = AudioJob(jobId2, "dns.m4a", JobKind.IMPORTED, JobStatus.QUEUED, 11L, hasLocalAudio = true)
+            store.upsert(job2)
+            val startMs = System.currentTimeMillis()
+            runner.run(job2)
+            val elapsedMs = System.currentTimeMillis() - startMs
+            assertEquals(JobStatus.FAILED, store.get(jobId2)?.status)
+            assertTrue("DNS failure must not pay 3s retry backoff (took ${elapsedMs}ms)", elapsedMs < 2_500L)
+        } finally {
+            server.close()
+        }
     }
 }

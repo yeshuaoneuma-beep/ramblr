@@ -87,6 +87,8 @@ object GeminiCleanupProvider {
         }
     }
 
+    private val REJECTED_FINISH_REASONS = setOf("MAX_TOKENS", "SAFETY", "RECITATION")
+
     /**
      * Parses a `generateContent` response: `candidates[0].content.parts[].text`, concatenated in
      * case the model splits its answer across multiple parts. Gemini error responses come back
@@ -101,7 +103,12 @@ object GeminiCleanupProvider {
                 if (candidates.length() == 0) {
                     return PostProcessor.Result(null, "No candidates in response")
                 }
-                val content = candidates.getJSONObject(0).optJSONObject("content")
+                val candidate = candidates.getJSONObject(0)
+                val finishReason = if (candidate.isNull("finishReason")) "" else candidate.optString("finishReason", "").trim()
+                if (finishReason in REJECTED_FINISH_REASONS) {
+                    return PostProcessor.Result(null, "Gemini finished with $finishReason")
+                }
+                val content = candidate.optJSONObject("content")
                 val parts = content?.optJSONArray("parts")
                 val text = parts?.let { arr ->
                     (0 until arr.length())
@@ -112,7 +119,10 @@ object GeminiCleanupProvider {
                 if (!text.isNullOrBlank()) {
                     PostProcessor.Result(text.trim(), null)
                 } else {
-                    PostProcessor.Result(null, "No text content in response")
+                    PostProcessor.Result(
+                        null,
+                        "No text content in response (finishReason=${finishReason.ifBlank { "unknown" }})",
+                    )
                 }
             } else if (obj.has("error")) {
                 PostProcessor.Result(null, obj.getJSONObject("error").optString("message", "Unknown Gemini error"))

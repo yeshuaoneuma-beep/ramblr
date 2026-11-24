@@ -82,6 +82,63 @@ class PostProcessorTest {
         )
     }
 
+    @Test
+    fun parseEmptyBlankNullAndReasoningOnlyChoices() {
+        val emptyStr = """{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":""}}]}"""
+        val emptyRes = PostProcessor.parseResponse(emptyStr)
+        assertEquals(null, emptyRes.text)
+        assertEquals("Empty content in response (finish_reason=stop, reasoning=false, refusal=false)", emptyRes.error)
+
+        val nullContent = """{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":null}}]}"""
+        val nullRes = PostProcessor.parseResponse(nullContent)
+        assertEquals(null, nullRes.text)
+        assertEquals("Empty content in response (finish_reason=stop, reasoning=false, refusal=false)", nullRes.error)
+
+        val missingMsg = """{"choices":[{}]}"""
+        val missingRes = PostProcessor.parseResponse(missingMsg)
+        assertEquals(null, missingRes.text)
+        assertEquals("Empty content in response (finish_reason=unknown, reasoning=false, refusal=false)", missingRes.error)
+
+        val reasoningSecret = "PRIVATE_REASONING_TOKEN_NEVER_LEAK"
+        val reasoningOnly = """{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"","reasoning":"$reasoningSecret"}}]}"""
+        val reasoningRes = PostProcessor.parseResponse(reasoningOnly)
+        assertEquals(null, reasoningRes.text)
+        assertEquals("Empty content in response (finish_reason=length, reasoning=true, refusal=false)", reasoningRes.error)
+        assertFalse(reasoningRes.error!!.contains(reasoningSecret))
+
+        val reasoningContentOnly = """{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":null,"reasoning_content":"$reasoningSecret"}}]}"""
+        val reasoningContentRes = PostProcessor.parseResponse(reasoningContentOnly)
+        assertEquals(null, reasoningContentRes.text)
+        assertEquals("Empty content in response (finish_reason=length, reasoning=true, refusal=false)", reasoningContentRes.error)
+        assertFalse(reasoningContentRes.error!!.contains(reasoningSecret))
+
+        val refusalSecret = "REFUSAL_PROSE_NEVER_LEAK"
+        val refusalOnly = """{"choices":[{"finish_reason":"content_filter","message":{"role":"assistant","content":null,"refusal":"$refusalSecret"}}]}"""
+        val refusalRes = PostProcessor.parseResponse(refusalOnly)
+        assertEquals(null, refusalRes.text)
+        assertEquals("Empty content in response (finish_reason=content_filter, reasoning=false, refusal=true)", refusalRes.error)
+        assertFalse(refusalRes.error!!.contains(refusalSecret))
+    }
+
+    @Test
+    fun parseStringAndNonObjectErrorPayloads() {
+        val stringErr = PostProcessor.parseResponse("""{"error":"upstream overloaded"}""")
+        assertEquals(null, stringErr.text)
+        assertEquals("upstream overloaded", stringErr.error)
+
+        val numericErr = PostProcessor.parseResponse("""{"error":502}""")
+        assertEquals(null, numericErr.text)
+        assertEquals("502", numericErr.error)
+
+        val nullErr = PostProcessor.parseResponse("""{"error":null}""")
+        assertEquals(null, nullErr.text)
+        assertEquals("Unknown provider error", nullErr.error)
+
+        val emptyObjErr = PostProcessor.parseResponse("""{"error":{}}""")
+        assertEquals(null, emptyObjErr.text)
+        assertEquals("Unknown provider error", emptyObjErr.error)
+    }
+
     // --- normalizeBaseUrl (#4) ---
 
     @Test

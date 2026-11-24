@@ -78,13 +78,26 @@ class GeminiCleanupProviderTest {
         assertEquals("No candidates in response", result.error)
     }
 
-    @Test fun `a safety-blocked candidate with no content parts reports missing text`() {
+    @Test fun `a safety-blocked candidate with no content parts reports safety finish reason`() {
         // Gemini returns a candidate with finishReason SAFETY and no content.parts on a blocked
-        // response; the parser must report a missing-text failure, not crash or return null text.
+        // response; the parser must report the finishReason failure, not crash or return null text.
         val json = """{"candidates":[{"finishReason":"SAFETY","content":{}}]}"""
         val result = GeminiCleanupProvider.parseResponse(json)
         assertNull(result.text)
-        assertEquals("No text content in response", result.error)
+        assertEquals("Gemini finished with SAFETY", result.error)
+    }
+
+    @Test fun `cleanup and transcription reject non-blank text when finishReason is MAX_TOKENS SAFETY or RECITATION`() {
+        for (reason in listOf("MAX_TOKENS", "SAFETY", "RECITATION")) {
+            val body = """{"candidates":[{"finishReason":"$reason","content":{"parts":[{"text":"partial or unsafe output"}]}}]}"""
+            val cleanupRes = GeminiCleanupProvider.parseResponse(body)
+            assertNull(cleanupRes.text)
+            assertEquals("Gemini finished with $reason", cleanupRes.error)
+
+            val sttRes = GeminiTranscriberClient.parseResponse(body)
+            assertNull(sttRes.text)
+            assertEquals("Gemini finished with $reason", sttRes.error)
+        }
     }
 
     @Test fun `parses a Gemini error envelope`() {
@@ -119,7 +132,7 @@ class GeminiCleanupProviderTest {
         val onlyNull = """{"candidates":[{"content":{"parts":[{"text":null}]}}]}"""
         val nullResult = GeminiCleanupProvider.parseResponse(onlyNull)
         assertNull(nullResult.text)
-        assertEquals("No text content in response", nullResult.error)
+        assertEquals("No text content in response (finishReason=unknown)", nullResult.error)
     }
 }
 
@@ -141,6 +154,13 @@ class GeminiTranscriberClientTest {
         val stop = GeminiTranscriberClient.parseResponse(nullStop)
         assertEquals("", stop.text)
         assertNull(stop.error)
+        assertEquals("empty_stop(thoughtParts=0)", stop.dropReason)
+
+        val twoThoughtsStop = """{"candidates":[{"content":{"parts":[{"text":"t1","thought":true},{"text":"t2","thought":true}]},"finishReason":"STOP"}]}"""
+        val thoughtStop = GeminiTranscriberClient.parseResponse(twoThoughtsStop)
+        assertEquals("", thoughtStop.text)
+        assertNull(thoughtStop.error)
+        assertEquals("empty_stop(thoughtParts=2)", thoughtStop.dropReason)
     }
 
     @Test fun `small recordings are allowed on the inline-audio path (M6)`() {

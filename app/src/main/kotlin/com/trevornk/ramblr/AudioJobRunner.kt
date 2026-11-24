@@ -189,7 +189,10 @@ internal class AudioJobRunner(
                     }
                 }
                 try {
+                    var routesTried = 0
                     val r = ChunkWalk.run(plan.routes.size, routeIndex) { i ->
+                        routesTried++
+                        val hasNextRoute = routesTried < plan.routes.size
                         if (isCancelled(id)) return@run ChunkAttempt.Cancelled
                         when (val route = plan.routes[i]) {
                             AudioRoute.Local -> {
@@ -202,7 +205,7 @@ internal class AudioJobRunner(
                                     ChunkAttempt.Error()
                                 }
                             }
-                            is AudioRoute.Cloud -> transcribeCloudChunk(id, route.entry, chunkFile, language, vocabulary)
+                            is AudioRoute.Cloud -> transcribeCloudChunk(id, route.entry, chunkFile, language, vocabulary, hasNextRoute)
                         }
                     }
                     if (r.cancelled) throw Stop(null)
@@ -311,6 +314,7 @@ internal class AudioJobRunner(
         file: File,
         language: String?,
         vocabulary: List<String>,
+        hasNextRoute: Boolean = false,
     ): ChunkAttempt {
         val apiKey = ProviderCredentialStore.getOrLegacy(context, entry)
         if (entry.kind == ProviderKind.GEMINI) {
@@ -366,7 +370,7 @@ internal class AudioJobRunner(
             // #306: a silent chunk is empty text, not a failed call -- retrying (or walking to the
             // next route) cannot find speech in it, and SegmentedTranscript.join drops it.
             if (noSpeech) return ChunkAttempt.Text("")
-            if (!shouldRetryCloudChunk(attempt, errorKind, httpCode, retryAfterMs)) {
+            if (!shouldRetryCloudChunk(attempt, errorKind, httpCode, retryAfterMs, hasNextRoute)) {
                 return ChunkAttempt.Error(retryable = errorKind == CloudErrorKind.TEMPORARY_BUSY)
             }
             val delayMs = cloudChunkRetryDelayMs(errorKind, httpCode, retryAfterMs)
@@ -456,10 +460,12 @@ internal class AudioJobRunner(
             errorKind: CloudErrorKind,
             httpCode: Int? = null,
             retryAfterMs: Long? = null,
-        ): Boolean = attempt == 0 && (
-            errorKind == CloudErrorKind.TEMPORARY_BUSY ||
-                CloudErrorClassifier.isQuickRetryable429(httpCode, retryAfterMs)
-            )
+            hasNextRoute: Boolean = false,
+        ): Boolean {
+            if (attempt != 0) return false
+            if (CloudErrorClassifier.isQuickRetryable429(httpCode, retryAfterMs)) return true
+            return errorKind == CloudErrorKind.TEMPORARY_BUSY && !hasNextRoute
+        }
 
         internal fun cloudChunkRetryDelayMs(
             errorKind: CloudErrorKind,

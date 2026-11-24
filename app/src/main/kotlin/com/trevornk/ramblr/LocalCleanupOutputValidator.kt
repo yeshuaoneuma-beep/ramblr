@@ -545,7 +545,8 @@ object LocalCleanupOutputValidator {
         return LocalCleanupValidation.Rejected(
             LocalCleanupValidation.Reason.LENGTH_COLLAPSE,
             "output kept only ${(ratio * 100).toInt()}% of the input's content length " +
-                "(minimum ${(minRatio * 100).toInt()}%)",
+                "(${output.length}/${baseline.length} norm, ${modelOutput.length}/${rawInput.length} raw; " +
+                "minimum ${(minRatio * 100).toInt()}%)",
         )
     }
 

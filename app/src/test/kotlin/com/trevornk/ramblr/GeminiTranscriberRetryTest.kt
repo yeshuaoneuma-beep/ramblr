@@ -158,4 +158,25 @@ class GeminiTranscriberRetryTest {
         assertTrue(latch.await(10, TimeUnit.SECONDS))
         assertTrue(result.get().isCancelled)
     }
+
+    @Test fun `DNS failure sets isTransientIo false and does not retry`() {
+        val pcm = File(temp.root, "clip.pcm").apply { writeBytes(ByteArray(320)) }
+        val holder = InFlightCall().apply { beginWork() }
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<GeminiTranscriberClient.Result>()
+        GeminiTranscriberClient.transcribe(
+            pcmFile = pcm,
+            apiKey = "key",
+            model = "gemini-3.1-flash-lite",
+            cancelHolder = holder,
+            endpoint = "https://nonexistent.invalid/v1beta/models/gemini-3.1-flash-lite:generateContent",
+            retryDelaysMs = listOf(10L, 10L),
+            callTimeoutMs = 5_000L,
+        ) { result.set(it); latch.countDown() }
+        assertTrue(latch.await(10, TimeUnit.SECONDS))
+        val r = result.get()
+        assertFalse(r.isCancelled)
+        assertFalse("UnknownHostException must not be marked transient IO", r.isTransientIo)
+        assertEquals(CloudErrorKind.PERMANENT_OR_QUOTA, r.errorKind)
+    }
 }

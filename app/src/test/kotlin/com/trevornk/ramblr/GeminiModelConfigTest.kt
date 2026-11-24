@@ -93,11 +93,12 @@ class GeminiModelConfigTest {
 
         val cleanupResult = GeminiCleanupProvider.parseResponse(thoughtOnly)
         assertNull(cleanupResult.text)
-        assertEquals("No text content in response", cleanupResult.error)
+        assertEquals("No text content in response (finishReason=STOP)", cleanupResult.error)
 
         val sttResult = GeminiTranscriberClient.parseResponse(thoughtOnly)
         assertEquals("", sttResult.text)
         assertNull(sttResult.error)
+        assertEquals("empty_stop(thoughtParts=1)", sttResult.dropReason)
     }
 
     @Test fun `CleanupWaterfallExecutor applies model-specific Gemini config on GEMINI_DIRECT steps`() {
