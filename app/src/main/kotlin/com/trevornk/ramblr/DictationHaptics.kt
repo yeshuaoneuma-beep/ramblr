@@ -20,6 +20,7 @@ sealed class HapticEffectSpec {
     data class OneShot(val durationMs: Long, val amplitude: Int) : HapticEffectSpec()
     data class Predefined(val kind: PredefinedHaptic) : HapticEffectSpec()
     data class Duration(val durationMs: Long) : HapticEffectSpec()
+    data class Waveform(val timings: List<Long>, val amplitudes: List<Int>?) : HapticEffectSpec()
 }
 
 /** Pure settings -> effect mapping. */
@@ -66,6 +67,9 @@ interface HapticFeedback {
     fun onRecordingStarted()
     fun onRecordingStopped()
 
+    /** Subtle attention vibration when Cloud Live drops mid-recording while local capture continues. */
+    fun onLiveDisconnected() {}
+
     /** Forget any pending start tick; called when the runtime goes idle or shuts down. */
     fun reset()
 
@@ -111,6 +115,21 @@ class DictationHaptics(
 
     override fun reset() {
         startTicked = false
+    }
+
+    override fun onLiveDisconnected() {
+        try {
+            val out = output()
+            val caps = out.capabilities() ?: return
+            val spec = if (caps.hasAmplitudeControl) {
+                HapticEffectSpec.Waveform(listOf(0L, 25L, 60L, 25L), listOf(0, 128, 0, 128))
+            } else {
+                HapticEffectSpec.Waveform(listOf(0L, 25L, 60L, 25L), null)
+            }
+            out.play(spec)
+        } catch (e: Exception) {
+            Log.w(TAG, "Live disconnect haptic failed; ignoring", e)
+        }
     }
 
     /** Settings "Test" button: plays with the current strength/length even when the master switch is off. */
@@ -195,6 +214,11 @@ class AndroidHapticOutput(private val context: Context) : HapticOutput {
             )
             is HapticEffectSpec.Duration ->
                 VibrationEffect.createOneShot(spec.durationMs, VibrationEffect.DEFAULT_AMPLITUDE)
+            is HapticEffectSpec.Waveform -> if (spec.amplitudes != null) {
+                VibrationEffect.createWaveform(spec.timings.toLongArray(), spec.amplitudes.toIntArray(), -1)
+            } else {
+                VibrationEffect.createWaveform(spec.timings.toLongArray(), -1)
+            }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             v.vibrate(effect, VibrationAttributes.createForUsage(VibrationAttributes.USAGE_TOUCH))

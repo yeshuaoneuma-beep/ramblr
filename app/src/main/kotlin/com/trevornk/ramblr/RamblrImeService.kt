@@ -502,6 +502,7 @@ class RamblrImeService : InputMethodService() {
             ),
             renderCountdown = ::renderRecordingCountdown,
             renderStageStatus = ::renderStageStatus,
+            onLiveDisconnected = ::clearComposingOnLiveDisconnect,
         )
         // #233 Phase 1: the IME is the first (and only) host to reach the merged cloud-live seam.
         // CloudLiveWiring returns null unless the user opted in, chose cloud transcription, and
@@ -711,9 +712,17 @@ class RamblrImeService : InputMethodService() {
             return
         }
         val state = lastRenderedState
-        if (state == ImeUiState.TRANSCRIBING || state == ImeUiState.CLEANING) {
+        if (state == ImeUiState.RECORDING || state == ImeUiState.TRANSCRIBING || state == ImeUiState.CLEANING) {
             statusView?.text = statusText
         }
+    }
+
+    private fun clearComposingOnLiveDisconnect() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { clearComposingOnLiveDisconnect() }
+            return
+        }
+        runCatching { currentInputConnection?.setComposingText("", 1) }
     }
 
     private fun registerNetworkCallback() {

@@ -157,4 +157,45 @@ class ImePanelControllerMessageTest {
         c.listener.onStageStatus("ignored after loss")
         assertEquals(1, ui.stageStatuses.size)
     }
+
+    @Test fun `bufferOnly live interim stays in preview panel and live disconnect clears preview without painting ERROR while recording`() {
+        val ui = Ui()
+        val partials = mutableListOf<String>()
+        var commits = 0
+        var disconnectClears = 0
+        var recording = true
+        val c = ImePanelController(
+            runtime = object : ImeRuntimeControl {
+                override fun onTap() {}
+                override fun invalidate() {}
+                override fun teardownAsync() {}
+            },
+            renderState = { ui.states.add(it) },
+            editorSnapshot = { Triple(1L, identity, Any()) },
+            commitText = { _, _ -> commits++; true },
+            renderPartial = { partials += it },
+            userMessage = { ui.messages.add(it) },
+            isRecording = { recording },
+            renderStageStatus = { ui.stageStatuses.add(it) },
+            onLiveDisconnected = { disconnectClears++ },
+        ).also { it.onEditorChanged(1L, identity, Any()) }
+
+        c.listener.onRecordingStartRequested()
+        c.listener.onRecordingStarted()
+        c.listener.onCloudLiveInterim("buffered live words", bufferOnly = true)
+        assertEquals(0, commits)
+        assertEquals("buffered live words", partials.last())
+
+        c.listener.onCloudLiveDisconnected(LiveDisconnectEvent("network_error", 12, true, 1008))
+        c.listener.onStageStatus("Live disconnected · Still recording (Batch)")
+        c.listener.onUserMessage("Live disconnected · Still recording (Batch)")
+
+        assertEquals(1, disconnectClears)
+        assertEquals("", partials.last())
+        assertEquals("must stay in RECORDING state on mid-recording disconnect notice", ImeUiState.RECORDING, ui.states.last())
+        assertEquals("Live disconnected · Still recording (Batch)", ui.messages.last())
+        assertEquals(0, commits)
+
+        recording = false
+    }
 }

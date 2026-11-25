@@ -172,6 +172,22 @@ class DictationHapticsTest {
         assertTrue(out.played.isEmpty())
     }
 
+    @Test fun `onLiveDisconnected plays subtle double-tick waveform and respects muted system`() {
+        val out = FakeOutput(caps = HapticCapabilities(hasAmplitudeControl = true, predefinedSupported = true))
+        haptics(on.copy(enabled = false), out).onLiveDisconnected()
+        assertEquals(1, out.played.size)
+        val wave = out.played.single() as HapticEffectSpec.Waveform
+        assertEquals(listOf(0L, 25L, 60L, 25L), wave.timings)
+        assertEquals(listOf(0, 128, 0, 128), wave.amplitudes)
+
+        val muted = FakeOutput(caps = null)
+        haptics(on, muted).onLiveDisconnected()
+        assertTrue(muted.played.isEmpty())
+
+        val throwing = FakeOutput(throwOnPlay = true)
+        haptics(on, throwing).onLiveDisconnected()
+    }
+
     /** Minimal in-memory [SharedPreferences] fake covering the types [HapticPrefs] stores. */
     private class FakeSharedPreferences(
         private val values: MutableMap<String, Any?> = mutableMapOf()

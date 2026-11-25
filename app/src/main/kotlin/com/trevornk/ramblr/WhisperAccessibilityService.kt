@@ -514,10 +514,25 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // (the exact risk #245 flagged for naive interim injection). Preview-before-inject
         // is honored because maybeInjectPartial() itself branches on that toggle first.
         override fun onCloudLiveInterim(text: String) {
+            onCloudLiveInterim(text, bufferOnly = false)
+        }
+
+        override fun onCloudLiveInterim(text: String, bufferOnly: Boolean) {
             // Gemini's interim is already cased and punctuated: display it as received. Only the
             // on-device model's raw ALL-CAPS partials go through smartCapitalize (which would
-            // lowercase "I", names and acronyms here).
-            maybeInjectPartial(text, requireRecording = true, alreadyCased = true)
+            // lowercase "I", names and acronyms here). When post-cleanup is active (bufferOnly=true),
+            // keep interims strictly in the floating bubble and never touch the target field.
+            maybeInjectPartial(text, requireRecording = true, alreadyCased = true, bufferOnly = bufferOnly)
+        }
+
+        override fun onCloudLiveDisconnected(event: LiveDisconnectEvent) {
+            // Revert any live partial written to the target field so Batch delivery on Stop never
+            // duplicates partial text.
+            streamingSession?.let { session ->
+                clearStreamingLeftover(session)
+                session.node.recycle()
+            }
+            streamingSession = null
         }
 
         override fun deliverText(
@@ -3639,7 +3654,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
 
     /** [requireRecording] is false only for the debug-build `DEBUG_PARTIAL` test seam, which drives
      *  this path without a live recording; every production caller goes through the overload above. */
-    internal fun maybeInjectPartial(text: String, requireRecording: Boolean, alreadyCased: Boolean = false) {
+    internal fun maybeInjectPartial(
+        text: String,
+        requireRecording: Boolean,
+        alreadyCased: Boolean = false,
+        bufferOnly: Boolean = false,
+    ) {
         if (requireRecording && !runtime.isRecording()) return // stale post after stop/cancel raced this
         if (text.isBlank()) return
         val now = System.currentTimeMillis()
@@ -3654,6 +3674,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 PreviewBeforeInjectToggle.isEnabled(this),
                 livePreviewEnabled = prefs().getBoolean("streaming_preview_enabled", false),
                 lossyFieldSession = lossyStreamingField,
+                livePostCleanupEnabled = bufferOnly,
             )
         ) {
             updateLivePreviewBubble(text, now, alreadyCased)

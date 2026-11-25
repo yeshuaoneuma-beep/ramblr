@@ -371,4 +371,47 @@ class GeminiInteractionsTranscriberClientTest {
         }
         assertEquals(0, server.requestCount)
     }
+
+    @Test fun `parser falls back to outputs text blocks when steps yields nothing`() {
+        val directOutputs = GeminiInteractionsTranscriberClient.parseResponse(
+            """{"status":"completed","outputs":[{"type":"text","text":"hello from outputs"}]}""",
+        )
+        assertEquals("hello from outputs", directOutputs.text)
+        assertNull(directOutputs.error)
+
+        val nestedOutputs = GeminiInteractionsTranscriberClient.parseResponse(
+            """{"status":"completed","outputs":[{"type":"model_output","content":[{"type":"text","text":"nested "},{"type":"text","text":"output"}]}]}""",
+        )
+        assertEquals("nested output", nestedOutputs.text)
+        assertNull(nestedOutputs.error)
+    }
+
+    @Test fun `okhttp callTimeout without cancelHolder classifies as TEMPORARY_BUSY not cancelled`() {
+        enqueueSuccessfulUpload()
+        server.enqueue(
+            MockResponse.Builder()
+                .body("""{"steps":[{"type":"model_output","content":[{"type":"text","text":"late"}]}]}""")
+                .headersDelay(900, TimeUnit.MILLISECONDS)
+                .build(),
+        )
+        server.enqueue(MockResponse.Builder().body("{}").build())
+        val holder = InFlightCall().apply { beginWork() }
+        val latch = CountDownLatch(1)
+        val ref = AtomicReference<GeminiInteractionsTranscriberClient.Result>()
+        client.transcribe(
+            audioFile = audio(),
+            mimeType = "audio/wav",
+            apiKey = "test-api-key",
+            cancelHolder = holder,
+            callTimeoutMs = 250L,
+        ) {
+            ref.set(it)
+            latch.countDown()
+        }
+        assertTrue(latch.await(10, TimeUnit.SECONDS))
+        val result = ref.get()
+        assertFalse("callTimeout must not set isCancelled", result.isCancelled)
+        assertTrue(result.isTransientIo)
+        assertEquals(CloudErrorKind.TEMPORARY_BUSY, result.errorKind)
+    }
 }

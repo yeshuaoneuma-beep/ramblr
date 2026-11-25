@@ -381,6 +381,25 @@ class StreamingPreviewTest {
         assertFalse(shouldRouteStreamingPartialToBubble(previewBeforeInjectEnabled = false, livePreviewEnabled = true, lossyFieldSession = false))
     }
 
+    @Test fun `partials are routed to the bubble when Live Post-Cleanup is enabled`() {
+        assertTrue(
+            shouldRouteStreamingPartialToBubble(
+                previewBeforeInjectEnabled = false,
+                livePreviewEnabled = true,
+                lossyFieldSession = false,
+                livePostCleanupEnabled = true,
+            )
+        )
+        assertFalse(
+            shouldRouteStreamingPartialToBubble(
+                previewBeforeInjectEnabled = false,
+                livePreviewEnabled = true,
+                lossyFieldSession = false,
+                livePostCleanupEnabled = false,
+            )
+        )
+    }
+
     @Test fun `the paste payload carries the separator for the resolved insertion start only`() {
         assertEquals(" X", composeOneShotPastePayload("foo bar", 3, 7, "X"))
         assertEquals("X", composeOneShotPastePayload("foo bar", 4, 7, "X"))

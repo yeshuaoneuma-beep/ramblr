@@ -43,18 +43,21 @@ class GeminiCloudLiveTranscriptionClient(
     internal val maxSessionMs: Long = DEFAULT_MAX_SESSION_MS,
     private val nowMs: () -> Long = System::currentTimeMillis,
     internal val allowTestEndpoint: Boolean = false,
+    internal val mode: LiveTranscriptionMode = LiveTranscriptionMode.VERBATIM,
+    private val keepaliveIntervalMs: Long = DEFAULT_KEEPALIVE_INTERVAL_MS,
 ) : CloudLiveTranscriptionSessionFactory {
     private val callbacks = SerialCallbackExecutor(callbackExecutor)
+    private val inboundLimitBytes = if (model == SECONDARY_MODEL) MAX_INBOUND_AUDIO_MODEL_BYTES else MAX_INBOUND_BYTES
 
     init {
         require(endpoint.scheme == "https" || (allowTestEndpoint && endpoint.scheme == "http"))
         require(endpoint.encodedPath == ENDPOINT_PATH && endpoint.query == null && endpoint.fragment == null) { "Unexpected Gemini Live endpoint" }
         require(allowTestEndpoint || endpoint.host == GEMINI_HOST) { "Unexpected Gemini Live host" }
         require(apiKey.isNotBlank()) { "Gemini API key is blank" }
-        require(MODEL_ID.matches(model) && model == DEFAULT_MODEL) { "Invalid Gemini Live model id" }
+        require(MODEL_ID.matches(model) && model in SUPPORTED_MODELS) { "Invalid Gemini Live model id" }
         require(languageCodes.all(LANGUAGE_CODE::matches)) { "Invalid language code" }
         require(customVocabulary.size <= MAX_CUSTOM_VOCABULARY && customVocabulary.none { it.isBlank() }) { "Invalid custom vocabulary" }
-        require(setupTimeoutMs > 0 && finalTimeoutMs > 0 && maxSessionMs > 0)
+        require(setupTimeoutMs > 0 && finalTimeoutMs > 0 && maxSessionMs > 0 && keepaliveIntervalMs > 0)
     }
 
     override fun create(listener: CloudLiveTranscriptionListener): CloudLiveTranscriptionSession = Session(listener)
@@ -73,6 +76,9 @@ class GeminiCloudLiveTranscriptionClient(
         private var setupTimeout: ScheduledFuture<*>? = null
         private var finalTimeout: ScheduledFuture<*>? = null
         private var sessionTimeout: ScheduledFuture<*>? = null
+        private var keepaliveTask: ScheduledFuture<*>? = null
+        private var lastAudioSentAtMs = 0L
+        private val accumulatedInputTranscript = StringBuilder()
         private var timing = CloudLiveTiming(connectStartedAtMs = nowMs())
 
         override fun connect() {
@@ -106,12 +112,18 @@ class GeminiCloudLiveTranscriptionClient(
             val copy = buffer.copyOf(length)
             val encoded = Base64.getEncoder().encodeToString(copy)
             val message = audioJson(encoded)
+            synchronized(lock) {
+                if (terminal.get()) return false
+                lastAudioSentAtMs = nowMs()
+            }
             return enqueue(message)
         }
 
         override fun endActivity(): Boolean {
             val accepted = enqueueControl(activityEndJson(), isStart = false)
             if (accepted) synchronized(lock) {
+                keepaliveTask?.cancel(false)
+                keepaliveTask = null
                 timing = timing.copy(activityEndedAtMs = nowMs())
                 if (setupComplete) armFinalTimeoutLocked()
             }
@@ -222,25 +234,66 @@ class GeminiCloudLiveTranscriptionClient(
             synchronized(lock) {
                 if (terminal.get() || setupComplete) return
                 setupComplete = true
-                timing = timing.copy(setupCompletedAtMs = nowMs())
+                val now = nowMs()
+                lastAudioSentAtMs = now
+                timing = timing.copy(setupCompletedAtMs = now)
                 setupTimeout?.cancel(false)
                 setupTimeout = null
+                if (!endRequested && !terminal.get() && keepaliveTask == null) {
+                    keepaliveTask = scheduler.scheduleAtFixedRate(
+                        { maybeSendKeepalive() },
+                        keepaliveIntervalMs,
+                        keepaliveIntervalMs,
+                        TimeUnit.MILLISECONDS,
+                    )
+                }
             }
             drainPending()
             synchronized(lock) { if (endRequested && !terminal.get()) armFinalTimeoutLocked() }
         }
 
+        private fun maybeSendKeepalive() {
+            val shouldSend = synchronized(lock) {
+                if (terminal.get() || !setupComplete || !startRequested || endRequested) return@synchronized false
+                val now = nowMs()
+                if (now - lastAudioSentAtMs < keepaliveIntervalMs) return@synchronized false
+                lastAudioSentAtMs = now
+                true
+            }
+            if (shouldSend) {
+                enqueue(audioJson(SILENT_KEEPALIVE_PCM_BASE64))
+            }
+        }
+
         private fun armFinalTimeoutLocked() {
             if (finalTimeout != null) return
             finalTimeout = scheduler.schedule(
-                { fail(CloudLiveFailureReason.FINAL_TIMEOUT, "Live transcription final timed out") },
+                {
+                    val buffered = synchronized(lock) {
+                        if (terminal.get()) "" else accumulatedInputTranscript.toString().trim()
+                    }
+                    if (buffered.isNotBlank()) {
+                        succeed(buffered)
+                    } else {
+                        fail(CloudLiveFailureReason.FINAL_TIMEOUT, "Live transcription final timed out")
+                    }
+                },
                 finalTimeoutMs,
                 TimeUnit.MILLISECONDS,
             )
         }
 
+        private fun emitInterim(text: String) {
+            val snapshot = synchronized(lock) {
+                if (terminal.get()) return
+                if (timing.firstInterimAtMs == null) timing = timing.copy(firstInterimAtMs = nowMs())
+                timing
+            }
+            callbacks.execute { if (!terminal.get()) listener.onInterim(text, snapshot) }
+        }
+
         private fun onText(text: String) {
-            if (text.toByteArray(Charsets.UTF_8).size > MAX_INBOUND_BYTES) {
+            if (text.toByteArray(Charsets.UTF_8).size > inboundLimitBytes) {
                 fail(CloudLiveFailureReason.PROTOCOL_ERROR, "Live transcription message too large")
                 return
             }
@@ -248,8 +301,13 @@ class GeminiCloudLiveTranscriptionClient(
                 fail(CloudLiveFailureReason.PROTOCOL_ERROR, "Malformed live transcription event")
                 return
             }
-            root.optJSONObject("error")?.let {
-                fail(CloudLiveFailureReason.PROTOCOL_ERROR, it.optString("message").ifBlank { "Gemini Live error" })
+            root.optJSONObject("error")?.let { errorObj ->
+                val code = errorObj.optInt("code", -1).takeIf { it > 0 }
+                fail(
+                    CloudLiveFailureReason.PROTOCOL_ERROR,
+                    errorObj.optString("message").ifBlank { "Gemini Live error" },
+                    errorCode = code,
+                )
                 return
             }
             if (root.has("setupComplete")) {
@@ -257,15 +315,79 @@ class GeminiCloudLiveTranscriptionClient(
                 return
             }
             val content = root.optJSONObject("serverContent") ?: return
-            content.optJSONObject("interimInputTranscription")?.optString("text")?.takeIf { it.isNotBlank() }?.let { interim ->
-                val snapshot = synchronized(lock) {
-                    if (terminal.get()) return@let
-                    if (timing.firstInterimAtMs == null) timing = timing.copy(firstInterimAtMs = nowMs())
-                    timing
+            if (model == SECONDARY_MODEL) {
+                // gemini-3.8-live: ignore modelTurn (audio output) and outputTranscription.
+                val inputTx = content.optJSONObject("inputTranscription")
+                var interimToEmit: String? = null
+                var finalToDeliver: String? = null
+                synchronized(lock) {
+                    if (terminal.get()) return
+                    if (inputTx != null && !inputTx.isNull("text")) {
+                        val fragment = inputTx.optString("text", "")
+                        if (fragment.isNotEmpty()) {
+                            accumulatedInputTranscript.append(fragment)
+                            val trimmed = accumulatedInputTranscript.toString().trim()
+                            if (trimmed.isNotBlank()) {
+                                interimToEmit = trimmed
+                            }
+                        }
+                    }
+                    val turnComplete = content.optBoolean("turnComplete", false)
+                    val generationComplete = content.optBoolean("generationComplete", false)
+                    val txFinished = inputTx?.optBoolean("finished", false) == true
+                    if (endRequested && (turnComplete || generationComplete || txFinished)) {
+                        val combined = accumulatedInputTranscript.toString().trim()
+                        if (combined.isNotBlank()) {
+                            finalToDeliver = combined
+                        }
+                    }
                 }
-                callbacks.execute { if (!terminal.get()) listener.onInterim(interim, snapshot) }
+                finalToDeliver?.let {
+                    succeed(it)
+                    return
+                }
+                interimToEmit?.let(::emitInterim)
+                return
             }
-            content.optJSONObject("inputTranscription")?.optString("text")?.trim()?.takeIf { it.isNotBlank() }?.let(::succeed)
+
+            // gemini-3.5-transcribe-live: emit interimInputTranscription, never wait for turnComplete.
+            content.optJSONObject("interimInputTranscription")?.takeIf { !it.isNull("text") }
+                ?.optString("text")
+                ?.takeIf { it.isNotBlank() }
+                ?.let(::emitInterim)
+
+            content.optJSONObject("inputTranscription")?.takeIf { !it.isNull("text") }
+                ?.optString("text")
+                ?.takeIf { it.isNotBlank() }
+                ?.let { segment ->
+                    var finalToDeliver: String? = null
+                    var interimToEmit: String? = null
+                    synchronized(lock) {
+                        if (terminal.get()) return@let
+                        val piece = segment.trim()
+                        if (mode == LiveTranscriptionMode.SMART) {
+                            accumulatedInputTranscript.setLength(0)
+                            accumulatedInputTranscript.append(piece)
+                        } else if (piece.isNotEmpty()) {
+                            if (accumulatedInputTranscript.isNotEmpty() &&
+                                !accumulatedInputTranscript.last().isWhitespace() &&
+                                !piece.first().isWhitespace()
+                            ) {
+                                accumulatedInputTranscript.append(' ')
+                            }
+                            accumulatedInputTranscript.append(piece)
+                        }
+                        val combined = accumulatedInputTranscript.toString().trim()
+                        if (combined.isNotBlank()) {
+                            if (endRequested) {
+                                finalToDeliver = combined
+                            } else {
+                                interimToEmit = combined
+                            }
+                        }
+                    }
+                    finalToDeliver?.let(::succeed) ?: interimToEmit?.let(::emitInterim)
+                }
         }
 
         private fun succeed(text: String) {
@@ -276,10 +398,10 @@ class GeminiCloudLiveTranscriptionClient(
             complete(result)
         }
 
-        private fun fail(reason: CloudLiveFailureReason, message: String) {
+        private fun fail(reason: CloudLiveFailureReason, message: String, errorCode: Int? = null) {
             val safe = UrlRedaction.redact(message.replace(apiKey, "[REDACTED]"))
                 ?: "Live transcription failed"
-            val result = synchronized(lock) { CloudLiveTerminal.Failure(reason, safe, timing) }
+            val result = synchronized(lock) { CloudLiveTerminal.Failure(reason, safe, timing, errorCode) }
             complete(result)
         }
 
@@ -289,6 +411,7 @@ class GeminiCloudLiveTranscriptionClient(
                 setupTimeout?.cancel(false); setupTimeout = null
                 finalTimeout?.cancel(false); finalTimeout = null
                 sessionTimeout?.cancel(false); sessionTimeout = null
+                keepaliveTask?.cancel(false); keepaliveTask = null
                 pending.clear(); pendingBytes = 0
                 socket?.close(NORMAL_CLOSE, "done")
             }
@@ -298,7 +421,7 @@ class GeminiCloudLiveTranscriptionClient(
         private inner class SocketListener : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 synchronized(lock) { timing = timing.copy(socketOpenedAtMs = nowMs()) }
-                if (!webSocket.send(setupJson(model, languageCodes, customVocabulary))) {
+                if (!webSocket.send(setupJson(model, languageCodes, customVocabulary, mode))) {
                     fail(CloudLiveFailureReason.SEND_FAILED, "Live transcription setup send failed")
                 }
             }
@@ -312,14 +435,18 @@ class GeminiCloudLiveTranscriptionClient(
              * bytes still fail closed via [onText]'s JSON parse.
              */
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                if (bytes.size > MAX_INBOUND_BYTES) {
+                if (bytes.size > inboundLimitBytes) {
                     fail(CloudLiveFailureReason.PROTOCOL_ERROR, "Live transcription message too large")
                     return
                 }
                 onText(bytes.utf8())
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                fail(CloudLiveFailureReason.NETWORK_ERROR, t.message ?: "Live transcription network failure")
+                fail(
+                    CloudLiveFailureReason.NETWORK_ERROR,
+                    t.message ?: "Live transcription network failure",
+                    errorCode = response?.code,
+                )
             }
             /**
              * OkHttp's default onClosing does not echo the close frame, so a
@@ -330,17 +457,31 @@ class GeminiCloudLiveTranscriptionClient(
              * close frame itself as the terminal.
              */
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                if (!terminal.get()) fail(CloudLiveFailureReason.NETWORK_ERROR, "Live transcription connection closed")
+                if (!terminal.get()) {
+                    fail(
+                        CloudLiveFailureReason.NETWORK_ERROR,
+                        "Live transcription connection closed ($code)",
+                        errorCode = code,
+                    )
+                }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (!terminal.get()) fail(CloudLiveFailureReason.NETWORK_ERROR, "Live transcription connection closed")
+                if (!terminal.get()) {
+                    fail(
+                        CloudLiveFailureReason.NETWORK_ERROR,
+                        "Live transcription connection closed ($code)",
+                        errorCode = code,
+                    )
+                }
             }
         }
     }
 
     companion object {
-        const val DEFAULT_MODEL = "gemini-3.5-transcribe-live"
+        const val DEFAULT_MODEL = LiveTranscriptionConfig.DEFAULT_LIVE_MODEL_ID
+        const val SECONDARY_MODEL = LiveTranscriptionConfig.SECONDARY_LIVE_MODEL_ID
+        val SUPPORTED_MODELS: Set<String> = setOf(DEFAULT_MODEL, SECONDARY_MODEL)
         const val ENDPOINT_PATH = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
         const val GEMINI_HOST = "generativelanguage.googleapis.com"
         const val DEFAULT_WSS_ENDPOINT = "wss://$GEMINI_HOST$ENDPOINT_PATH"
@@ -348,26 +489,51 @@ class GeminiCloudLiveTranscriptionClient(
         const val MAX_CUSTOM_VOCABULARY = 1000
         const val DEFAULT_SETUP_TIMEOUT_MS = 10_000L
         const val DEFAULT_FINAL_TIMEOUT_MS = 2_000L
+        const val DEFAULT_KEEPALIVE_INTERVAL_MS = 25_000L
         /** Proactive 9:00 cutoff ahead of Gemini Live's 10-minute WebSocket limit. */
         const val DEFAULT_MAX_SESSION_MS = 540_000L
         const val MAX_PENDING_BYTES = 2L * 1024 * 1024
         const val MAX_WEBSOCKET_QUEUE_BYTES = 4L * 1024 * 1024
         const val MAX_INBOUND_BYTES = 256 * 1024
+        const val MAX_INBOUND_AUDIO_MODEL_BYTES = 2 * 1024 * 1024
+        private val SILENT_KEEPALIVE_PCM_BASE64: String = Base64.getEncoder().encodeToString(ByteArray(3200))
         private const val API_KEY_HEADER = "x-goog-api-key"
         private const val NORMAL_CLOSE = 1000
         private val MODEL_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
         private val LANGUAGE_CODE = Regex("[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
 
         fun setupJson(model: String, languageCodes: List<String>, customVocabulary: List<String>): String =
-            JSONObject().put("setup", JSONObject()
-                .put("model", "models/$model")
-                .put("generationConfig", JSONObject().put("responseModalities", JSONArray().put("TEXT")))
-                .put("inputAudioTranscription", JSONObject()
-                    .put("languageCodes", JSONArray(languageCodes))
-                    .put("customVocabulary", JSONArray(customVocabulary))
-                    .put("mode", "VERBATIM"))
-                .put("realtimeInputConfig", JSONObject().put("automaticActivityDetection", JSONObject().put("disabled", true))))
-                .toString()
+            setupJson(model, languageCodes, customVocabulary, mode = LiveTranscriptionMode.VERBATIM)
+
+        fun setupJson(
+            model: String,
+            languageCodes: List<String>,
+            customVocabulary: List<String>,
+            mode: LiveTranscriptionMode = LiveTranscriptionMode.VERBATIM,
+        ): String {
+            val setup = JSONObject().put("model", "models/$model")
+            if (model == SECONDARY_MODEL) {
+                setup.put("generationConfig", JSONObject().put("responseModalities", JSONArray().put("AUDIO")))
+                val transcription = JSONObject()
+                if (languageCodes.isNotEmpty()) transcription.put("languageCodes", JSONArray(languageCodes))
+                if (customVocabulary.isNotEmpty()) transcription.put("customVocabulary", JSONArray(customVocabulary))
+                setup.put("inputAudioTranscription", transcription)
+            } else {
+                setup.put("generationConfig", JSONObject().put("responseModalities", JSONArray().put("TEXT")))
+                setup.put(
+                    "inputAudioTranscription",
+                    JSONObject()
+                        .put("languageCodes", JSONArray(languageCodes))
+                        .put("customVocabulary", JSONArray(customVocabulary))
+                        .put("mode", mode.name),
+                )
+            }
+            setup.put(
+                "realtimeInputConfig",
+                JSONObject().put("automaticActivityDetection", JSONObject().put("disabled", true)),
+            )
+            return JSONObject().put("setup", setup).toString()
+        }
 
         private fun activityStartJson() = JSONObject().put("realtimeInput", JSONObject().put("activityStart", JSONObject())).toString()
         private fun activityEndJson() = JSONObject().put("realtimeInput", JSONObject().put("activityEnd", JSONObject())).toString()

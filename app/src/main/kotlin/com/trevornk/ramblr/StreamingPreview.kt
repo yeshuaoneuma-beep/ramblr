@@ -249,7 +249,8 @@ fun shouldRouteStreamingPartialToBubble(
     previewBeforeInjectEnabled: Boolean,
     livePreviewEnabled: Boolean = true,
     lossyFieldSession: Boolean = false,
-): Boolean = previewBeforeInjectEnabled || !livePreviewEnabled || lossyFieldSession
+    livePostCleanupEnabled: Boolean = false,
+): Boolean = previewBeforeInjectEnabled || !livePreviewEnabled || lossyFieldSession || livePostCleanupEnabled
 
 /** True when a reported caret ([selStart] >= 0) lies beyond the end of the read [current] text. */
 fun caretPastReadText(current: String, selStart: Int): Boolean = selStart >= 0 && selStart > current.length

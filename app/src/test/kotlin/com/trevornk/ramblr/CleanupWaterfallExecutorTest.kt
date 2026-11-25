@@ -565,8 +565,8 @@ class CleanupWaterfallExecutorTest {
     @Test fun `stage 2 cloud cleanup tries up to 3 providers sequentially and stops on first valid result`() {
         val transport = FakeCleanupHttpTransport(
             mutableListOf(
-                CleanupHttpOutcome.HttpError(401, """{"error":{"message":"bad key"}}"""),
-                CleanupHttpOutcome.HttpError(403, """{"error":{"message":"forbidden"}}"""),
+                CleanupHttpOutcome.HttpError(500, """{"error":{"message":"server error"}}"""),
+                CleanupHttpOutcome.HttpError(502, """{"error":{"message":"bad gateway"}}"""),
                 okOutcome("cleaned by provider 3"),
             )
         )
@@ -1627,9 +1627,40 @@ class CleanupWaterfallExecutorEntryCredentialTest {
         assertEquals(2, unrunnableFallbackCalls)
         assertEquals("retried ok", retriedResult?.text)
 
-        // 4. 3rd cloud step with a 4th cloud step beyond MAX_CLOUD_CLEANUP_PROVIDERS (3) and no local: retries 503.
+        // 4. Shared 3-attempt pool boundary: after 1 attempt spent on m1, m2 (last runnable) retries 503 once (total 3);
+        //    after 2 attempts spent (m1 + m2), m3 gets 1 attempt and m4 beyond cap is never called (total <= 3).
         val callsByModel = mutableListOf<String>()
         var capBoundaryResult: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(
+                listOf(
+                    CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m1"),
+                    CleanupStep(CleanupStepGroup.ANTHROPIC_DIRECT, "m2"),
+                )
+            ),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "key" },
+            transport = CleanupHttpTransport { url, _, _, _, _, cb ->
+                callsByModel += url
+                when {
+                    url.contains("openai") -> cb(CleanupHttpOutcome.HttpError(401, "bad openai"))
+                    callsByModel.count { it.contains("anthropic") } == 1 -> cb(CleanupHttpOutcome.HttpError(503, "busy"))
+                    else -> cb(CleanupHttpOutcome.Ok("""{"content":[{"type":"text","text":"m2 recovered"}]}"""))
+                }
+            },
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, a -> a() },
+            callback = { capBoundaryResult = it },
+        )
+        assertEquals("m2 recovered", capBoundaryResult?.text)
+        assertEquals(2, callsByModel.count { it.contains("anthropic") })
+        assertEquals(3, callsByModel.size)
+
+        val fourStepCalls = mutableListOf<String>()
+        var fourStepResult: PostProcessor.Result? = null
         CleanupWaterfallExecutor.execute(
             text = "raw",
             prompt = "clean",
@@ -1644,21 +1675,162 @@ class CleanupWaterfallExecutorEntryCredentialTest {
             cursor = CleanupWaterfallCursor(),
             cancelHolder = InFlightCall(),
             credentialLookup = { "key" },
-            transport = CleanupHttpTransport { url, _, body, _, _, cb ->
-                callsByModel += url
+            transport = CleanupHttpTransport { url, _, _, _, _, cb ->
+                fourStepCalls += url
                 when {
                     url.contains("openai") -> cb(CleanupHttpOutcome.HttpError(401, "bad openai"))
                     url.contains("googleapis") -> cb(CleanupHttpOutcome.HttpError(401, "bad gemini"))
-                    callsByModel.count { it.contains("anthropic") } == 1 -> cb(CleanupHttpOutcome.HttpError(503, "busy"))
-                    else -> cb(CleanupHttpOutcome.Ok("""{"content":[{"type":"text","text":"m3 recovered"}]}"""))
+                    else -> cb(CleanupHttpOutcome.HttpError(503, "busy"))
                 }
             },
             busyRetryDelayMs = 0L,
             scheduleRetry = { _, a -> a() },
-            callback = { capBoundaryResult = it },
+            callback = { fourStepResult = it },
         )
-        assertEquals("m3 recovered", capBoundaryResult?.text)
-        assertEquals(2, callsByModel.count { it.contains("anthropic") })
+        assertNull(fourStepResult?.text)
+        assertEquals("3-attempt cloud pool must never exceed 3 total cloud calls", 3, fourStepCalls.size)
+        assertEquals(1, fourStepCalls.count { it.contains("anthropic") })
+    }
+
+    @Test fun `account-dead 401 402 403 fast-skips later steps sharing the same vault key without consuming budget`() {
+        for (deadCode in listOf(401, 402, 403)) {
+            val urls = mutableListOf<String>()
+            val authHeaders = mutableListOf<String>()
+            var result: PostProcessor.Result? = null
+            CleanupWaterfallExecutor.execute(
+                text = "raw",
+                prompt = "clean",
+                waterfall = CleanupWaterfall(
+                    listOf(
+                        CleanupStep(CleanupStepGroup.GEMINI_DIRECT, "gemini-3.5-flash-lite", vaultKeyId = "vault_gemini"),
+                        CleanupStep(CleanupStepGroup.GEMINI_DIRECT, "gemini-3.1-flash-lite", vaultKeyId = "vault_gemini"),
+                        CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "gpt-5.4-mini", vaultKeyId = "vault_openai"),
+                    )
+                ),
+                cursor = CleanupWaterfallCursor(),
+                cancelHolder = InFlightCall(),
+                credentialLookup = { "" },
+                vaultCredentialLookup = { id ->
+                    when (id) {
+                        "vault_gemini" -> "gem-dead-key"
+                        "vault_openai" -> "oai-live-key"
+                        else -> ""
+                    }
+                },
+                transport = CleanupHttpTransport { url, headers, _, _, _, cb ->
+                    urls += url
+                    authHeaders += (headers["x-goog-api-key"] ?: headers["Authorization"] ?: "")
+                    if (url.contains("googleapis")) cb(CleanupHttpOutcome.HttpError(deadCode, "account dead $deadCode"))
+                    else cb(okOutcome("rescued by openai"))
+                },
+                busyRetryDelayMs = 0L,
+                scheduleRetry = { _, a -> a() },
+                callback = { result = it },
+            )
+            assertEquals("rescued by openai", result?.text)
+            assertEquals("second gemini step on same dead vault key must be skipped for HTTP $deadCode", 2, urls.size)
+            assertTrue(urls[0].contains("gemini-3.5-flash-lite"))
+            assertTrue(urls[1].contains("api.openai.com"))
+            assertEquals(listOf("gem-dead-key", "Bearer oai-live-key"), authHeaders)
+        }
+    }
+
+    @Test fun `budgeted 3-attempt pool honors 3x 2x+1x and temperature compatibility retry does not consume pool`() {
+        // 1. 3x slot retries 503 twice (3 total attempts) then falls back to LOCAL_LLM.
+        var attempts3x = 0
+        var res3x: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(
+                listOf(
+                    CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m1", maxAttempts = 3, vaultKeyId = "vault_openai"),
+                    CleanupStep(CleanupStepGroup.LOCAL_LLM, "local"),
+                )
+            ),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "" },
+            vaultCredentialLookup = { "sk-v" },
+            transport = CleanupHttpTransport { _, _, _, _, _, cb ->
+                attempts3x++
+                cb(CleanupHttpOutcome.HttpError(503, "busy"))
+            },
+            localInference = LocalInferenceEngine { _, _, _, _, _ -> LocalInferenceResult.Success("local rescue") },
+            localModelPath = { "/fake/lfm.gguf" },
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, a -> a() },
+            callback = { res3x = it },
+        )
+        assertEquals(3, attempts3x)
+        assertEquals("local rescue", res3x?.text)
+
+        // 2. 2x + 1x split: slot 1 takes 2 busy attempts, slot 2 takes 1 attempt and succeeds (total 3).
+        val splitCalls = mutableListOf<String>()
+        var resSplit: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(
+                listOf(
+                    CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m1", maxAttempts = 2, vaultKeyId = "vault_openai"),
+                    CleanupStep(CleanupStepGroup.GEMINI_DIRECT, "m2", maxAttempts = 1, vaultKeyId = "vault_gemini"),
+                )
+            ),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "" },
+            vaultCredentialLookup = { id -> "key-$id" },
+            transport = CleanupHttpTransport { url, _, _, _, _, cb ->
+                splitCalls += url
+                if (url.contains("openai")) cb(CleanupHttpOutcome.HttpError(503, "busy"))
+                else cb(CleanupHttpOutcome.Ok("""{"candidates":[{"content":{"parts":[{"text":"gemini ok"}]}}]}"""))
+            },
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, a -> a() },
+            callback = { resSplit = it },
+        )
+        assertEquals("gemini ok", resSplit?.text)
+        assertEquals(2, splitCalls.count { it.contains("openai") })
+        assertEquals(1, splitCalls.count { it.contains("googleapis") })
+
+        // 3. Temperature compatibility retry does NOT burn an extra slot from the 3-attempt pool.
+        val tempCalls = mutableListOf<String>()
+        var resTemp: PostProcessor.Result? = null
+        CleanupWaterfallExecutor.execute(
+            text = "raw",
+            prompt = "clean",
+            waterfall = CleanupWaterfall(
+                listOf(
+                    CleanupStep(CleanupStepGroup.OPENAI_DIRECT, "m1", maxAttempts = 1, vaultKeyId = "vault_openai"),
+                    CleanupStep(CleanupStepGroup.GEMINI_DIRECT, "m2", maxAttempts = 1, vaultKeyId = "vault_gemini"),
+                    CleanupStep(CleanupStepGroup.ANTHROPIC_DIRECT, "m3", maxAttempts = 1, vaultKeyId = "vault_anthropic"),
+                )
+            ),
+            cursor = CleanupWaterfallCursor(),
+            cancelHolder = InFlightCall(),
+            credentialLookup = { "" },
+            vaultCredentialLookup = { id -> "key-$id" },
+            transport = CleanupHttpTransport { url, _, body, _, _, cb ->
+                tempCalls += url
+                when {
+                    url.contains("openai") && body.contains("temperature") -> cb(
+                        CleanupHttpOutcome.HttpError(
+                            400,
+                            """{"error":{"type":"unsupported_value","param":"temperature","message":"temperature unsupported"}}""",
+                        )
+                    )
+                    url.contains("openai") -> cb(CleanupHttpOutcome.HttpError(500, "still broken"))
+                    url.contains("googleapis") -> cb(CleanupHttpOutcome.HttpError(500, "gemini broken"))
+                    else -> cb(CleanupHttpOutcome.Ok("""{"content":[{"type":"text","text":"anthropic 3rd slot reached"}]}"""))
+                }
+            },
+            busyRetryDelayMs = 0L,
+            scheduleRetry = { _, a -> a() },
+            callback = { resTemp = it },
+        )
+        assertEquals("anthropic 3rd slot reached", resTemp?.text)
+        assertEquals("2 OpenAI calls (1 compat retry) + 1 Gemini + 1 Anthropic = 4 HTTP calls, 3 pool attempts", 4, tempCalls.size)
     }
 
     @Test fun `distinct-host OPENAI_DIRECT steps stay in separate fail-fast groups while same-host steps stay merged`() {

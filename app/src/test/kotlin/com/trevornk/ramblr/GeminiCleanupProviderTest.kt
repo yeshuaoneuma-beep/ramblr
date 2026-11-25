@@ -183,4 +183,86 @@ class GeminiTranscriberClientTest {
         val audioPart = body.getJSONArray("contents").getJSONObject(0).getJSONArray("parts").getJSONObject(1)
         assertEquals("audio/aac", audioPart.getJSONObject("inline_data").getString("mime_type"))
     }
+
+    @Test fun `isDedicatedTranscribeModel matches gemini-3_5-transcribe variants and rejects others`() {
+        assertTrue(GeminiTranscriberClient.isDedicatedTranscribeModel("gemini-3.5-transcribe"))
+        assertTrue(GeminiTranscriberClient.isDedicatedTranscribeModel("models/gemini-3.5-transcribe"))
+        assertTrue(GeminiTranscriberClient.isDedicatedTranscribeModel("gemini-3.5-transcribe-001"))
+        assertFalse(GeminiTranscriberClient.isDedicatedTranscribeModel("gemini-3.1-flash-lite"))
+        assertFalse(GeminiTranscriberClient.isDedicatedTranscribeModel("gemini-3.8-flash"))
+        assertFalse(GeminiTranscriberClient.isDedicatedTranscribeModel(null))
+    }
+
+    @Test fun `dedicated gemini-3_5-transcribe request sends audio-only parts no thinkingConfig and optional audioTranscriptionConfig`() {
+        val body = GeminiTranscriberClient.buildRequestBody(
+            audioBytes = byteArrayOf(1, 2, 3, 4),
+            mimeType = "audio/wav",
+            model = GeminiTranscriberClient.DEDICATED_TRANSCRIBE_MODEL,
+            languageCodes = listOf("en-US"),
+            customVocabulary = listOf("Ramblr", "", "Sherpa"),
+        )
+        val parts = body.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
+        assertEquals("dedicated transcribe sends [audioPart] only", 1, parts.length())
+        assertTrue(parts.getJSONObject(0).has("inline_data"))
+        val genConfig = body.getJSONObject("generationConfig")
+        assertFalse("must never emit thinkingConfig", genConfig.has("thinkingConfig"))
+        val audioConfig = genConfig.getJSONObject("audioTranscriptionConfig")
+        assertEquals("en-US", audioConfig.getJSONArray("languageCodes").getString(0))
+        assertEquals(2, audioConfig.getJSONArray("customVocabulary").length())
+        assertEquals("Ramblr", audioConfig.getJSONArray("customVocabulary").getString(0))
+        assertEquals("Sherpa", audioConfig.getJSONArray("customVocabulary").getString(1))
+
+        val minimal = GeminiTranscriberClient.buildRequestBody(
+            audioBytes = byteArrayOf(1, 2, 3, 4),
+            model = GeminiTranscriberClient.DEDICATED_TRANSCRIBE_MODEL,
+        )
+        assertFalse("no generationConfig when languageCodes and customVocabulary are empty", minimal.has("generationConfig"))
+    }
+
+    @Test fun `GeminiCleanupProvider thinkingLevelFor returns null for gemini-3_5-transcribe`() {
+        assertNull(GeminiCleanupProvider.thinkingLevelFor("gemini-3.5-transcribe"))
+        assertNull(GeminiCleanupProvider.thinkingLevelFor("models/gemini-3.5-transcribe"))
+    }
+
+    @Test fun `parseResponse prefers audioTranscription text over plain text`() {
+        val json = """
+            {
+              "candidates": [{
+                "content": {
+                  "parts": [
+                    {"text": "fallback text", "audioTranscription": {"text": "dedicated transcript"}}
+                  ]
+                },
+                "finishReason": "STOP"
+              }]
+            }
+        """.trimIndent()
+        val parsed = GeminiTranscriberClient.parseResponse(json, model = GeminiTranscriberClient.DEDICATED_TRANSCRIBE_MODEL)
+        assertEquals("dedicated transcript", parsed.text)
+        assertNull(parsed.error)
+    }
+
+    @Test fun `empty STOP on gemini-3_5-transcribe returns failure for Stage 1 failover while non-dedicated models preserve no-speech`() {
+        val emptyStop = """{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}]}"""
+
+        val dedicated = GeminiTranscriberClient.resultFor(
+            emptyStop,
+            terms = emptyList(),
+            prompt = GeminiTranscriberClient.TRANSCRIBE_PROMPT,
+            model = GeminiTranscriberClient.DEDICATED_TRANSCRIBE_MODEL,
+        )
+        assertNull("dedicated empty STOP must fail over rather than return empty no-speech", dedicated.text)
+        assertTrue(dedicated.error.orEmpty().contains("empty STOP transcription"))
+        assertEquals("empty_stop(thoughtParts=0)", dedicated.dropReason)
+
+        val general = GeminiTranscriberClient.resultFor(
+            emptyStop,
+            terms = emptyList(),
+            prompt = GeminiTranscriberClient.TRANSCRIBE_PROMPT,
+            model = GeminiTranscriberClient.DEFAULT_MODEL,
+        )
+        assertEquals("", general.text)
+        assertNull(general.error)
+        assertEquals("empty_stop(thoughtParts=0)", general.dropReason)
+    }
 }

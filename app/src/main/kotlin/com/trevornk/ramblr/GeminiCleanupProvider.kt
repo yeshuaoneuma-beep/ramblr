@@ -51,6 +51,7 @@ object GeminiCleanupProvider {
     fun isGemini38(model: String): Boolean = normalizedModelId(model).startsWith("gemini-3.8-")
 
     fun thinkingLevelFor(model: String): String? = when {
+        GeminiTranscriberClient.isDedicatedTranscribeModel(model) -> null
         isGemma4(model) -> "MINIMAL"
         isGemini38(model) -> "LOW"
         else -> null

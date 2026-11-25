@@ -479,6 +479,7 @@ Output: The meeting has been moved to Thursday at 2 PM. Please confirm whether y
         // every pre-#274 call site/test keeps resolving purely off [credentialLookup]'s per-kind
         // value until it's updated to pass this too.
         entryCredentialLookup: (String) -> String = { "" },
+        vaultCredentialLookup: (String) -> String = { "" },
         localModelPath: () -> String? = { null },
         // See [CleanupWaterfallExecutor.execute]'s localPrompt param -- passed straight through so
         // a fine-tuned local model (e.g. mumble-cleanup-2stage) can override SIMPLE_PROMPT with its
@@ -523,6 +524,7 @@ Output: The meeting has been moved to Thursday at 2 PM. Please confirm whether y
             cancelHolder = cancelHolder,
             credentialLookup = { slot -> credentialLookup(ProviderChainRuntime.providerKindForCleanupSlot(slot)) },
             entryCredentialLookup = entryCredentialLookup,
+            vaultCredentialLookup = vaultCredentialLookup,
             transport = transport,
             localModelPath = localModelPath,
             localPrompt = localPrompt,

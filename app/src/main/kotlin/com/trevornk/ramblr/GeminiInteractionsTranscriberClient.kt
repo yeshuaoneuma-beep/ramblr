@@ -261,7 +261,13 @@ class GeminiInteractionsTranscriberClient(
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 cancelHolder.clear(call)
-                onFailure(if (call.isCanceled()) CancelledIoException() else e)
+                val cancelled = call.isCanceled() && cancelHolder.isCancelled
+                val failure = when {
+                    cancelled -> CancelledIoException()
+                    call.isCanceled() -> IOException(normalizedTimeoutError(e), e)
+                    else -> e
+                }
+                onFailure(failure)
             }
 
             override fun onResponse(call: Call, response: Response) {
@@ -269,7 +275,15 @@ class GeminiInteractionsTranscriberClient(
                 val headerSafeResponse = response
                 HttpBodyReader.read(response).fold(
                     onSuccess = { onResponse(headerSafeResponse, it) },
-                    onFailure = { onFailure(IOException(it.message ?: "Failed to read response", it)) },
+                    onFailure = { e ->
+                        val cancelled = cancelHolder.isCancelled
+                        val failure = when {
+                            cancelled -> CancelledIoException()
+                            call.isCanceled() -> IOException(normalizedTimeoutError(e), e)
+                            else -> IOException(e.message ?: "Failed to read response", e)
+                        }
+                        onFailure(failure)
+                    },
                 )
             }
         })
@@ -325,10 +339,13 @@ class GeminiInteractionsTranscriberClient(
 
     private fun ioFailureResult(error: IOException): Result =
         if (error is CancelledIoException) Result(null, CANCELLED_ERROR, isCancelled = true)
-        else Result(null, failureMessage(error), isTransientIo = true)
+        else Result(null, failureMessage(error), isTransientIo = CloudErrorClassifier.isTransientIoException(error))
 
     private fun failureMessage(error: IOException): String =
         error.message?.let(UrlRedaction::redact) ?: "Network request failed"
+
+    private fun normalizedTimeoutError(e: Throwable): String =
+        e.message?.takeIf { it.isNotBlank() && !it.equals("Canceled", ignoreCase = true) } ?: "timeout"
 
     companion object {
         const val DEFAULT_MODEL = "gemini-3.5-transcribe"
@@ -368,6 +385,23 @@ class GeminiInteractionsTranscriberClient(
                     val part = content.optJSONObject(j) ?: continue
                     if (part.optString("type") == "text") {
                         part.optString("text").takeIf { it.isNotBlank() }?.let(texts::add)
+                    }
+                }
+            }
+            if (texts.isEmpty()) {
+                val outputs = root.optJSONArray("outputs") ?: JSONArray()
+                for (i in 0 until outputs.length()) {
+                    val output = outputs.optJSONObject(i) ?: continue
+                    if (output.optString("type") == "text") {
+                        output.optString("text").takeIf { it.isNotBlank() }?.let(texts::add)
+                    } else {
+                        val content = output.optJSONArray("content") ?: continue
+                        for (j in 0 until content.length()) {
+                            val part = content.optJSONObject(j) ?: continue
+                            if (part.optString("type") == "text") {
+                                part.optString("text").takeIf { it.isNotBlank() }?.let(texts::add)
+                            }
+                        }
                     }
                 }
             }

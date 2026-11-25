@@ -618,6 +618,14 @@ internal fun defaultScheduleCleanupRetry(delayMs: Long, action: () -> Unit) {
 }
 
 object CleanupWaterfallExecutor {
+    /** Canonical account key for account-dead (401/402/403) fast-skip across cloud cleanup steps. */
+    internal fun accountKeyFor(step: CleanupStep): String? = when {
+        step.group == CleanupStepGroup.LOCAL_LLM -> null
+        !step.vaultKeyId.isNullOrBlank() -> "vault:${step.vaultKeyId}"
+        !step.presetId.isNullOrBlank() -> "preset:${step.presetId.lowercase()}"
+        else -> "group:${step.group.name}:${step.baseUrlOverride?.let(PostProcessor::normalizeBaseUrl) ?: ""}"
+    }
+
     fun execute(
         text: String,
         prompt: String,
@@ -633,6 +641,7 @@ object CleanupWaterfallExecutor {
         // parameter existed. Defaulted to "always miss" so no existing call site/test needs to
         // change to keep its current behavior.
         entryCredentialLookup: (String) -> String = { "" },
+        vaultCredentialLookup: (String) -> String = { "" },
         transport: CleanupHttpTransport = RealCleanupHttpTransport,
         localInference: LocalInferenceEngine = RealLocalInferenceEngine,
         localModelPath: () -> String? = { null },
@@ -701,7 +710,8 @@ object CleanupWaterfallExecutor {
         val perProviderCapMs = cloudCleanupPerProviderCapMs(text.length)
         val stageBudgetMs = cloudCleanupStageBudgetMs(text.length)
         val cloudDeadlineAtMs = startedAtMs + stageBudgetMs
-        var cloudProvidersAttempted = 0
+        val disqualifiedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        val totalCloudAttemptsUsed = java.util.concurrent.atomic.AtomicInteger(0)
 
         fun nextGroupStart(index: Int): Int {
             val range = groupRanges.first { index in it }
@@ -711,12 +721,26 @@ object CleanupWaterfallExecutor {
         fun nextLocalStepIndex(fromIndex: Int): Int? =
             (fromIndex until steps.size).firstOrNull { steps[it].group == CleanupStepGroup.LOCAL_LLM }
 
-        fun resolveCredential(step: CleanupStep): String =
-            if (step.entryId.isNotBlank()) {
-                entryCredentialLookup(step.entryId).ifBlank { step.credentialSlot()?.let(credentialLookup) ?: "" }
-            } else {
-                step.credentialSlot()?.let(credentialLookup) ?: ""
+        fun resolveCredential(step: CleanupStep): String {
+            if (!step.vaultKeyId.isNullOrBlank()) {
+                val vaultKey = vaultCredentialLookup(step.vaultKeyId)
+                if (vaultKey.isNotBlank()) return vaultKey
             }
+            if (step.entryId.isNotBlank()) {
+                val entryKey = entryCredentialLookup(step.entryId)
+                if (entryKey.isNotBlank()) return entryKey
+            }
+            return step.credentialSlot()?.let(credentialLookup) ?: ""
+        }
+
+        fun disqualificationKeyFor(step: CleanupStep, resolvedKey: String = resolveCredential(step)): String? {
+            val canonical = accountKeyFor(step) ?: return null
+            return if (!step.vaultKeyId.isNullOrBlank() || resolvedKey.isBlank()) {
+                canonical
+            } else {
+                "$canonical\u0000$resolvedKey"
+            }
+        }
 
         fun groupLabel(group: CleanupStepGroup): String = when (group) {
             CleanupStepGroup.OPENAI_DIRECT -> "OpenAI"
@@ -760,8 +784,17 @@ object CleanupWaterfallExecutor {
             var lastHttpCode: Int? = null
             var lastRawHttpErrorBody: String? = null
             val stepTransport: CleanupHttpTransport
+            val stepDisqualificationKey: String?
             if (step.group != CleanupStepGroup.LOCAL_LLM) {
-                if (cloudProvidersAttempted >= MAX_CLOUD_CLEANUP_PROVIDERS) {
+                val resolvedKey = resolveCredential(step)
+                stepDisqualificationKey = disqualificationKeyFor(step, resolvedKey)
+                if (stepDisqualificationKey != null && stepDisqualificationKey in disqualifiedAccounts) {
+                    attempt(index + 1, lastFailure, previousFailedGroup)
+                    return
+                }
+                val remainingCloudPool = (AttemptBudgetCalculator.MAX_CLOUD_ATTEMPTS_PER_LANE - totalCloudAttemptsUsed.get())
+                    .coerceAtLeast(0)
+                if (remainingCloudPool <= 0) {
                     val localIndex = nextLocalStepIndex(index)
                     if (localIndex != null) {
                         attempt(localIndex, lastFailure, previousFailedGroup)
@@ -782,27 +815,52 @@ object CleanupWaterfallExecutor {
                     }
                     return
                 }
-                val hasKey = resolveCredential(step).isNotBlank()
+                val hasKey = resolvedKey.isNotBlank()
                 if (hasKey) {
                     emitFailoverStatus(previousFailedGroup, step.group)
-                    cloudProvidersAttempted++
                 }
-                val hasRunnableCloudFallback = cloudProvidersAttempted < MAX_CLOUD_CLEANUP_PROVIDERS &&
+                val hasRunnableCloudFallback = remainingCloudPool > 1 &&
                     ((index + 1) until steps.size).any { i ->
-                        steps[i].group != CleanupStepGroup.LOCAL_LLM && resolveCredential(steps[i]).isNotBlank()
+                        val next = steps[i]
+                        if (next.group == CleanupStepGroup.LOCAL_LLM) return@any false
+                        val nextKey = resolveCredential(next)
+                        val nextDisq = disqualificationKeyFor(next, nextKey)
+                        nextKey.isNotBlank() && (nextDisq == null || nextDisq !in disqualifiedAccounts)
                     }
                 val hasRunnableLocalFallback = nextLocalStepIndex(index + 1) != null && !localModelPath().isNullOrBlank()
                 val hasRunnableFallback = hasRunnableCloudFallback || hasRunnableLocalFallback
+                val stepCap = step.maxAttempts.coerceIn(
+                    AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS,
+                    AttemptBudgetCalculator.MAX_SLOT_ATTEMPTS,
+                )
+                val effectiveMaxAttempts = if (stepCap > 1) {
+                    minOf(stepCap, remainingCloudPool)
+                } else if (!hasRunnableFallback) {
+                    minOf(1 + busyRetryMaxRetries.coerceAtLeast(0), remainingCloudPool)
+                } else {
+                    minOf(1, remainingCloudPool)
+                }
+                val stepMaxRetries = (effectiveMaxAttempts - 1).coerceAtLeast(0)
+                val stepInitialAttemptCounted = java.util.concurrent.atomic.AtomicBoolean(false)
                 stepDeadlineAtMs = minOf(cloudDeadlineAtMs, now + perProviderCapMs)
                 val busyRetryingTransport = withBusyRetry(
                     transport = transport,
                     deadlineAtMs = stepDeadlineAtMs,
                     nowMs = nowMs,
-                    maxRetries = if (hasRunnableFallback) 0 else busyRetryMaxRetries,
+                    maxRetries = stepMaxRetries,
                     delayMs = busyRetryDelayMs,
                     perProviderCapMs = perProviderCapMs,
                     scheduleRetry = scheduleRetry,
                     onRetry = { onStageStatus("Cleanup retrying…") },
+                    onAttemptDispatched = { attemptIndex ->
+                        if (attemptIndex == 0) {
+                            if (stepInitialAttemptCounted.compareAndSet(false, true)) {
+                                totalCloudAttemptsUsed.incrementAndGet()
+                            }
+                        } else {
+                            totalCloudAttemptsUsed.incrementAndGet()
+                        }
+                    },
                 )
                 stepTransport = CleanupHttpTransport { url, headers, jsonBody, timeouts, ch, cb ->
                     busyRetryingTransport.send(url, headers, jsonBody, timeouts, ch) { httpOutcome ->
@@ -817,14 +875,18 @@ object CleanupWaterfallExecutor {
                     }
                 }
             } else {
+                stepDisqualificationKey = null
                 emitFailoverStatus(previousFailedGroup, step.group)
                 stepDeadlineAtMs = cloudDeadlineAtMs
                 stepTransport = transport
             }
 
-            performStep(step, text, prompt, localPrompt, localVocabulary, credentialLookup, entryCredentialLookup, stepTransport, localInference, localModelPath, cancelHolder, stepDeadlineAtMs, nowMs, temperatureCacheContext, isLastStep = index == steps.lastIndex, localStepBudgetMs = localStepBudgetMs, localPace = localPace, perProviderCapMs = perProviderCapMs) { stepOutcome ->
+            performStep(step, text, prompt, localPrompt, localVocabulary, credentialLookup, entryCredentialLookup, vaultCredentialLookup, stepTransport, localInference, localModelPath, cancelHolder, stepDeadlineAtMs, nowMs, temperatureCacheContext, isLastStep = index == steps.lastIndex, localStepBudgetMs = localStepBudgetMs, localPace = localPace, perProviderCapMs = perProviderCapMs) { stepOutcome ->
                 val guardedOutcome = if (fidelityGuard) guardCloudOutput(step, text, stepOutcome) else stepOutcome
                 logStepOutcome(step, startedAtMs, guardedOutcome, benchmarkContext, benchmarkCorrelationId)
+                if (stepDisqualificationKey != null && lastHttpCode != null && CloudErrorClassifier.isAccountDeadError(lastHttpCode)) {
+                    disqualifiedAccounts += stepDisqualificationKey
+                }
                 when (guardedOutcome) {
                     is CleanupStepOutcome.Success -> {
                         cursor.recordSuccess(index, nowMs())
@@ -1169,6 +1231,7 @@ object CleanupWaterfallExecutor {
         localVocabulary: List<String>,
         credentialLookup: (CleanupCredentialSlot) -> String,
         entryCredentialLookup: (String) -> String,
+        vaultCredentialLookup: (String) -> String,
         transport: CleanupHttpTransport,
         localInference: LocalInferenceEngine,
         localModelPath: () -> String?,
@@ -1212,10 +1275,15 @@ object CleanupWaterfallExecutor {
             return
         }
 
-        val apiKey = if (step.entryId.isNotBlank()) {
-            entryCredentialLookup(step.entryId).ifBlank { step.credentialSlot()?.let(credentialLookup) ?: "" }
-        } else {
-            step.credentialSlot()?.let(credentialLookup) ?: ""
+        val apiKey = buildString {
+            val fromVault = step.vaultKeyId?.takeIf { it.isNotBlank() }?.let(vaultCredentialLookup).orEmpty()
+            if (fromVault.isNotBlank()) {
+                append(fromVault)
+            } else {
+                val fromEntry = if (step.entryId.isNotBlank()) entryCredentialLookup(step.entryId) else ""
+                if (fromEntry.isNotBlank()) append(fromEntry)
+                else append(step.credentialSlot()?.let(credentialLookup) ?: "")
+            }
         }
         if (apiKey.isBlank()) {
             // No live host was ever contacted, so this is a step-level (not connection-level)
@@ -1324,6 +1392,7 @@ object CleanupWaterfallExecutor {
         perProviderCapMs: Long = CLOUD_CLEANUP_PER_PROVIDER_CAP_MS,
         scheduleRetry: (Long, () -> Unit) -> Unit,
         onRetry: () -> Unit = {},
+        onAttemptDispatched: (Int) -> Unit = {},
     ): CleanupHttpTransport = CleanupHttpTransport { url, headers, jsonBody, timeouts, cancelHolder, callback ->
         val cancelsAtStart = cancelHolder.cancelCount
 
@@ -1346,6 +1415,7 @@ object CleanupWaterfallExecutor {
                 callback(CleanupHttpOutcome.Cancelled)
                 return
             }
+            onAttemptDispatched(attempt)
             transport.send(url, headers, jsonBody, stepTimeouts, cancelHolder) { outcome ->
                 if (cancelHolder.isCancelled || cancelHolder.cancelCount != cancelsAtStart) {
                     callback(CleanupHttpOutcome.Cancelled)

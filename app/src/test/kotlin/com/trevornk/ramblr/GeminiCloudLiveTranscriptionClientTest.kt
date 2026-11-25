@@ -457,6 +457,254 @@ class GeminiCloudLiveTranscriptionClientTest {
         assertEquals(1, listener.terminals)
     }
 
+    @Test fun `setupJson for gemini-3_5-transcribe-live supports SMART mode and VERBATIM default`() {
+        val smart = JSONObject(
+            GeminiCloudLiveTranscriptionClient.setupJson(
+                model = GeminiCloudLiveTranscriptionClient.DEFAULT_MODEL,
+                languageCodes = listOf("en-US"),
+                customVocabulary = listOf("Ramblr"),
+                mode = LiveTranscriptionMode.SMART,
+            )
+        ).getJSONObject("setup")
+        assertEquals("models/gemini-3.5-transcribe-live", smart.getString("model"))
+        assertEquals(listOf("TEXT"), smart.getJSONObject("generationConfig").getJSONArray("responseModalities").toStringList())
+        assertEquals("SMART", smart.getJSONObject("inputAudioTranscription").getString("mode"))
+        assertTrue(smart.getJSONObject("realtimeInputConfig").getJSONObject("automaticActivityDetection").getBoolean("disabled"))
+    }
+
+    @Test fun `setupJson for gemini-3_8-live uses AUDIO modality and forbids unsupported fields`() {
+        val setup = JSONObject(
+            GeminiCloudLiveTranscriptionClient.setupJson(
+                model = GeminiCloudLiveTranscriptionClient.SECONDARY_MODEL,
+                languageCodes = listOf("en-US"),
+                customVocabulary = listOf("Ramblr"),
+                mode = LiveTranscriptionMode.SMART,
+            )
+        ).getJSONObject("setup")
+        assertEquals("models/gemini-3.8-live", setup.getString("model"))
+        val genConfig = setup.getJSONObject("generationConfig")
+        assertEquals(listOf("AUDIO"), genConfig.getJSONArray("responseModalities").toStringList())
+        assertFalse(genConfig.has("thinkingConfig"))
+        assertFalse(setup.has("proactiveAudio"))
+        assertFalse(setup.has("proactive_audio"))
+        assertFalse(setup.has("enableAffectiveDialog"))
+        assertFalse(setup.has("enable_affective_dialog"))
+        val tx = setup.getJSONObject("inputAudioTranscription")
+        assertFalse("gemini-3.8-live must never send mode", tx.has("mode"))
+        assertEquals(listOf("en-US"), tx.getJSONArray("languageCodes").toStringList())
+        assertEquals(listOf("Ramblr"), tx.getJSONArray("customVocabulary").toStringList())
+        assertTrue(setup.getJSONObject("realtimeInputConfig").getJSONObject("automaticActivityDetection").getBoolean("disabled"))
+
+        // Empty language/vocab omits empty arrays on gemini-3.8-live.
+        val minimal = JSONObject(
+            GeminiCloudLiveTranscriptionClient.setupJson(
+                model = GeminiCloudLiveTranscriptionClient.SECONDARY_MODEL,
+                languageCodes = emptyList(),
+                customVocabulary = emptyList(),
+            )
+        ).getJSONObject("setup").getJSONObject("inputAudioTranscription")
+        assertFalse(minimal.has("languageCodes"))
+        assertFalse(minimal.has("customVocabulary"))
+        assertFalse(minimal.has("mode"))
+    }
+
+    @Test fun `gemini-3_8-live accumulates raw inputTranscription fragments ignores modelTurn and finalizes on turnComplete`() {
+        val listener = RecordingListener()
+        val socket = GatedWebSocket(gateOn = "\u0000never")
+        val client = FakeWebSocketClient(socket)
+        val session = GeminiCloudLiveTranscriptionClient(
+            httpClient = client,
+            endpoint = server.url(GeminiCloudLiveTranscriptionClient.ENDPOINT_PATH),
+            apiKey = "test-key",
+            model = GeminiCloudLiveTranscriptionClient.SECONDARY_MODEL,
+            callbackExecutor = Executor { it.run() },
+            scheduler = scheduler,
+            allowTestEndpoint = true,
+        ).create(listener)
+
+        session.connect()
+        val wsListener = requireNotNull(client.socketListener)
+        wsListener.onOpen(socket, upgradeResponse())
+        session.startActivity()
+        wsListener.onMessage(socket, "{\"setupComplete\":{}}")
+        // Ignore audio output and outputTranscription, preserve leading/trailing spaces between input fragments.
+        wsListener.onMessage(socket, "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"audio/pcm\",\"data\":\"AAAA\"}}]},\"outputTranscription\":{\"text\":\"spoken reply\"}}}")
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Hello\"}}}")
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\" world\"}}}")
+        // turnComplete while still recording must NOT finalize yet.
+        wsListener.onMessage(socket, "{\"serverContent\":{\"turnComplete\":true}}")
+        assertNull(listener.result)
+        assertEquals(listOf("Hello", "Hello world"), listener.interims)
+
+        session.endActivity()
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"!\",\"finished\":true}}}")
+
+        assertTrue(listener.done.await(5, TimeUnit.SECONDS))
+        assertEquals("Hello world!", (listener.result as CloudLiveTerminal.Success).text)
+        assertEquals(1, listener.terminals)
+    }
+
+    @Test fun `gemini-3_8-live flushes accumulated buffer on finalTimeout instead of failing`() {
+        val listener = RecordingListener()
+        val socket = GatedWebSocket(gateOn = "\u0000never")
+        val client = FakeWebSocketClient(socket)
+        val session = GeminiCloudLiveTranscriptionClient(
+            httpClient = client,
+            endpoint = server.url(GeminiCloudLiveTranscriptionClient.ENDPOINT_PATH),
+            apiKey = "test-key",
+            model = GeminiCloudLiveTranscriptionClient.SECONDARY_MODEL,
+            callbackExecutor = Executor { it.run() },
+            scheduler = scheduler,
+            finalTimeoutMs = 60,
+            allowTestEndpoint = true,
+        ).create(listener)
+
+        session.connect()
+        val wsListener = requireNotNull(client.socketListener)
+        wsListener.onOpen(socket, upgradeResponse())
+        session.startActivity()
+        wsListener.onMessage(socket, "{\"setupComplete\":{}}")
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"buffered text\"}}}")
+        session.endActivity()
+
+        assertTrue(listener.done.await(5, TimeUnit.SECONDS))
+        assertEquals("buffered text", (listener.result as CloudLiveTerminal.Success).text)
+    }
+
+    @Test fun `gemini-3_5-transcribe-live buffers active-speech inputTranscription and flushes on finalTimeout`() {
+        val listener = RecordingListener()
+        val socket = GatedWebSocket(gateOn = "\u0000never")
+        val client = FakeWebSocketClient(socket)
+        val session = GeminiCloudLiveTranscriptionClient(
+            httpClient = client,
+            endpoint = server.url(GeminiCloudLiveTranscriptionClient.ENDPOINT_PATH),
+            apiKey = "test-key",
+            model = GeminiCloudLiveTranscriptionClient.DEFAULT_MODEL,
+            mode = LiveTranscriptionMode.VERBATIM,
+            callbackExecutor = Executor { it.run() },
+            scheduler = scheduler,
+            finalTimeoutMs = 60,
+            allowTestEndpoint = true,
+        ).create(listener)
+
+        session.connect()
+        val wsListener = requireNotNull(client.socketListener)
+        wsListener.onOpen(socket, upgradeResponse())
+        session.startActivity()
+        wsListener.onMessage(socket, "{\"setupComplete\":{}}")
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"First sentence.\"}}}")
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Second sentence.\"}}}")
+        assertNull("must not close early while still recording", listener.result)
+        assertEquals(listOf("First sentence.", "First sentence. Second sentence."), listener.interims)
+
+        session.endActivity()
+        assertTrue(listener.done.await(5, TimeUnit.SECONDS))
+        assertEquals("First sentence. Second sentence.", (listener.result as CloudLiveTerminal.Success).text)
+    }
+
+    @Test fun `silent PCM keepalive sends after idle interval and stops after endActivity`() {
+        val socket = GatedWebSocket(gateOn = "\u0000never")
+        val client = FakeWebSocketClient(socket)
+        val listener = RecordingListener()
+        var now = 1_000L
+        val session = GeminiCloudLiveTranscriptionClient(
+            httpClient = client,
+            endpoint = server.url(GeminiCloudLiveTranscriptionClient.ENDPOINT_PATH),
+            apiKey = "test-key",
+            callbackExecutor = Executor { it.run() },
+            scheduler = scheduler,
+            keepaliveIntervalMs = 40,
+            nowMs = { now },
+            allowTestEndpoint = true,
+        ).create(listener)
+
+        session.connect()
+        val wsListener = requireNotNull(client.socketListener)
+        wsListener.onOpen(socket, upgradeResponse())
+        session.startActivity()
+        wsListener.onMessage(socket, "{\"setupComplete\":{}}")
+        socket.awaitSent(2) // setup + activityStart
+
+        now += 50L
+        socket.awaitSent(1) // silent PCM keepalive
+        val keepaliveFrame = socket.sent.last()
+        val audio = JSONObject(keepaliveFrame).getJSONObject("realtimeInput").getJSONObject("audio")
+        assertEquals("audio/pcm;rate=16000", audio.getString("mimeType"))
+        assertEquals(3200, java.util.Base64.getDecoder().decode(audio.getString("data")).size)
+
+        session.endActivity()
+        val countAfterEnd = socket.sent.size
+        now += 200L
+        Thread.sleep(100)
+        assertEquals("keepalive must stop after endActivity", countAfterEnd, socket.sent.size)
+        session.cancel()
+    }
+
+    @Test fun `errorCode propagates from close code error frame and HTTP failure response`() {
+        // 1. WebSocket close code (1008)
+        val closeListener = RecordingListener()
+        val closeSocket = GatedWebSocket(gateOn = "\u0000never")
+        val closeClient = FakeWebSocketClient(closeSocket)
+        val closeSession = factory(httpClient = closeClient).create(closeListener)
+        closeSession.connect()
+        closeClient.socketListener!!.onClosing(closeSocket, 1008, "policy violation")
+        assertTrue(closeListener.done.await(5, TimeUnit.SECONDS))
+        val closeFailure = closeListener.result as CloudLiveTerminal.Failure
+        assertEquals(1008, closeFailure.errorCode)
+        assertTrue(closeFailure.message.contains("1008"))
+
+        // 2. JSON error frame code
+        val errorListener = RecordingListener()
+        scriptedSocket("{\"setupComplete\":{}}", "{\"error\":{\"code\":401,\"message\":\"invalid api key\"}}")
+        val errorSession = factory().create(errorListener)
+        errorSession.connect(); errorSession.startActivity()
+        assertTrue(errorListener.done.await(5, TimeUnit.SECONDS))
+        val errorFailure = errorListener.result as CloudLiveTerminal.Failure
+        assertEquals(401, errorFailure.errorCode)
+
+        // 3. HTTP handshake failure code (401)
+        val httpListener = RecordingListener()
+        val httpSocket = GatedWebSocket(gateOn = "\u0000never")
+        val httpClient = FakeWebSocketClient(httpSocket)
+        val httpSession = factory(httpClient = httpClient).create(httpListener)
+        httpSession.connect()
+        val response401 = Response.Builder()
+            .request(Request.Builder().url("https://example.com/").build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(401)
+            .message("Unauthorized")
+            .build()
+        httpClient.socketListener!!.onFailure(httpSocket, java.io.IOException("unauthorized"), response401)
+        assertTrue(httpListener.done.await(5, TimeUnit.SECONDS))
+        assertEquals(401, (httpListener.result as CloudLiveTerminal.Failure).errorCode)
+    }
+
+    @Test fun `gemini-3_8-live accepts binary frames larger than 256KB up to 2MB`() {
+        val listener = RecordingListener()
+        val socket = GatedWebSocket(gateOn = "\u0000never")
+        val client = FakeWebSocketClient(socket)
+        val session = GeminiCloudLiveTranscriptionClient(
+            httpClient = client,
+            endpoint = server.url(GeminiCloudLiveTranscriptionClient.ENDPOINT_PATH),
+            apiKey = "test-key",
+            model = GeminiCloudLiveTranscriptionClient.SECONDARY_MODEL,
+            callbackExecutor = Executor { it.run() },
+            scheduler = scheduler,
+            allowTestEndpoint = true,
+        ).create(listener)
+
+        session.connect()
+        val wsListener = requireNotNull(client.socketListener)
+        wsListener.onOpen(socket, upgradeResponse())
+        session.startActivity()
+        wsListener.onMessage(socket, "{\"setupComplete\":{}}")
+        val largeAudioPayload = "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"inlineData\":{\"data\":\"" +
+            "A".repeat(300 * 1024) + "\"}}]}}}"
+        wsListener.onMessage(socket, largeAudioPayload.encodeUtf8())
+        assertNull("300KB audio frame must not fail gemini-3.8-live", listener.result)
+        session.cancel()
+    }
+
     private fun scriptedSocket(vararg events: String, delayMs: Long = 0, binary: Boolean = false): ServerScript {
         val script = ServerScript(events.toList(), delayMs, binary)
         server.enqueue(MockResponse.Builder().webSocketUpgrade(script).build())

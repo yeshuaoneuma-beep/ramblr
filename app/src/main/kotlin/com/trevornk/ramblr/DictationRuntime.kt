@@ -79,6 +79,14 @@ interface RuntimeListener {
      * deliberately inherits this no-op and remains final-only. Main thread. */
     fun onCloudLiveInterim(text: String) {}
 
+    /** Cloud-live interim with [bufferOnly] indicating Live Post-Cleanup is ON (never touch target field). Main thread. */
+    fun onCloudLiveInterim(text: String, bufferOnly: Boolean) {
+        if (!bufferOnly) onCloudLiveInterim(text)
+    }
+
+    /** Emitted once when Cloud Live disconnects mid-recording while local capture continues for Batch handoff. Main thread. */
+    fun onCloudLiveDisconnected(event: LiveDisconnectEvent) {}
+
     /**
      * A finished dictation result is ready to deliver. The host owns delivery: the a11y host
      * routes this through its candidate-scan injection (or preview-before-inject when [rawText]
@@ -227,6 +235,9 @@ class DictationRuntime internal constructor(
     private val recordingCountdownStartMs: Long = RECORDING_COUNTDOWN_START_MS,
     private val recordingCapMs: Long = RECORDING_CAP_MS,
     private val recordingCountdownTickMs: Long = RECORDING_COUNTDOWN_TICK_MS,
+    private val liveDisconnectListener: LiveDisconnectListener? = null,
+    private val liveConfigProvider: () -> LiveTranscriptionConfig = { LiveTranscriptionConfigStore.load(context) },
+    private val geminiInteractionsClient: GeminiInteractionsTranscriberClient = GeminiInteractionsTranscriberClient(),
     /** Test seam: lets host-side unit tests substitute a fake engine at the capture boundary.
      *  The default is exactly the pre-extraction construction. */
     private val engineFactory: (File, RecordingStateMachine) -> RecordingEngine =
@@ -312,12 +323,17 @@ class DictationRuntime internal constructor(
     @Volatile private var shuttingDown = false
     @Volatile private var shutdownLeaseAwaitingReader: DictationSessionLease? = null
 
-    private class CloudLiveAttempt(val lease: DictationSessionLease) {
+    private class CloudLiveAttempt(
+        val lease: DictationSessionLease,
+        val config: LiveTranscriptionConfig,
+        val startedAtMs: Long,
+    ) {
         var session: CloudLiveTranscriptionSession? = null
         var terminal: CloudLiveTerminal? = null
         var recordingResult: RecordingEngine.Result? = null
         var token: Int = 0
         var claimed = false
+        var disconnectAlertEmitted: Boolean = false
         @Volatile var liveStreamEnded = false
         var finalWait: Runnable? = null
         var sessionCutoff: Runnable? = null
@@ -463,6 +479,8 @@ class DictationRuntime internal constructor(
      *  so the shared cursor's step index would point at a different step there. */
     private val translationCursor = CleanupWaterfallCursor()
     private var lastTranslationWaterfallSignature: String? = null
+    private val livePostCleanupCursor = CleanupWaterfallCursor()
+    private var lastLivePostCleanupWaterfallSignature: String? = null
 
     @Volatile private var activeToken: Int = 0
 
@@ -527,6 +545,7 @@ class DictationRuntime internal constructor(
     internal fun onDefaultNetworkChanged() {
         cleanupCursor.reset()
         translationCursor.reset()
+        livePostCleanupCursor.reset()
     }
 
     // #280: serializes batch-model loads so a dictation that stops while a load is still in
@@ -801,7 +820,7 @@ class DictationRuntime internal constructor(
         // listener seam because every one of those pieces is host delivery state.
             listener.onRecordingStartRequested()
             liveAttempt = beginCloudLiveAttempt(lease)
-            val streamingActive = streamingTranscriberSlot.get() != null
+            val streamingActive = liveAttempt == null && streamingTranscriberSlot.get() != null
             if (streamingActive) streamingTranscriberSlot.use { it.beginSession() }
 
         // Silence-based auto-stop (#108, mode 1): additive and opt-in -- a session (and the
@@ -938,7 +957,8 @@ class DictationRuntime internal constructor(
 
     private fun beginCloudLiveAttempt(lease: DictationSessionLease): CloudLiveAttempt? {
         val factory = cloudLiveFactory() ?: return null
-        val attempt = CloudLiveAttempt(lease)
+        val config = liveConfigProvider()
+        val attempt = CloudLiveAttempt(lease, config = config, startedAtMs = nowMs())
         return try {
             attempt.session = factory.create(object : CloudLiveTranscriptionListener {
                 override fun onInterim(text: String, timing: CloudLiveTiming) {
@@ -952,7 +972,10 @@ class DictationRuntime internal constructor(
                             stateMachine.current() == RecordingStateMachine.State.RECORDING && !attempt.claimed) {
                             // Gemini's cumulative interims intermittently lose the space at a revised
                             // seam; repair it once here so field, bubble and IME all show the same text.
-                            listener.onCloudLiveInterim(attempt.interimText.normalize(text))
+                            listener.onCloudLiveInterim(
+                                attempt.interimText.normalize(text),
+                                bufferOnly = attempt.config.postCleanupEnabled,
+                            )
                         }
                     }
                 }
@@ -966,6 +989,12 @@ class DictationRuntime internal constructor(
                         if (attempt.terminal == null) {
                             attempt.terminal = result
                             attempt.lastTiming = result.timing
+                        }
+                        if (result is CloudLiveTerminal.Failure &&
+                            result.reason != CloudLiveFailureReason.CANCELLED &&
+                            stateMachine.current() == RecordingStateMachine.State.RECORDING
+                        ) {
+                            notifyMidRecordingLiveDisconnect(attempt, result)
                         }
                         resolveCloudLiveAttempt(attempt)
                     }
@@ -1012,15 +1041,58 @@ class DictationRuntime internal constructor(
         if (attempt.terminal != null) return
         attempt.liveStreamEnded = true
         val timing = attempt.lastTiming ?: CloudLiveTiming(connectStartedAtMs = nowMs())
-        attempt.terminal = CloudLiveTerminal.Failure(
+        val failure = CloudLiveTerminal.Failure(
             reason = CloudLiveFailureReason.SESSION_LIMIT,
             message = "Live transcription session limit reached (9:00)",
             timing = timing,
         )
+        attempt.terminal = failure
         attempt.lastTiming = timing
         Log.i(TAG, "Cloud-live 9:00 cutoff reached; closing live stream and continuing recording for batch fallback")
+        if (stateMachine.current() == RecordingStateMachine.State.RECORDING) {
+            notifyMidRecordingLiveDisconnect(attempt, failure)
+        }
         runCatching { attempt.session?.close() }
         resolveCloudLiveAttempt(attempt)
+    }
+
+    /** Main-thread smart disconnect notification: fires once per attempt while RecordingEngine stays live. */
+    private fun notifyMidRecordingLiveDisconnect(
+        attempt: CloudLiveAttempt,
+        failure: CloudLiveTerminal.Failure,
+    ) {
+        if (attempt.disconnectAlertEmitted) return
+        attempt.disconnectAlertEmitted = true
+        val elapsedSec = ((nowMs() - attempt.startedAtMs).coerceAtLeast(0L) / 1000L).toInt()
+        val event = LiveDisconnectEvent(
+            reason = failure.reason.name.lowercase(),
+            elapsedSec = elapsedSec,
+            continuingLocalRecording = true,
+            errorCode = failure.errorCode,
+        )
+        DiagnosticErrorLog.record(
+            context = context,
+            stage = "stt_live",
+            provider = "GEMINI_LIVE",
+            model = attempt.config.modelId,
+            httpCode = failure.errorCode,
+            detail = "${failure.reason.name}: ${failure.message}",
+        )
+        runCatching { liveDisconnectListener?.onLiveDisconnect(event) }
+        runCatching { listener.onCloudLiveDisconnected(event) }
+        if (attempt.config.smartDisconnectAlertEnabled) {
+            val alert = if (failure.reason == CloudLiveFailureReason.SESSION_LIMIT) {
+                "Live limit reached (9:00) · Still recording (Batch)"
+            } else {
+                "Live disconnected · Still recording (Batch)"
+            }
+            runCatching { backgroundWork.updateStatus(alert) }
+            runCatching { listener.onStageStatus(alert) }
+            toast(alert)
+        }
+        if (attempt.config.smartDisconnectHapticEnabled) {
+            runCatching { haptics.onLiveDisconnected() }
+        }
     }
 
     /** Flips shared state; the reader thread notices, drains, tears down and hands off via [onRecordingFinished]. */
@@ -1059,11 +1131,22 @@ class DictationRuntime internal constructor(
      * this would resident-load a multi-hundred-MB model into memory for a dictation that will
      * never touch it (e.g. cleanup off, or an all-cloud waterfall).
      */
+    private fun resolveSttCredential(entry: ProviderChainEntry): String =
+        entry.vaultKeyId?.takeIf { it.isNotBlank() }?.let { ApiKeyVaultStore.resolveSecret(context, it) }?.ifBlank { null }
+            ?: ProviderCredentialStore.getOrLegacy(context, entry)
+
+    private fun sttAccountKeyFor(entry: ProviderChainEntry): String? = when {
+        entry.kind == ProviderKind.LOCAL -> null
+        !entry.vaultKeyId.isNullOrBlank() -> "vault:${entry.vaultKeyId}"
+        !entry.presetId.isNullOrBlank() -> "preset:${entry.presetId.lowercase()}"
+        else -> "kind:${entry.kind.name}:${entry.baseUrlOverride?.let(PostProcessor::normalizeBaseUrl) ?: ""}"
+    }
+
     private fun isCloudSttEligibleForCurrentSettings(): Boolean = isCloudSttEligible(
         useLocal = prefs().getBoolean("use_local", true),
         allowCloudFallback = DictationModeToggle.allowCloudFallback(context),
         chain = ProviderChainStore.load(context),
-        isConfigured = { ProviderCredentialStore.isConfiguredOrLegacy(context, it) },
+        isConfigured = { resolveSttCredential(it).isNotBlank() },
     )
 
     private fun warmUpLocalCleanupModelIfNeeded() {
@@ -1120,7 +1203,7 @@ class DictationRuntime internal constructor(
             allowCloudFallback = DictationModeToggle.allowCloudFallback(context),
             postProcessingEnabled = PostProcessingToggle.shouldRunCleanup(PostProcessingToggle.isEnabled(context)),
             cloudCleanupEnabled = CloudFeatureToggle.cleanupEnabled(context),
-            isConfigured = { ProviderCredentialStore.isConfiguredOrLegacy(context, it) },
+            isConfigured = { resolveSttCredential(it).isNotBlank() },
         )
         NetworkWarmup.warmUpAsync(hosts)
     }
@@ -1465,7 +1548,7 @@ class DictationRuntime internal constructor(
                 result.pcmFile.delete()
                 result.compressedFile?.delete()
                 logCloudLiveAttempt(attempt, CloudLiveOutcome.LIVE_DELIVERED)
-                thread { handleTranscriptionResult(terminal.text, attempt.token, attempt.lease) }
+                thread { handleLiveTranscriptionResult(terminal.text, attempt.token, attempt.lease, attempt.config) }
             }
             is CloudLiveTerminal.Failure -> startCloudLiveBatchFallback(attempt, CloudLiveOutcome.BATCH_SERVED_LIVE_FAILED)
         }
@@ -1512,6 +1595,17 @@ class DictationRuntime internal constructor(
         attempt.sessionCutoff = null
         cloudLiveAttempt = null
         runCatching { attempt.session?.close() }
+        val failure = attempt.terminal as? CloudLiveTerminal.Failure
+        if (failure != null && !attempt.disconnectAlertEmitted) {
+            DiagnosticErrorLog.record(
+                context = context,
+                stage = "stt_live",
+                provider = "GEMINI_LIVE",
+                model = attempt.config.modelId,
+                httpCode = failure.errorCode,
+                detail = "${failure.reason.name}: ${failure.message}",
+            )
+        }
         logCloudLiveAttempt(attempt, outcome)
         onCloudLiveBatchFallback()
         thread { continueTranscription(result, attempt.token, attempt.lease) }
@@ -1925,11 +2019,12 @@ class DictationRuntime internal constructor(
         // Keep transcription cloud-first and provider-neutral: walk configured cloud STT
         // candidates (with usable credentials and audio-capable models) before falling back sequentially to LOCAL.
         val usableCloudCandidates = candidates.filter { entry ->
-            (entry.kind == ProviderKind.OPENAI ||
-                (entry.kind == ProviderKind.GEMINI && GeminiTranscriberClient.supportsAudioTranscription(entry.transcriptionModel))) &&
+            entry.transcriptionModel != ProviderChainEntry.SKIP_MODEL_ID &&
+                (entry.kind == ProviderKind.OPENAI ||
+                    (entry.kind == ProviderKind.GEMINI && GeminiTranscriberClient.supportsAudioTranscription(entry.transcriptionModel))) &&
                 TranscriptionChain.precheck(
                     entry.kind,
-                    hasCredential = ProviderCredentialStore.getOrLegacy(context, entry).isNotBlank(),
+                    hasCredential = resolveSttCredential(entry).isNotBlank(),
                     localModelLoaded = false,
                 ) == TranscriptionChain.Precheck.CALL
         }
@@ -1941,6 +2036,27 @@ class DictationRuntime internal constructor(
             return
         }
 
+        val budgetedCloudCandidates = mutableListOf<ProviderChainEntry>()
+        val rawAttemptCaps = mutableListOf<Int>()
+        val slotAccountKeys = mutableListOf<String?>()
+        var remainingBudget = AttemptBudgetCalculator.MAX_CLOUD_ATTEMPTS_PER_LANE
+        for (entry in usableCloudCandidates) {
+            if (remainingBudget <= 0) break
+            val cap = entry.sttAttempts.coerceIn(
+                AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS,
+                remainingBudget,
+            )
+            budgetedCloudCandidates += entry
+            rawAttemptCaps += cap
+            slotAccountKeys += sttAccountKeyFor(entry)
+            remainingBudget -= cap
+        }
+        val useExplicitBudget = budgetedCloudCandidates.size >= AttemptBudgetCalculator.MAX_CLOUD_ATTEMPTS_PER_LANE ||
+            budgetedCloudCandidates.any {
+                it.sttAttempts > AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS || !it.vaultKeyId.isNullOrBlank()
+            }
+        val slotAttemptCaps = if (useExplicitBudget) rawAttemptCaps else null
+
         inFlightCall.beginWork()
         val cancelsAtStart = inFlightCall.cancelCount
 
@@ -1951,13 +2067,15 @@ class DictationRuntime internal constructor(
         var anyCloudAttempted = false
         val audioDurationMs = file.length() / 32L
         val walk = TranscriptionChain.Walk(
-            cloudCandidates = usableCloudCandidates,
+            cloudCandidates = budgetedCloudCandidates,
             localCandidate = localCandidate,
             startedAtMs = nowMs(),
             isCompressedUpload = remainingCompressedFile != null,
             audioDurationMs = audioDurationMs,
             backoffMs = transcriptionRetryBackoffMs,
             localBudgetMs = localSttBudgetMs,
+            slotAttemptCaps = slotAttemptCaps,
+            slotAccountKeys = slotAccountKeys,
         )
 
         fun isStaleOrCancelled(): Boolean =
@@ -2079,7 +2197,7 @@ class DictationRuntime internal constructor(
         }
 
         val entry = step.entry
-        val apiKey = ProviderCredentialStore.getOrLegacy(context, entry)
+        val apiKey = resolveSttCredential(entry)
         when (entry.kind) {
             ProviderKind.OPENAI -> {
                 Log.i(TAG, "Cloud transcription via ProviderChain provider=${entry.kind} (attempt ${step.attemptNumber}, revisit=${step.isRevisit})")
@@ -2175,6 +2293,127 @@ class DictationRuntime internal constructor(
                     return
                 }
                 if (!GeminiTranscriberClient.canInlineAudio(file, compressedFile)) {
+                    if (GeminiTranscriberClient.isDedicatedTranscribeModel(geminiModel) && entry.baseUrlOverride.isNullOrBlank()) {
+                        Log.i(TAG, "Cloud transcription via Gemini Interactions API provider=${entry.kind} model=$geminiModel (attempt ${step.attemptNumber})")
+                        val tempWavFile: File?
+                        val uploadFile: File
+                        val uploadMime: String
+                        if (compressedFile != null) {
+                            tempWavFile = null
+                            uploadFile = compressedFile
+                            uploadMime = "audio/mp4"
+                        } else {
+                            tempWavFile = try {
+                                File.createTempFile("ramblr_gem_int_", ".wav", context.cacheDir).also { wav ->
+                                    wav.outputStream().buffered().use { out ->
+                                        out.write(WavWriter.header(file.length(), SAMPLE_RATE, 1, 16))
+                                        file.inputStream().buffered().use { input -> input.copyTo(out) }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to prepare WAV for Gemini Interactions API", e)
+                                DiagnosticErrorLog.record(
+                                    context = context,
+                                    stage = "stt",
+                                    provider = entry.kind.name,
+                                    model = geminiModel,
+                                    detail = "Failed to prepare WAV for Gemini Interactions API: ${e.message}",
+                                )
+                                onFailure(CloudErrorKind.PERMANENT_OR_QUOTA, e.message ?: "Failed to prepare WAV", null, null)
+                                return
+                            }
+                            uploadFile = tempWavFile
+                            uploadMime = "audio/wav"
+                        }
+                        val geminiStartMs = System.currentTimeMillis()
+                        val languageCodes = listOfNotNull(DictationLanguage.geminiLiveCode(DictationLanguage.languageOrNull(context)))
+                        val cleanVocabulary = vocabularyTerms()
+                            .filter { it.isNotBlank() }
+                            .take(GeminiInteractionsTranscriberClient.MAX_CUSTOM_VOCABULARY)
+                        try {
+                            geminiInteractionsClient.transcribe(
+                                audioFile = uploadFile,
+                                mimeType = uploadMime,
+                                apiKey = apiKey,
+                                model = geminiModel,
+                                customVocabulary = cleanVocabulary,
+                                languageCodes = languageCodes,
+                                cancelHolder = inFlightCall,
+                                callTimeoutMs = timeoutMs,
+                            ) { result ->
+                                try {
+                                    val success = result.text != null && result.text.isNotBlank()
+                                    BenchmarkLogger.log(
+                                        context = context,
+                                        correlationId = correlationIdFor(token),
+                                        transcription = BenchmarkStage(
+                                            provider = entry.kind.name,
+                                            model = geminiModel,
+                                            latencyMs = System.currentTimeMillis() - geminiStartMs,
+                                            success = success,
+                                            compressedUpload = compressedFile != null,
+                                            error = sanitizeError(result.error),
+                                        ),
+                                        rawTextLength = result.text?.length,
+                                    )
+                                    if (listener.allowsTranscriptRetention()) QualityLogger.log(
+                                        context = context,
+                                        correlationId = correlationIdFor(token),
+                                        transcription = QualityStage(
+                                            provider = entry.kind.name,
+                                            model = geminiModel,
+                                        ),
+                                        rawText = result.text,
+                                    )
+                                    when {
+                                        isCancelledOrStale() -> onCancelled()
+                                        result.isCancelled -> {
+                                            val timeoutMsg = result.error?.takeIf { it.isNotBlank() } ?: "timeout"
+                                            DiagnosticErrorLog.record(
+                                                context = context,
+                                                stage = "stt",
+                                                provider = entry.kind.name,
+                                                model = geminiModel,
+                                                httpCode = result.httpCode,
+                                                detail = timeoutMsg,
+                                            )
+                                            onFailure(CloudErrorKind.TEMPORARY_BUSY, timeoutMsg, result.httpCode, null)
+                                        }
+                                        success -> onSuccessOrNoSpeech(result.text)
+                                        isNoSpeechTranscript(result.text, result.error) -> {
+                                            DiagnosticErrorLog.record(
+                                                context = context,
+                                                stage = "stt",
+                                                provider = entry.kind.name,
+                                                model = geminiModel,
+                                                httpCode = result.httpCode,
+                                                detail = "no speech (empty_transcript, pcmBytes=$pcmBytes, compressedBytes=$compressedBytes)",
+                                            )
+                                            onSuccessOrNoSpeech(null)
+                                        }
+                                        else -> {
+                                            val err = result.error ?: "empty transcript"
+                                            DiagnosticErrorLog.record(
+                                                context = context,
+                                                stage = "stt",
+                                                provider = entry.kind.name,
+                                                model = geminiModel,
+                                                httpCode = result.httpCode,
+                                                detail = err,
+                                            )
+                                            onFailure(result.errorKind, err, result.httpCode, null)
+                                        }
+                                    }
+                                } finally {
+                                    tempWavFile?.delete()
+                                }
+                            }
+                        } catch (e: Throwable) {
+                            tempWavFile?.delete()
+                            throw e
+                        }
+                        return
+                    }
                     Log.w(TAG, "Recording too large for Gemini inline audio (pcm=${file.length()}, compressed=${compressedFile?.length()}); trying next candidate")
                     DiagnosticErrorLog.record(
                         context = context,
@@ -2294,6 +2533,135 @@ class DictationRuntime internal constructor(
             transcriberSlot.replace(null)
             batchTranscriberReleasedForCleanup = true
             afterRelease()
+        }
+    }
+
+    /** Dedicated Live transcription delivery path: respects Live Post-Cleanup ON/OFF independently of Batch Cleanup. */
+    private fun handleLiveTranscriptionResult(
+        text: String?,
+        token: Int,
+        lease: DictationSessionLease,
+        config: LiveTranscriptionConfig,
+    ) {
+        if (text.isNullOrBlank()) {
+            pipelineTiming.abandon()
+            handler.post {
+                if (!guard.isCurrent(token)) return@post
+                toast(NO_SPEECH_MESSAGE)
+                reportFailure(BackgroundFailure.NO_SPEECH)
+                resetToIdle(lease)
+            }
+            return
+        }
+
+        if (!config.postCleanupEnabled || isJunkTranscript(text)) {
+            handler.post {
+                if (!guard.isCurrent(token)) return@post
+                listener.deliverText(
+                    finalizeForDelivery(text),
+                    rawText = null,
+                    paidFallbackGroup = null,
+                    cleanupError = null,
+                    feedbackDurationMs = 2000,
+                )
+                resetToIdle(lease)
+            }
+            return
+        }
+
+        val liveWaterfall = ProviderChainRuntime.livePostCleanupWaterfallFor(config)
+        if (liveWaterfall.steps.isEmpty()) {
+            Log.i(TAG, "Live post-cleanup enabled with no active locked slots; delivering raw live transcript")
+            handler.post {
+                if (!guard.isCurrent(token)) return@post
+                listener.deliverText(
+                    finalizeForDelivery(text),
+                    rawText = null,
+                    paidFallbackGroup = null,
+                    cleanupError = null,
+                    feedbackDurationMs = 2000,
+                )
+                resetToIdle(lease)
+            }
+            return
+        }
+
+        val waterfallSignature = cleanupWaterfallSignature(liveWaterfall)
+        if (waterfallSignature != lastLivePostCleanupWaterfallSignature) {
+            livePostCleanupCursor.reset()
+            lastLivePostCleanupWaterfallSignature = waterfallSignature
+        }
+
+        val savedPrompt = PostProcessor.effectiveSavedPrompt(
+            prefs().getString("post_processing_prompt", null),
+            prefs().getString("cleanup_style", null),
+        )
+        val perAppPersonaKey = if (PerAppPersonaToggle.isEnabled(context)) {
+            PerAppPersonaStore.personaKeyFor(context, listener.foregroundPackageName())
+        } else {
+            null
+        }
+        val rawPrompt = perAppPersonaKey
+            ?.let { CleanupPersonas.promptForExplicitSelection(PersonaRegistry.resolve(context, it)) }
+            ?: savedPrompt
+        val vocabulary = vocabularyTerms()
+        val prompt = PostProcessor.withKeepLanguage(PostProcessor.interpolateVocabulary(rawPrompt, vocabulary))
+
+        if (!guard.isCurrent(token)) return
+        handler.post { if (guard.isCurrent(token)) listener.onCleaningStarted() }
+        Log.i(TAG, "Live post-cleanup via ${liveWaterfall.steps.size} locked slot(s): ${liveWaterfall.steps.map { it.group }}")
+        CleanupWaterfallExecutor.execute(
+            text = text,
+            prompt = prompt,
+            waterfall = liveWaterfall,
+            cursor = livePostCleanupCursor,
+            cancelHolder = inFlightCall,
+            credentialLookup = { slot ->
+                ProviderCredentialStore.getLegacyByKind(context, ProviderChainRuntime.providerKindForCleanupSlot(slot))
+            },
+            entryCredentialLookup = { entryId -> ProviderCredentialStore.get(context, entryId) },
+            vaultCredentialLookup = { vaultKeyId -> ApiKeyVaultStore.resolveSecret(context, vaultKeyId) },
+            temperatureCacheContext = context.applicationContext,
+            benchmarkContext = context.takeIf { listener.allowsTranscriptRetention() },
+            benchmarkCorrelationId = correlationIdFor(token),
+            fidelityGuard = PostProcessor.preservesWording(prompt),
+            onStageStatus = { status -> emitStageStatus(token, status) },
+            onStepFailure = { step, httpCode, detail ->
+                DiagnosticErrorLog.record(
+                    context = context,
+                    stage = "cleanup_live",
+                    provider = step.group.name,
+                    model = step.model,
+                    httpCode = httpCode,
+                    detail = detail,
+                )
+            },
+        ) { result ->
+            handler.post {
+                if (!guard.isCurrent(token)) return@post
+                if (result.text != null && result.text.isNotBlank()) {
+                    val servingGroup = recordProviderChainCleanupSuccess(liveWaterfall, livePostCleanupCursor)
+                    val paidFallbackGroup = servingGroup?.takeIf { it.isPaidFallback() }
+                    listener.deliverText(
+                        finalizeForDelivery(result.text),
+                        rawText = text,
+                        paidFallbackGroup = paidFallbackGroup,
+                        cleanupError = null,
+                        feedbackDurationMs = 2000,
+                    )
+                } else {
+                    val reason = result.error?.takeIf { it.isNotBlank() } ?: "unknown error"
+                    Log.w(TAG, "Live post-cleanup failed, delivering raw live transcript: $reason")
+                    listener.deliverText(
+                        finalizeForDelivery(text),
+                        rawText = null,
+                        paidFallbackGroup = null,
+                        cleanupError = reason,
+                        feedbackDurationMs = 4000,
+                    )
+                }
+                resetToIdle(lease)
+            }
         }
     }
 
@@ -2451,6 +2819,7 @@ class DictationRuntime internal constructor(
                     cancelHolder = inFlightCall,
                     credentialLookup = { kind -> ProviderCredentialStore.getLegacyByKind(context, kind) },
                     entryCredentialLookup = { entryId -> ProviderCredentialStore.get(context, entryId) },
+                    vaultCredentialLookup = { vaultKeyId -> ApiKeyVaultStore.resolveSecret(context, vaultKeyId) },
                     localModelPath = { ModelDownloader.localCleanupModelFile(context, LocalCleanupProvider.selectedModel(context))?.absolutePath },
                     localPrompt = LocalCleanupProvider.selectedSystemPrompt(context),
                     // #182 option 2: local cleanup applies the same terms as a deterministic
@@ -2700,6 +3069,7 @@ class DictationRuntime internal constructor(
 
     private fun toast(msg: String) {
         handler.post {
+            if (shuttingDown) return@post
             listener.onUserMessage(msg)
             Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
         }

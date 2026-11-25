@@ -161,7 +161,7 @@ internal class AudioJobRunner(
                     allowLocalFallback = DictationModeToggle.allowLocalFallback(context),
                     localModelAvailable = localModel != null,
                 ),
-                hasCredential = { ProviderCredentialStore.getOrLegacy(context, it).isNotBlank() },
+                hasCredential = { resolveEntryCredential(it).isNotBlank() },
             )
             if (plan.routes.isEmpty()) throw Stop(plan.unavailable ?: JobFailure.NO_PROVIDER)
             if (vadFile == null && plan.routes.any { it is AudioRoute.Local }) {
@@ -180,6 +180,7 @@ internal class AudioJobRunner(
             val language = DictationLanguage.languageOrNull(context)
             val vocabulary = VocabularyTerms.parse(prefs.getString("custom_vocabulary_terms", VocabularyTerms.DEFAULT_SERIALIZED))
             val texts = ArrayList<String>(chunks.size)
+            val disqualifiedAccounts = mutableSetOf<String>()
             var routeIndex = 0
             for (chunk in chunks) {
                 if (isCancelled(id)) throw Stop(null)
@@ -205,7 +206,15 @@ internal class AudioJobRunner(
                                     ChunkAttempt.Error()
                                 }
                             }
-                            is AudioRoute.Cloud -> transcribeCloudChunk(id, route.entry, chunkFile, language, vocabulary, hasNextRoute)
+                            is AudioRoute.Cloud -> transcribeCloudChunk(
+                                id = id,
+                                entry = route.entry,
+                                file = chunkFile,
+                                language = language,
+                                vocabulary = vocabulary,
+                                hasNextRoute = hasNextRoute,
+                                disqualifiedAccounts = disqualifiedAccounts,
+                            )
                         }
                     }
                     if (r.cancelled) throw Stop(null)
@@ -308,6 +317,10 @@ internal class AudioJobRunner(
         }
     }
 
+    private fun resolveEntryCredential(entry: ProviderChainEntry): String =
+        entry.vaultKeyId?.takeIf { it.isNotBlank() }?.let { ApiKeyVaultStore.resolveSecret(context, it) }?.ifBlank { null }
+            ?: ProviderCredentialStore.getOrLegacy(context, entry)
+
     private fun transcribeCloudChunk(
         id: String,
         entry: ProviderChainEntry,
@@ -315,17 +328,32 @@ internal class AudioJobRunner(
         language: String?,
         vocabulary: List<String>,
         hasNextRoute: Boolean = false,
+        disqualifiedAccounts: MutableSet<String> = mutableSetOf(),
     ): ChunkAttempt {
-        val apiKey = ProviderCredentialStore.getOrLegacy(context, entry)
+        val accountKey = accountKeyFor(entry)
+        if (accountKey != null && accountKey in disqualifiedAccounts) {
+            return ChunkAttempt.Error(retryable = false)
+        }
+        val apiKey = resolveEntryCredential(entry)
         if (entry.kind == ProviderKind.GEMINI) {
             val geminiModel = entry.transcriptionModel?.ifBlank { null } ?: GeminiTranscriberClient.DEFAULT_MODEL
             if (!GeminiTranscriberClient.supportsAudioTranscription(geminiModel)) {
                 return ChunkAttempt.Error(retryable = false)
             }
         }
-        // One retry with backoff for temporary/busy or quick-429 failures: quota/auth/client
-        // errors (and 429 with Retry-After > 3s) fail over immediately to the next route.
-        for (attempt in 0..1) {
+        val slotAttempts = entry.sttAttempts.coerceIn(
+            AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS,
+            AttemptBudgetCalculator.MAX_SLOT_ATTEMPTS,
+        )
+        val effectiveMaxAttempts = if (slotAttempts > 1) {
+            slotAttempts
+        } else if (!hasNextRoute) {
+            2
+        } else {
+            1
+        }
+        val effectiveHasNextRoute = if (slotAttempts > 1) false else hasNextRoute
+        for (attempt in 0 until effectiveMaxAttempts) {
             if (isCancelled(id)) return ChunkAttempt.Cancelled
             val latch = CountDownLatch(1)
             var text: String? = null
@@ -349,14 +377,21 @@ internal class AudioJobRunner(
                     vocabularyTerms = vocabulary,
                     language = language,
                 ) { cb(it.text, it.error, it.errorKind, it.httpCode, it.retryAfterMs) }
-                ProviderKind.GEMINI -> GeminiTranscriberClient.transcribe(
-                    file, apiKey,
-                    entry.transcriptionModel?.ifBlank { null } ?: GeminiTranscriberClient.DEFAULT_MODEL,
-                    inFlight,
-                    vocabularyTerms = vocabulary,
-                    language = language,
-                    retryDelaysMs = emptyList(),
-                ) { cb(it.text, it.error, it.errorKind, it.httpCode, it.retryAfterMs) }
+                ProviderKind.GEMINI -> {
+                    val geminiModel = entry.transcriptionModel?.ifBlank { null } ?: GeminiTranscriberClient.DEFAULT_MODEL
+                    val geminiEndpoint = entry.baseUrlOverride?.takeIf { it.isNotBlank() }
+                        ?.let { GeminiCleanupProvider.endpointUrl(geminiModel, it) }
+                        ?: GeminiCleanupProvider.endpointUrl(geminiModel)
+                    GeminiTranscriberClient.transcribe(
+                        file, apiKey,
+                        geminiModel,
+                        inFlight,
+                        vocabularyTerms = vocabulary,
+                        language = language,
+                        endpoint = geminiEndpoint,
+                        retryDelaysMs = emptyList(),
+                    ) { cb(it.text, it.error, it.errorKind, it.httpCode, it.retryAfterMs) }
+                }
                 else -> return ChunkAttempt.Error(retryable = false)
             }
             if (!latch.await(NetworkClients.CALL_TIMEOUT_SECONDS + 30, TimeUnit.SECONDS)) {
@@ -370,7 +405,11 @@ internal class AudioJobRunner(
             // #306: a silent chunk is empty text, not a failed call -- retrying (or walking to the
             // next route) cannot find speech in it, and SegmentedTranscript.join drops it.
             if (noSpeech) return ChunkAttempt.Text("")
-            if (!shouldRetryCloudChunk(attempt, errorKind, httpCode, retryAfterMs, hasNextRoute)) {
+            if (CloudErrorClassifier.isAccountDeadError(httpCode)) {
+                if (accountKey != null) disqualifiedAccounts += accountKey
+                return ChunkAttempt.Error(retryable = false)
+            }
+            if (!shouldRetryCloudChunk(attempt, errorKind, httpCode, retryAfterMs, effectiveHasNextRoute, effectiveMaxAttempts)) {
                 return ChunkAttempt.Error(retryable = errorKind == CloudErrorKind.TEMPORARY_BUSY)
             }
             val delayMs = cloudChunkRetryDelayMs(errorKind, httpCode, retryAfterMs)
@@ -427,6 +466,7 @@ internal class AudioJobRunner(
                 cancelHolder = inFlight,
                 credentialLookup = { kind -> ProviderCredentialStore.getLegacyByKind(context, kind) },
                 entryCredentialLookup = { entryId -> ProviderCredentialStore.get(context, entryId) },
+                vaultCredentialLookup = { vaultKeyId -> ApiKeyVaultStore.resolveSecret(context, vaultKeyId) },
                 localModelPath = { ModelDownloader.localCleanupModelFile(context, LocalCleanupProvider.selectedModel(context))?.absolutePath },
                 localPrompt = localPrompt,
                 localVocabulary = vocabulary,
@@ -455,14 +495,27 @@ internal class AudioJobRunner(
     companion object {
         private const val TAG = "AudioJob"
 
+        internal fun accountKeyFor(entry: ProviderChainEntry): String? = when {
+            entry.kind == ProviderKind.LOCAL -> null
+            !entry.vaultKeyId.isNullOrBlank() -> "vault:${entry.vaultKeyId}"
+            !entry.presetId.isNullOrBlank() -> "preset:${entry.presetId.lowercase()}"
+            else -> "kind:${entry.kind.name}:${entry.baseUrlOverride?.let(PostProcessor::normalizeBaseUrl) ?: ""}"
+        }
+
         internal fun shouldRetryCloudChunk(
             attempt: Int,
             errorKind: CloudErrorKind,
             httpCode: Int? = null,
             retryAfterMs: Long? = null,
             hasNextRoute: Boolean = false,
+            maxAttempts: Int = 2,
         ): Boolean {
-            if (attempt != 0) return false
+            val boundedMax = maxAttempts.coerceIn(
+                AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS,
+                AttemptBudgetCalculator.MAX_SLOT_ATTEMPTS,
+            )
+            if (attempt + 1 >= boundedMax) return false
+            if (CloudErrorClassifier.isAccountDeadError(httpCode)) return false
             if (CloudErrorClassifier.isQuickRetryable429(httpCode, retryAfterMs)) return true
             return errorKind == CloudErrorKind.TEMPORARY_BUSY && !hasNextRoute
         }

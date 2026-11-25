@@ -66,18 +66,32 @@ object CloudLiveWiring {
      */
     fun factoryOrNull(context: Context): CloudLiveTranscriptionSessionFactory? {
         val prefs = context.getSharedPreferences("ramblr", Context.MODE_PRIVATE)
+        val config = LiveTranscriptionConfigStore.load(context)
         // Cheap gate first: opting out must not pay for SecurePrefsFactory's keystore-backed
         // credential read, which the vast majority of installs would otherwise do on every
         // IME onCreate to learn they were never opted in.
-        val enabled = CloudLiveToggle.isEnabled(prefs)
-        if (!enabled) return null
+        if (!config.enabled) return null
         // Read the existing cloud-vs-local gate exactly as DictationRuntime does; no new pref.
         val useLocal = prefs.getBoolean("use_local", true)
         if (useLocal) return null
-        val chain = ProviderChainStore.load(context)
-        val geminiEntry = resolveEligibleGeminiEntry(context, chain) ?: return null
-        val apiKey = ProviderCredentialStore.getOrLegacy(context, geminiEntry)
-        if (!isLiveAllowed(enabled, useLocal, apiKey)) return null
+
+        val hasPersistedConfig = LiveTranscriptionConfigStore.hasPersistedConfig(context)
+        val apiKey = ApiKeyVaultStore.resolveSecret(context, config.vaultKeyId, ProviderCapabilityRegistry.ID_GEMINI)
+            .ifBlank {
+                val chain = ProviderChainStore.load(context)
+                if (hasPersistedConfig) {
+                    ProviderCredentialStore.getForKind(context, chain, ProviderKind.GEMINI)
+                } else {
+                    resolveEligibleGeminiEntry(context, chain)
+                        ?.let { ProviderCredentialStore.getOrLegacy(context, it) }
+                        ?: ""
+                }
+            }
+        if (!isLiveAllowed(config.enabled, useLocal, apiKey)) return null
+
+        val safeModel = config.modelId
+            .takeIf { it in GeminiCloudLiveTranscriptionClient.SUPPORTED_MODELS }
+            ?: GeminiCloudLiveTranscriptionClient.DEFAULT_MODEL
 
         // Same terms the batch transcription path biases on (#26/#114), read from the same key.
         // Truncated to the client's documented ceiling so an oversized personal list downgrades
@@ -94,6 +108,8 @@ object CloudLiveWiring {
         return try {
             GeminiCloudLiveTranscriptionClient(
                 apiKey = apiKey,
+                model = safeModel,
+                mode = config.mode,
                 languageCodes = languageCodes,
                 customVocabulary = vocabulary,
                 maxSessionMs = GeminiCloudLiveTranscriptionClient.DEFAULT_MAX_SESSION_MS,

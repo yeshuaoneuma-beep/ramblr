@@ -57,6 +57,7 @@ sealed class CloudLiveTerminal {
         val reason: CloudLiveFailureReason,
         val message: String,
         override val timing: CloudLiveTiming,
+        val errorCode: Int? = null,
     ) : CloudLiveTerminal()
 }
 

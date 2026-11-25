@@ -57,6 +57,12 @@ object GeminiTranscriberClient {
     // gemini-3.5-flash-lite alongside the 2026-08-25 cleanup-default refresh: 3.5-flash-lite
     // measures ~3x slower on audio input, so the transcription path keeps the faster model.
     const val DEFAULT_MODEL = "gemini-3.1-flash-lite"
+    const val DEDICATED_TRANSCRIBE_MODEL = "gemini-3.5-transcribe"
+
+    fun isDedicatedTranscribeModel(model: String?): Boolean {
+        val normalized = model?.trim()?.removePrefix("models/")?.lowercase().orEmpty()
+        return normalized == DEDICATED_TRANSCRIBE_MODEL || normalized.startsWith("$DEDICATED_TRANSCRIBE_MODEL-")
+    }
 
     private val AUDIO_CAPABLE_GEMMA4_VARIANT = Regex("(^|[-_/])(e2b|e4b|12b)($|[-_/])")
 
@@ -96,8 +102,8 @@ object GeminiTranscriberClient {
      * just the vocabulary list or the prompt text coming back becomes an empty transcript, which
      * callers treat as "no speech".
      */
-    fun resultFor(responseBody: String, terms: List<String>, prompt: String): Result {
-        val parsed = parseResponse(responseBody)
+    fun resultFor(responseBody: String, terms: List<String>, prompt: String, model: String = DEFAULT_MODEL): Result {
+        val parsed = parseResponse(responseBody, model)
         return if (VocabularyEchoGuard.isEcho(parsed.text, terms, prompt)) {
             parsed.copy(text = "", error = null, dropReason = "vocabulary_echo_guard")
         } else {
@@ -170,6 +176,8 @@ object GeminiTranscriberClient {
         prompt: String = TRANSCRIBE_PROMPT,
         mimeType: String = "audio/wav",
         model: String = DEFAULT_MODEL,
+        languageCodes: List<String> = emptyList(),
+        customVocabulary: List<String> = emptyList(),
     ): JSONObject {
         val effectiveModel = model.ifBlank { DEFAULT_MODEL }
         val audioPart = JSONObject().apply {
@@ -177,6 +185,24 @@ object GeminiTranscriberClient {
                 put("mime_type", mimeType)
                 put("data", audioBytes.toByteString().base64())
             })
+        }
+        if (isDedicatedTranscribeModel(effectiveModel)) {
+            val contents = JSONArray().put(JSONObject().apply {
+                put("role", "user")
+                put("parts", JSONArray().put(audioPart))
+            })
+            val cleanLanguages = languageCodes.filter { it.isNotBlank() }
+            val cleanVocabulary = customVocabulary.filter { it.isNotBlank() }.take(1000)
+            return JSONObject().apply {
+                put("contents", contents)
+                if (cleanLanguages.isNotEmpty() || cleanVocabulary.isNotEmpty()) {
+                    val audioConfig = JSONObject().apply {
+                        if (cleanLanguages.isNotEmpty()) put("languageCodes", JSONArray(cleanLanguages))
+                        if (cleanVocabulary.isNotEmpty()) put("customVocabulary", JSONArray(cleanVocabulary))
+                    }
+                    put("generationConfig", JSONObject().put("audioTranscriptionConfig", audioConfig))
+                }
+            }
         }
         val textPart = JSONObject().apply { put("text", prompt) }
         val contents = JSONArray().put(JSONObject().apply {
@@ -199,7 +225,7 @@ object GeminiTranscriberClient {
     /** Same `candidates[0].content.parts[].text` shape as [GeminiCleanupProvider.parseResponse],
      *  extracted independently so the two providers' response contracts (transcript text vs.
      *  cleaned-up text) stay decoupled even though the wire format happens to match today. */
-    fun parseResponse(json: String): Result = try {
+    fun parseResponse(json: String, model: String = DEFAULT_MODEL): Result = try {
         val obj = JSONObject(json)
         if (obj.has("candidates")) {
             val candidates = obj.getJSONArray("candidates")
@@ -214,21 +240,30 @@ object GeminiTranscriberClient {
                 val content = candidate.optJSONObject("content")
                 val parts = content?.optJSONArray("parts")
                 var thoughtCount = 0
-                val text = parts?.let { arr ->
-                    buildString {
-                        for (i in 0 until arr.length()) {
-                            val part = arr.optJSONObject(i) ?: continue
-                            if (part.optBoolean("thought", false)) {
-                                thoughtCount++
-                                continue
-                            }
-                            if (!part.isNull("text")) {
-                                append(part.optString("text", ""))
-                            }
+                val audioTranscriptionText = StringBuilder()
+                val plainText = StringBuilder()
+                if (parts != null) {
+                    for (i in 0 until parts.length()) {
+                        val part = parts.optJSONObject(i) ?: continue
+                        if (part.optBoolean("thought", false)) {
+                            thoughtCount++
+                            continue
+                        }
+                        part.optJSONObject("audioTranscription")
+                            ?.takeIf { !it.isNull("text") }
+                            ?.optString("text", "")
+                            ?.takeIf { it.isNotEmpty() }
+                            ?.let { audioTranscriptionText.append(it) }
+                        if (!part.isNull("text")) {
+                            plainText.append(part.optString("text", ""))
                         }
                     }
                 }
-                if (!text.isNullOrBlank()) Result(text.trim(), null)
+                val text = audioTranscriptionText.toString().ifBlank { plainText.toString() }
+                if (text.isNotBlank()) Result(text.trim(), null)
+                else if (finishReason == "STOP" && isDedicatedTranscribeModel(model)) {
+                    Result(null, "Gemini $model returned empty STOP transcription", dropReason = "empty_stop(thoughtParts=$thoughtCount)")
+                }
                 // A model that finished normally with no text is answering "there was no speech"
                 // (the prompt asks for exactly that, #306): an empty transcript, not a provider
                 // failure. Any other finish reason (SAFETY, MAX_TOKENS, ...) stays an error.
@@ -293,8 +328,16 @@ object GeminiTranscriberClient {
         // #114 part 2: interpolate the user's vocabulary into the transcription prompt itself
         // (previously only cleanup-stage prompts got it), always on when terms exist.
         val prompt = transcribePrompt(vocabularyTerms, language)
-        val body = buildRequestBody(audioBytes, prompt = prompt, mimeType = mimeType, model = model)
-            .toString().toRequestBody("application/json".toMediaType())
+        val languageCodes = listOfNotNull(DictationLanguage.geminiLiveCode(language))
+        val cleanVocabulary = vocabularyTerms.filter { it.isNotBlank() }.take(1000)
+        val body = buildRequestBody(
+            audioBytes,
+            prompt = prompt,
+            mimeType = mimeType,
+            model = effectiveModel,
+            languageCodes = languageCodes,
+            customVocabulary = cleanVocabulary,
+        ).toString().toRequestBody("application/json".toMediaType())
 
         // A malformed key/model (or one OkHttp otherwise rejects) throws IllegalArgumentException
         // from Request.Builder().url() rather than failing the call -- caught so it reports
@@ -345,9 +388,9 @@ object GeminiTranscriberClient {
                     HttpBodyReader.read(response).fold(
                         onSuccess = { responseBody ->
                             val parsed = if (successful) {
-                                resultFor(responseBody, vocabularyTerms, prompt).copy(httpCode = httpCode)
+                                resultFor(responseBody, vocabularyTerms, prompt, model = effectiveModel).copy(httpCode = httpCode)
                             } else {
-                                val envelope = resultFor(responseBody, vocabularyTerms, prompt)
+                                val envelope = resultFor(responseBody, vocabularyTerms, prompt, model = effectiveModel)
                                 val errorMsg = envelope.error
                                     ?: responseBody.trim().replace(Regex("\\s+"), " ").take(200).ifEmpty { "HTTP $httpCode" }
                                 Result(null, errorMsg, httpCode = httpCode, retryAfterMs = retryAfterMs)

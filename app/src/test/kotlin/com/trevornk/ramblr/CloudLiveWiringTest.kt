@@ -33,6 +33,8 @@ class CloudLiveWiringTest {
         // Clear both stores explicitly rather than relying on a fresh-install starting state.
         prefs().edit().clear().apply()
         ProviderKind.values().forEach { ProviderCredentialStore.clearLegacyByKind(app, it) }
+        ProviderCredentialStore.clearVaultSecret(app, ProviderCapabilityRegistry.canonicalVaultKeyId(ProviderCapabilityRegistry.ID_GEMINI))
+        ProviderCredentialStore.clearVaultSecret(app, "vault_gemini_custom")
     }
 
     private fun prefs() = app.getSharedPreferences("ramblr", Context.MODE_PRIVATE)
@@ -225,5 +227,48 @@ class CloudLiveWiringTest {
             val allowed = CloudLiveWiring.isLiveAllowed(enabled, useLocal, if (hasKey) "k" else "")
             assertEquals("enabled=$enabled useLocal=$useLocal hasKey=$hasKey", allowed, subtitle.startsWith("On —"))
         }
+    }
+
+    @Test fun `persisted LiveTranscriptionConfig resolves vault key modelId and SMART mode even without Gemini batch card`() {
+        setUseLocal(false)
+        // Batch chain has only OpenAI, no Gemini batch card.
+        ProviderChainStore.save(app, ProviderChain(listOf(ProviderChainEntry(ProviderKind.OPENAI, "gpt-5.4-mini"))))
+        val vaultId = ProviderCapabilityRegistry.canonicalVaultKeyId(ProviderCapabilityRegistry.ID_GEMINI)
+        ApiKeyVaultStore.upsert(
+            app,
+            ApiKeyVaultEntry(vaultId, ProviderCapabilityRegistry.ID_GEMINI, "Gemini", locked = true),
+            secret = "AIzaSyTestVaultGeminiKey1234567890",
+        )
+        LiveTranscriptionConfigStore.save(
+            app,
+            LiveTranscriptionConfig(
+                enabled = true,
+                modelId = LiveTranscriptionConfig.SECONDARY_LIVE_MODEL_ID,
+                vaultKeyId = vaultId,
+                mode = LiveTranscriptionMode.SMART,
+            ),
+        )
+
+        val client = CloudLiveWiring.factoryOrNull(app) as? GeminiCloudLiveTranscriptionClient
+        assertNotNull("Vault Gemini key + persisted live config must build factory without Gemini batch card", client)
+        assertEquals(LiveTranscriptionMode.SMART, client!!.mode)
+    }
+
+    @Test fun `persisted LiveTranscriptionConfig falls back to ProviderCredentialStore getForKind when vault secret is absent`() {
+        setUseLocal(false)
+        ProviderChainStore.save(app, ProviderChain(listOf(ProviderChainEntry(ProviderKind.OPENAI, "gpt-5.4-mini"))))
+        ProviderCredentialStore.setLegacyByKind(app, ProviderKind.GEMINI, "legacy-gemini-key")
+        LiveTranscriptionConfigStore.save(
+            app,
+            LiveTranscriptionConfig(
+                enabled = true,
+                modelId = LiveTranscriptionConfig.DEFAULT_LIVE_MODEL_ID,
+                mode = LiveTranscriptionMode.SMART,
+            ),
+        )
+
+        val client = CloudLiveWiring.factoryOrNull(app) as? GeminiCloudLiveTranscriptionClient
+        assertNotNull(client)
+        assertEquals(LiveTranscriptionMode.SMART, client!!.mode)
     }
 }

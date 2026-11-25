@@ -171,6 +171,8 @@ internal class ImePanelController(
     private val renderCountdown: (Long?) -> Unit = {},
     /** Live retry/failover status hook (TRANSCRIBING / CLEANING only). */
     private val renderStageStatus: (String) -> Unit = {},
+    /** Clears any active composing text without committing when Cloud Live drops mid-recording. */
+    private val onLiveDisconnected: () -> Unit = {},
 ) {
     private var active = true
     private var deliveryTerminal = false
@@ -241,12 +243,24 @@ internal class ImePanelController(
         override fun onStreamingTeardown() = Unit
         override fun onStreamingPartial(text: String) { if (active) renderPartial(text) }
         override fun onCloudLiveInterim(text: String) {
+            onCloudLiveInterim(text, bufferOnly = false)
+        }
+        override fun onCloudLiveInterim(text: String, bufferOnly: Boolean) {
             if (active && deliveryTicket != null && latestUiTicket === deliveryTicket) renderPartial(text)
+        }
+        override fun onCloudLiveDisconnected(event: LiveDisconnectEvent) {
+            if (!active) return
+            onLiveDisconnected()
+            renderPartial("")
         }
         override fun onUserMessage(message: String) {
             if (!active) return
-            renderState(ImeUiState.ERROR)
-            notice(message)
+            if (isRecording()) {
+                userMessage(message)
+            } else {
+                renderState(ImeUiState.ERROR)
+                notice(message)
+            }
         }
 
         override fun deliverText(
