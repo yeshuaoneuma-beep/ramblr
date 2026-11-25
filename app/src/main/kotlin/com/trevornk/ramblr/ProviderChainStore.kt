@@ -30,6 +30,14 @@ object ProviderChainStore {
                 put("useForCleanup", entry.useForCleanup)
                 // #275: preset marker, null for every entry saved before #275 shipped.
                 put("presetId", entry.presetId ?: JSONObject.NULL)
+                // Phase 3A.1: shared vault key link, lock-in flags, shared 3-attempt pool counts, custom label.
+                put("vaultKeyId", entry.vaultKeyId ?: JSONObject.NULL)
+                put("providerLocked", entry.providerLocked)
+                put("sttLocked", entry.sttLocked)
+                put("cleanupLocked", entry.cleanupLocked)
+                put("sttAttempts", entry.sttAttempts)
+                put("cleanupAttempts", entry.cleanupAttempts)
+                put("customLabel", entry.customLabel ?: JSONObject.NULL)
             })
         }
         return array.toString()
@@ -47,29 +55,27 @@ object ProviderChainStore {
             val entries = (0 until array.length()).map { i ->
                 val obj = array.getJSONObject(i)
                 val kind = ProviderKind.valueOf(obj.getString("kind"))
+                val useForTranscription = if (obj.has("useForTranscription")) obj.optBoolean("useForTranscription") else kind.supportsTranscription()
+                val useForCleanup = if (obj.has("useForCleanup")) obj.optBoolean("useForCleanup") else kind.supportsCleanup()
                 ProviderChainEntry(
                     kind = kind,
                     model = obj.getString("model"),
                     baseUrlOverride = if (obj.isNull("baseUrlOverride")) null else obj.getString("baseUrlOverride"),
-                    // Missing key (every chain saved before #101) and an explicit JSON null both
-                    // mean "no transcription model chosen yet" -- `optString` returning "" for a
-                    // genuinely absent key would collide with a real user-typed empty string, so
-                    // this checks key presence first via `has`, not just nullness.
                     transcriptionModel = if (!obj.has("transcriptionModel") || obj.isNull("transcriptionModel")) null else obj.getString("transcriptionModel"),
-                    // #274: a chain saved before these fields existed has none of these keys at
-                    // all -- `optString`/`optBoolean` fall back to the constructor's own
-                    // zero-behavior-change defaults (blank id; enabled=true;
-                    // useForTranscription/useForCleanup = the kind's capability) rather than a
-                    // literal `false`/`""` baked in here, so this stays correct if those defaults
-                    // ever change without needing a second edit here.
                     id = obj.optString("id", ""),
                     enabled = obj.optBoolean("enabled", true),
-                    useForTranscription = if (obj.has("useForTranscription")) obj.optBoolean("useForTranscription") else kind.supportsTranscription(),
-                    useForCleanup = if (obj.has("useForCleanup")) obj.optBoolean("useForCleanup") else kind.supportsCleanup(),
-                    // #275: missing key (every chain saved before #275) and an explicit JSON
-                    // null both mean "no preset" -- same has()-first convention as
-                    // transcriptionModel above.
+                    useForTranscription = useForTranscription,
+                    useForCleanup = useForCleanup,
                     presetId = if (!obj.has("presetId") || obj.isNull("presetId")) null else obj.getString("presetId"),
+                    vaultKeyId = if (!obj.has("vaultKeyId") || obj.isNull("vaultKeyId")) null else obj.getString("vaultKeyId"),
+                    providerLocked = obj.optBoolean("providerLocked", true),
+                    sttLocked = if (obj.has("sttLocked")) obj.optBoolean("sttLocked") else useForTranscription,
+                    cleanupLocked = if (obj.has("cleanupLocked")) obj.optBoolean("cleanupLocked") else useForCleanup,
+                    sttAttempts = obj.optInt("sttAttempts", AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS)
+                        .coerceIn(AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS, AttemptBudgetCalculator.MAX_SLOT_ATTEMPTS),
+                    cleanupAttempts = obj.optInt("cleanupAttempts", AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS)
+                        .coerceIn(AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS, AttemptBudgetCalculator.MAX_SLOT_ATTEMPTS),
+                    customLabel = if (!obj.has("customLabel") || obj.isNull("customLabel")) null else obj.getString("customLabel"),
                 )
             }
             ProviderChain(entries)

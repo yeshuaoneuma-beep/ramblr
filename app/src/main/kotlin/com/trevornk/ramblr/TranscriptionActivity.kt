@@ -35,6 +35,7 @@ class TranscriptionActivity : BaseSettingsActivity() {
     private lateinit var compressedUploadSwitch: MaterialSwitch
     private lateinit var cloudLiveSwitch: MaterialSwitch
     private lateinit var cloudLiveRowSub: TextView
+    private lateinit var liveConfigRowSub: TextView
     private lateinit var livePreviewRowSub: TextView
 
     private data class ModelRowViews(
@@ -58,13 +59,6 @@ class TranscriptionActivity : BaseSettingsActivity() {
 
         val root = vertical(0, 0)
 
-        val header = TextView(this).apply {
-            text = "Speech recognition"
-            textSize = 32f
-            setPadding(dp(24), dp(64), dp(24), dp(24))
-        }
-        root.addView(header)
-
         root.addView(explainer(
             "Required: choose how your speech becomes text. On-device (default): fastest, " +
                 "private and works offline. Cloud: uses the providers you set up under Cloud providers."
@@ -72,6 +66,7 @@ class TranscriptionActivity : BaseSettingsActivity() {
 
         val isCloud = !prefs().getBoolean("use_local", true)
 
+        val engineCard = oneUiCard()
         cloudSwitch = MaterialSwitch(this).apply {
             isChecked = isCloud
             isClickable = false
@@ -81,23 +76,15 @@ class TranscriptionActivity : BaseSettingsActivity() {
             val usePostProcessing = prefs().getBoolean("use_post_processing", false)
             applyLocalCleanupChange(useLocal = !newCloud, usePostProcessing = usePostProcessing)
         }
-        root.addView(cloudRow)
+        engineCard.addView(cloudRow)
 
-        // Local models -- a SUBSECTION of Transcription (#49), shown while Local is selected OR
-        // (#276) while Cloud is selected with "fall back to on-device if cloud fails" on, so
-        // setting up the fallback model doesn't require flipping the switch back and forth. The
-        // header text itself says which case this is -- see [refresh].
         val localModelsGroup = nestedGroup()
         localModelsHeader = subsectionHeader("Local models", indent = 0)
         localModelsGroup.content.addView(localModelsHeader)
         for (m in MODEL_CATALOG) localModelsGroup.content.addView(buildModelRow(m))
         modelContainer = localModelsGroup.outer
-        root.addView(modelContainer)
+        engineCard.addView(modelContainer)
 
-        // #95 Phase 3: link into the unified CloudProviderActivity instead of a contextual
-        // OpenAI-only key row -- provider/credential management for transcription is now shared
-        // with cleanup on one screen. #276: also shown while Local is selected when "fall back to
-        // cloud if on-device fails" is on, labeled via [cloudSectionHeader].
         val cloudLinkGroupNested = nestedGroup()
         cloudSectionHeader = subsectionHeader("Fallback: cloud providers", indent = 0).apply {
             visibility = View.GONE
@@ -109,53 +96,44 @@ class TranscriptionActivity : BaseSettingsActivity() {
         cloudLinkRowSub = cloudLinkRow.findViewWithTag("subtitle")
         cloudLinkGroupNested.content.addView(cloudLinkRow)
         cloudLinkGroup = cloudLinkGroupNested.outer
-        root.addView(cloudLinkGroup)
+        engineCard.addView(cloudLinkGroup)
+        root.addView(engineCard)
 
-        // #290: spoken-language hint for cloud transcription. Lives here, next to the
-        // local/cloud choice, because a wrong-language transcript is a transcription problem;
-        // the local-only Canary token sits just below, under On-device tuning.
-        root.addView(sectionHeader("Language"))
+        val languageCard = oneUiCard()
+        languageCard.addView(sectionHeader("Language"))
         val languageRow = settingsRow("Dictation language", dictationLanguageSummary(), indent = 0) {
             promptDictationLanguage()
         }
         dictationLanguageRowSub = languageRow.findViewWithTag("subtitle")
-        root.addView(languageRow)
+        languageCard.addView(languageRow)
+        root.addView(languageCard)
 
-        // Moved here from the former Fine-tuning screen: both only change how the on-device
-        // models run, so they belong with the models.
-        root.addView(sectionHeader("On-device tuning"))
+        val tuningCard = oneUiCard()
+        tuningCard.addView(sectionHeader("On-device tuning"))
 
-        // Local transcription thread count (#107): a developer-ish tuning knob, not a mainstream
-        // everyday setting, so it sits below the model picker rather than in it. See
-        // LocalTranscriptionThreads' kdoc for why the default stays 2.
         val localThreadsRow = settingsRow(
             "Local transcription threads", localThreadsSummary(),
             details = "On-device transcription only, runs on the CPU. Compare speeds with the benchmark log in Diagnostics",
         ) { promptLocalTranscriptionThreads() }
         localThreadsRowSub = localThreadsRow.findViewWithTag("subtitle")
-        root.addView(localThreadsRow)
+        tuningCard.addView(localThreadsRow)
 
-        // Canary source language (#177): same developer-ish tuning tier as the threads knob
-        // above. Only the Canary model reads this -- see CanaryLanguage's kdoc for why the
-        // wrong language token doesn't just degrade output but collapses it entirely.
         val canaryLanguageRow = settingsRow(
             "Canary language", canaryLanguageSummary(),
             details = "The language you speak when dictating with the Canary local model. Only affects Canary; other models ignore this",
         ) { promptCanaryLanguage() }
         canaryLanguageRowSub = canaryLanguageRow.findViewWithTag("subtitle")
-        root.addView(canaryLanguageRow)
+        tuningCard.addView(canaryLanguageRow)
+        root.addView(tuningCard)
 
-        root.addView(sectionHeader("Cloud transcription options"))
+        val cloudOptionsCard = oneUiCard()
+        cloudOptionsCard.addView(sectionHeader("Cloud transcription options"))
 
-        // Compressed (AAC/M4A) cloud upload (#109), moved here from Recording and text. Off by
-        // default (see CompressedUploadToggle's kdoc for why) and a genuine behavior change to
-        // the audio actually sent to a cloud transcription provider, so it gets an honest
-        // description instead of pretending it's already proven.
         compressedUploadSwitch = MaterialSwitch(this).apply {
             isChecked = CompressedUploadToggle.isEnabled(this@TranscriptionActivity)
             isClickable = false
         }
-        root.addView(settingsRow(
+        cloudOptionsCard.addView(settingsRow(
             "Compress audio before cloud upload",
             "Smaller uploads for mobile data or slow internet. Accuracy with compressed audio isn't proven yet",
             compressedUploadSwitch,
@@ -166,8 +144,6 @@ class TranscriptionActivity : BaseSettingsActivity() {
             compressedUploadSwitch.isChecked = newVal
         })
 
-        // Experimental live cloud transcription (#233 Phase 1), moved here from the Cloud
-        // providers screen. It still reads the Gemini key from that screen's chain.
         cloudLiveSwitch = MaterialSwitch(this).apply { isClickable = false }
         val cloudLiveRow = settingsRow(
             "Live cloud transcription", cloudLiveSubtitle(), cloudLiveSwitch,
@@ -179,29 +155,39 @@ class TranscriptionActivity : BaseSettingsActivity() {
                 "\u2022 If a stream fails, the recording still finishes over the normal path.",
         ) { onToggleCloudLive(!cloudLiveSwitch.isChecked) }
         cloudLiveRowSub = cloudLiveRow.findViewWithTag("subtitle")
-        root.addView(cloudLiveRow)
+        cloudOptionsCard.addView(cloudLiveRow)
 
-        // Live Preview keeps its own screen (model download + toggle); this is its way in, next
-        // to the rest of speech recognition.
-        root.addView(sectionHeader("Live preview"))
+        val liveConfigRow = settingsRow(
+            "Live transcription settings",
+            liveConfigSummary(),
+        ) {
+            startActivity(Intent(this, LiveTranscriptionActivity::class.java))
+        }
+        liveConfigRowSub = liveConfigRow.findViewWithTag("subtitle")
+        cloudOptionsCard.addView(liveConfigRow)
+        root.addView(cloudOptionsCard)
+
+        val livePreviewCard = oneUiCard()
+        livePreviewCard.addView(sectionHeader("Live preview"))
         val livePreviewRow = settingsRow("Live preview", LivePreviewActivity.subtitle(this)) {
             startActivity(Intent(this, LivePreviewActivity::class.java))
         }
         livePreviewRowSub = livePreviewRow.findViewWithTag("subtitle")
-        root.addView(livePreviewRow)
+        livePreviewCard.addView(livePreviewRow)
+        root.addView(livePreviewCard)
 
-        // #276: read-only "what will actually happen" line, since the mode presets + per-feature
-        // overrides + two fallback toggles on the Cloud screen can otherwise leave it unclear
-        // which provider (if any) actually wins.
-        root.addView(sectionHeader("Effective routing"))
+        val routingCard = oneUiCard()
+        routingCard.addView(sectionHeader("Effective routing"))
         val routingSummaryRow = settingsRow("Transcription", effectiveTranscriptionRouting(), indent = 0)
         routingSummaryRowSub = routingSummaryRow.findViewWithTag("subtitle")
-        root.addView(routingSummaryRow)
+        routingCard.addView(routingSummaryRow)
+        root.addView(routingCard)
 
-        setContentView(ScrollView(this).apply {
-            setBackgroundColor(attrColor(android.R.attr.colorBackground))
-            addView(root)
-        })
+        setOneUiScreenContent(
+            title = "Speech recognition",
+            showBack = true,
+            content = root,
+        )
 
         refresh()
     }
@@ -239,6 +225,7 @@ class TranscriptionActivity : BaseSettingsActivity() {
         compressedUploadSwitch.isChecked = CompressedUploadToggle.isEnabled(this)
         cloudLiveSwitch.isChecked = CloudLiveToggle.isEnabled(this)
         cloudLiveRowSub.text = cloudLiveSubtitle()
+        liveConfigRowSub.text = liveConfigSummary()
         livePreviewRowSub.text = LivePreviewActivity.subtitle(this)
 
         val cur = prefs().getString("model_name", "") ?: ""
@@ -423,8 +410,15 @@ class TranscriptionActivity : BaseSettingsActivity() {
     /** Persists intent only. The switch never edits `use_local`, the chain, or any credential --
      *  turning it on while transcription is on-device leaves the row honestly saying so instead
      *  of silently reconfiguring the user's providers behind the toggle. */
+    private fun liveConfigSummary(): String {
+        val cfg = LiveTranscriptionConfigStore.load(this)
+        val post = if (cfg.postCleanupEnabled) "Post-Cleanup on" else "Post-Cleanup off"
+        return "${cfg.modelId} \u2022 $post \u2022 9:00 cutoff guard"
+    }
+
     private fun onToggleCloudLive(enabled: Boolean) {
-        CloudLiveToggle.setEnabled(this, enabled)
+        val updated = LiveTranscriptionConfigStore.load(this).copy(enabled = enabled)
+        LiveTranscriptionConfigStore.save(this, updated)
         refresh()
     }
 

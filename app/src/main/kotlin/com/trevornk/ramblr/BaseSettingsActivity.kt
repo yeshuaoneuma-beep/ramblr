@@ -2,6 +2,7 @@ package com.trevornk.ramblr
 
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.os.Bundle
 import android.util.TypedValue
@@ -9,9 +10,11 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -96,6 +99,137 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
         // already has its insets (which is every one of these, since setContentView runs well
         // after attach on a warm activity) would otherwise sit unpadded until something moved.
         ViewCompat.requestApplyInsets(content)
+    }
+
+    /**
+     * Samsung One UI AMOLED screen frame (Phase 3A.1): sticky top AppBar with back navigation
+     * receiving top inset, over a scrolling body on `@color/oneui_canvas` receiving left/right/
+     * bottom insets. Calls `super.setContentView(...)` directly so untouched Settings screens keep
+     * their existing `setContentView(ScrollView)` behavior unchanged.
+     */
+    protected fun setOneUiScreenContent(
+        title: String,
+        showBack: Boolean = true,
+        subtitle: String? = null,
+        content: View,
+        onBack: (() -> Unit)? = null,
+    ) {
+        val canvasColor = ContextCompat.getColor(this, R.color.oneui_canvas)
+        val borderColor = ContextCompat.getColor(this, R.color.oneui_card_border)
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(canvasColor)
+            layoutParams = ViewGroup.LayoutParams(LP_MATCH, LP_MATCH)
+        }
+
+        val appBar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(canvasColor)
+        }
+        val barRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(56)
+            setPadding(dp(8), dp(8), dp(16), dp(8))
+        }
+        if (showBack) {
+            val backBtn = TextView(this).apply {
+                text = "\u2190"
+                textSize = 22f
+                gravity = Gravity.CENTER
+                contentDescription = "Navigate up"
+                setTextColor(attrColor(android.R.attr.textColorPrimary))
+                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply {
+                    marginEnd = dp(4)
+                }
+                val outValue = TypedValue()
+                context.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, outValue, true)
+                setBackgroundResource(outValue.resourceId)
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    if (onBack != null) onBack() else finish()
+                }
+            }
+            barRow.addView(backBtn)
+        }
+
+        val titleCol = vertical(0).apply {
+            layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f).apply {
+                marginStart = if (showBack) dp(4) else dp(12)
+            }
+        }
+        titleCol.addView(TextView(this).apply {
+            text = title
+            textSize = 22f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(attrColor(android.R.attr.textColorPrimary))
+        })
+        if (!subtitle.isNullOrBlank()) {
+            titleCol.addView(TextView(this).apply {
+                text = subtitle
+                textSize = 13f
+                setTextColor(attrColor(android.R.attr.textColorSecondary))
+                setPadding(0, dp(2), 0, 0)
+            })
+        }
+        barRow.addView(titleCol)
+        appBar.addView(barRow)
+        appBar.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LP_MATCH, 1)
+            setBackgroundColor(borderColor)
+        })
+
+        val scrollView = ScrollView(this).apply {
+            setBackgroundColor(canvasColor)
+            clipToPadding = false
+            layoutParams = LinearLayout.LayoutParams(LP_MATCH, 0, 1f)
+            addView(content)
+        }
+
+        root.addView(appBar)
+        root.addView(scrollView)
+
+        super.setContentView(root)
+
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            val p = WindowInsetsMath.resolve(
+                barsLeft = bars.left,
+                barsTop = bars.top,
+                barsRight = bars.right,
+                barsBottom = bars.bottom,
+                cutoutLeft = cutout.left,
+                cutoutRight = cutout.right,
+                imeBottom = ime.bottom,
+            )
+            appBar.setPadding(p.left, p.top, p.right, 0)
+            scrollView.setPadding(p.left, dp(12), p.right, p.bottom + dp(BOTTOM_SPACE_DP))
+            insets
+        }
+        ViewCompat.requestApplyInsets(root)
+        root.viewTreeObserver.addOnGlobalLayoutListener { updateRowDividers(root) }
+    }
+
+    /** Rounded 24dp Samsung One UI surface card with 1dp border and consistent screen margins. */
+    protected fun oneUiCard(padH: Int = 0, padV: Int = 0): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(24).toFloat()
+            setColor(ContextCompat.getColor(this@BaseSettingsActivity, R.color.oneui_card_surface))
+            setStroke(dp(1), ContextCompat.getColor(this@BaseSettingsActivity, R.color.oneui_card_border))
+        }
+        clipToOutline = true
+        setPadding(dp(padH), dp(padV), dp(padH), dp(padV))
+        layoutParams = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP).apply {
+            marginStart = dp(16)
+            marginEnd = dp(16)
+            bottomMargin = dp(12)
+        }
     }
 
     override fun onResume() {

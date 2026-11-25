@@ -142,7 +142,10 @@ object ProviderChainMigration {
             val withTranscriptionFixed =
                 if (transcriptionReplacement != null) withModelFixed.copy(transcriptionModel = transcriptionReplacement)
                 else withModelFixed
-            if (withTranscriptionFixed.transcriptionModel == null) {
+            if (withTranscriptionFixed.transcriptionModel == null &&
+                withTranscriptionFixed.useForTranscription &&
+                withTranscriptionFixed.baseUrlOverride.isNullOrBlank()
+            ) {
                 val seeded = defaultTranscriptionModelFor(withTranscriptionFixed.kind)
                 if (seeded != null) withTranscriptionFixed.copy(transcriptionModel = seeded) else withTranscriptionFixed
             } else {

@@ -18,6 +18,11 @@ enum class CloudErrorKind {
 object CloudErrorClassifier {
     val TEMPORARY_BUSY_HTTP_CODES: Set<Int> = setOf(408, 498, 500, 502, 503, 504, 529)
     val PERMANENT_OR_QUOTA_HTTP_CODES: Set<Int> = setOf(400, 401, 402, 403, 404, 413, 422, 429)
+    val ACCOUNT_DEAD_HTTP_CODES: Set<Int> = setOf(401, 402, 403)
+
+    /** True for HTTP auth/billing codes (401/402/403) that disqualify the entire API account key. */
+    fun isAccountDeadError(httpCode: Int?): Boolean =
+        httpCode != null && httpCode in ACCOUNT_DEAD_HTTP_CODES
 
     const val QUICK_429_MAX_RETRY_AFTER_MS = 3_000L
     const val QUICK_429_DEFAULT_BACKOFF_MS = 1_500L

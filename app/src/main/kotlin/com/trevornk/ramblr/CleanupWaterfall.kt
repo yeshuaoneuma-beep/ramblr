@@ -62,6 +62,8 @@ data class CleanupStep(
     val baseUrlOverride: String? = null,
     val entryId: String = "",
     val presetId: String? = null,
+    val maxAttempts: Int = AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS,
+    val vaultKeyId: String? = null,
 ) {
     /** Null for LOCAL_LLM steps, which run on-device and have nothing to authenticate against (#37). */
     fun credentialSlot(): CleanupCredentialSlot? = when (group) {

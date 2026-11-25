@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.PhoneWhisper" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Accent Colors -->
-        <item name="colorPrimary">@color/primary</item>
-        <item name="colorPrimaryContainer">@color/primary_container</item>
+        <!-- One UI Accent & Surface Tokens (Phase 3A.1) -->
+        <item name="colorPrimary">@color/oneui_accent_cobalt</item>
+        <item name="colorPrimaryContainer">@color/oneui_accent_cobalt_container</item>
         <item name="colorOnPrimaryContainer">@color/on_primary_container</item>
+        <item name="android:colorBackground">@color/oneui_canvas</item>
+        <item name="colorSurface">@color/oneui_card_surface</item>
         
         <!-- Status / Navigation Bars.
              Transparent, not a solid colour: under edge-to-edge the app's own content is drawn

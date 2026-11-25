@@ -72,6 +72,10 @@ class MainActivity : BaseSettingsActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Ensure Voice-Keyboard-only users are migrated onto per-entry IDs and the shared API Keys Vault
+        // even if WhisperAccessibilityService is never enabled.
+        ProviderAccountMigration.runIfNeeded(this)
+        ApiKeyVaultMigration.runIfNeeded(this)
 
         // A fold/rotation recreates this Activity mid-wizard; without restoring "the wizard has
         // started", OnboardingWizard.shouldAdvance stops advancing the moment Accessibility gets
@@ -1010,6 +1014,20 @@ class MainActivity : BaseSettingsActivity() {
                     input.error = "Enter a key, or tap Skip"
                 } else {
                     ProviderCredentialStore.setLegacyByKind(this, kind, entered)
+                    val providerId = ProviderCapabilityRegistry.providerIdFor(kind)
+                    if (kind != ProviderKind.LOCAL) {
+                        val canonicalId = ProviderCapabilityRegistry.canonicalVaultKeyId(providerId)
+                        ApiKeyVaultStore.upsert(
+                            context = this,
+                            entry = ApiKeyVaultEntry(
+                                id = canonicalId,
+                                providerId = providerId,
+                                displayLabel = label,
+                                locked = true,
+                            ),
+                            secret = entered,
+                        )
+                    }
                     dismissOnboarding()
                     dialog.dismiss()
                     refresh()

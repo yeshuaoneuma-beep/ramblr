@@ -34,6 +34,8 @@ object ProviderCredentialStore {
     private const val KEY_OMNIROUTE = "omniroute_key"
     private const val ENTRY_KEY_PREFIX = "entry_"
     private const val ENTRY_KEY_SUFFIX = "_key"
+    private const val VAULT_KEY_PREFIX = "vault_"
+    private const val VAULT_KEY_SUFFIX = "_key"
 
     /** Legacy per-kind slot name. Returns null for [ProviderKind.LOCAL], which has no credential
      *  slot. Kept as the migration source (see class kdoc) -- not a live per-entry lookup. */
@@ -52,14 +54,56 @@ object ProviderCredentialStore {
     internal fun entryPrefKeyFor(entryId: String): String? =
         entryId.takeIf { it.isNotBlank() }?.let { "$ENTRY_KEY_PREFIX${it}$ENTRY_KEY_SUFFIX" }
 
-    // --- Per-entry API (#274): the live credential source for every provider chain entry. ---
+    /** Shared API Keys Vault slot name for [vaultKeyId]: `"vault_${vaultKeyId}_key"`. */
+    internal fun vaultPrefKeyFor(vaultKeyId: String): String? =
+        vaultKeyId.takeIf { it.isNotBlank() }?.let { "$VAULT_KEY_PREFIX${it}$VAULT_KEY_SUFFIX" }
 
-    fun get(context: Context, entryId: String): String {
+    // --- Shared API Keys Vault API (Phase 3A.1) ---
+
+    fun getVaultSecret(context: Context, vaultKeyId: String): String {
+        val key = vaultPrefKeyFor(vaultKeyId) ?: return ""
+        return securePrefs(context).getString(key, "") ?: ""
+    }
+
+    fun setVaultSecret(context: Context, vaultKeyId: String, value: String) {
+        val key = vaultPrefKeyFor(vaultKeyId) ?: return
+        securePrefs(context).edit().putString(key, value).apply()
+    }
+
+    fun clearVaultSecret(context: Context, vaultKeyId: String) {
+        val key = vaultPrefKeyFor(vaultKeyId) ?: return
+        securePrefs(context).edit().remove(key).apply()
+    }
+
+    fun isVaultConfigured(context: Context, vaultKeyId: String): Boolean =
+        getVaultSecret(context, vaultKeyId).isNotBlank()
+
+    internal fun getDirectEntrySecret(context: Context, entryId: String): String {
         val key = entryPrefKeyFor(entryId) ?: return ""
         return securePrefs(context).getString(key, "") ?: ""
     }
 
-    fun get(context: Context, entry: ProviderChainEntry): String = get(context, entry.id)
+    // --- Per-entry API (#274, transparently resolving shared vaultKeyId in Phase 3A.1) ---
+
+    fun get(context: Context, entryId: String): String {
+        if (entryId.isBlank()) return ""
+        val linkedVaultId = ProviderChainStore.load(context).entries
+            .firstOrNull { it.id == entryId }
+            ?.vaultKeyId
+        if (!linkedVaultId.isNullOrBlank()) {
+            val vaultSecret = getVaultSecret(context, linkedVaultId)
+            if (vaultSecret.isNotBlank()) return vaultSecret
+        }
+        return getDirectEntrySecret(context, entryId)
+    }
+
+    fun get(context: Context, entry: ProviderChainEntry): String {
+        if (!entry.vaultKeyId.isNullOrBlank()) {
+            val vaultSecret = getVaultSecret(context, entry.vaultKeyId)
+            if (vaultSecret.isNotBlank()) return vaultSecret
+        }
+        return getDirectEntrySecret(context, entry.id)
+    }
 
     fun set(context: Context, entryId: String, value: String) {
         val key = entryPrefKeyFor(entryId) ?: return
@@ -70,7 +114,7 @@ object ProviderCredentialStore {
 
     fun isConfigured(context: Context, entryId: String): Boolean = get(context, entryId).isNotBlank()
 
-    fun isConfigured(context: Context, entry: ProviderChainEntry): Boolean = isConfigured(context, entry.id)
+    fun isConfigured(context: Context, entry: ProviderChainEntry): Boolean = get(context, entry).isNotBlank()
 
     /** Deletes the stored credential for [entryId]. No-op if none was stored, or if [entryId] is
      *  blank. Removing a chain entry now clears its credential too (#274) -- previously a removed
@@ -84,32 +128,39 @@ object ProviderCredentialStore {
     fun clear(context: Context, entry: ProviderChainEntry) = clear(context, entry.id)
 
     // --- Blank-id / kind-fallback helpers (#274) ---
-    //
-    // A [ProviderChainEntry] with a blank [ProviderChainEntry.id] is one that has never been
-    // through [ProviderAccountMigration] -- notably [ProviderChain.DEFAULT_SINGLE_OPENAI_ENTRY]
-    // (never persisted, so it never gets a migration pass) and any entry onboarding seeds via
-    // [MainActivity]'s quick-setup flow before the next migration run assigns it a real id. For
-    // these, the per-entry slot (keyed by id) cannot exist yet, so the correct answer for "is
-    // this configured" / "what's the value" falls back to the legacy per-kind slot -- the exact
-    // place a value seeded through that flow (or a device that predates #274 entirely) actually
-    // lives until migration catches up. For an entry that already has a real id, these are
-    // identical to the plain per-entry accessors above -- the legacy fallback never masks a
-    // genuinely-blank per-entry credential once an id exists.
 
     fun isConfiguredOrLegacy(context: Context, entry: ProviderChainEntry): Boolean =
-        if (entry.id.isNotBlank()) isConfigured(context, entry) else isConfiguredLegacyByKind(context, entry.kind)
+        getOrLegacy(context, entry).isNotBlank()
 
-    fun getOrLegacy(context: Context, entry: ProviderChainEntry): String =
-        if (entry.id.isNotBlank()) get(context, entry) else getLegacyByKind(context, entry.kind)
+    fun getOrLegacy(context: Context, entry: ProviderChainEntry): String {
+        if (!entry.vaultKeyId.isNullOrBlank()) {
+            val vaultSecret = getVaultSecret(context, entry.vaultKeyId)
+            if (vaultSecret.isNotBlank()) return vaultSecret
+        }
+        if (entry.id.isNotBlank()) return get(context, entry)
+        val providerId = ProviderCapabilityRegistry.providerIdFor(entry)
+        val vaultFallback = if (entry.kind != ProviderKind.LOCAL && providerId != ProviderCapabilityRegistry.ID_CUSTOM_OPENAI) {
+            ApiKeyVaultStore.resolveSecret(context, null, providerId)
+        } else {
+            ""
+        }
+        return vaultFallback.ifBlank { getLegacyByKind(context, entry.kind) }
+    }
 
-    /** Searches [chain] for the first entry of [kind] with a configured credential (per-entry,
-     *  falling back to legacy for a blank-id entry), or the bare legacy slot for [kind] if no
-     *  entry has one -- used by call sites that only know a [kind], not a specific entry (e.g.
-     *  onboarding readiness checks, [CloudLiveWiring]'s single-purpose Gemini lookup). */
-    fun getForKind(context: Context, chain: ProviderChain, kind: ProviderKind): String =
+    /** Searches [chain] for the first entry of [kind] with a configured credential (vault or
+     *  per-entry, falling back to legacy for a blank-id entry), then checks the canonical shared
+     *  vault slot for [kind] (so [CloudLiveWiring] finds a shared Gemini key even without a Gemini
+     *  batch card), or the bare legacy slot for [kind] if none is configured. */
+    fun getForKind(context: Context, chain: ProviderChain, kind: ProviderKind): String {
         chain.entries.firstOrNull { it.kind == kind && isConfiguredOrLegacy(context, it) }
-            ?.let { getOrLegacy(context, it) }
-            ?: getLegacyByKind(context, kind)
+            ?.let { return getOrLegacy(context, it) }
+        if (kind != ProviderKind.LOCAL) {
+            val providerId = ProviderCapabilityRegistry.providerIdFor(kind)
+            val vaultSecret = ApiKeyVaultStore.resolveSecret(context, null, providerId)
+            if (vaultSecret.isNotBlank()) return vaultSecret
+        }
+        return getLegacyByKind(context, kind)
+    }
 
     fun isConfiguredForKind(context: Context, chain: ProviderChain, kind: ProviderKind): Boolean =
         getForKind(context, chain, kind).isNotBlank()

@@ -141,10 +141,13 @@ object TranscriptionChain {
         private val backoffMs: Long = CLOUD_STT_RETRY_BACKOFF_MS,
         private val singleCloudMaxAttempts: Int = SINGLE_CLOUD_MAX_ATTEMPTS,
         private val localBudgetMs: Long = LOCAL_STT_BUDGET_MS,
+        private val slotAttemptCaps: List<Int>? = null,
+        private val slotAccountKeys: List<String?>? = null,
     ) {
         val cloudDeadlineAtMs: Long = startedAtMs + cloudBudgetMs
 
         private val attemptsByIndex = IntArray(cloudCandidates.size)
+        private val disqualifiedAccounts = mutableSetOf<String>()
         private var cloudIndex = 0
         private var pendingQuickRetryIndex: Int? = null
         private var pendingQuickRetryBackoffMs: Long = 0L
@@ -153,6 +156,19 @@ object TranscriptionChain {
         private var pendingStep: Step? = null
         private var pendingCloudIndex: Int = -1
         private var lastError: String? = null
+        private var totalCloudAttempts = 0
+
+        private fun isBudgetedMode(): Boolean = slotAttemptCaps != null
+
+        private fun budgetedCapFor(index: Int): Int =
+            slotAttemptCaps?.getOrElse(index) { AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS }
+                ?.coerceIn(AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS, AttemptBudgetCalculator.MAX_SLOT_ATTEMPTS)
+                ?: MAX_ATTEMPTS_PER_PROVIDER
+
+        private fun isSlotDisqualified(index: Int): Boolean {
+            val accountKey = slotAccountKeys?.getOrNull(index)?.takeIf { it.isNotBlank() } ?: return false
+            return accountKey in disqualifiedAccounts
+        }
 
         fun nextStep(nowMs: Long): Step {
             if (!cloudExhausted) {
@@ -171,6 +187,10 @@ object TranscriptionChain {
         }
 
         private fun nextCloudStep(nowMs: Long): Step.RunCloud? {
+            if (isBudgetedMode()) {
+                return nextBudgetedCloudStep(nowMs)
+            }
+
             val quickIdx = pendingQuickRetryIndex
             if (quickIdx != null) {
                 pendingQuickRetryIndex = null
@@ -179,7 +199,7 @@ object TranscriptionChain {
                 } else {
                     MAX_ATTEMPTS_PER_PROVIDER
                 }
-                if (quickIdx in attemptsByIndex.indices && attemptsByIndex[quickIdx] < maxForProvider) {
+                if (quickIdx in attemptsByIndex.indices && !isSlotDisqualified(quickIdx) && attemptsByIndex[quickIdx] < maxForProvider) {
                     val delayMs = pendingQuickRetryBackoffMs
                     val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs + delayMs, isCompressedUpload, audioDurationMs)
                     if (timeoutMs != null) {
@@ -199,7 +219,7 @@ object TranscriptionChain {
             }
 
             if (cloudCandidates.size == 1) {
-                if (attemptsByIndex[0] > 0) return null
+                if (attemptsByIndex[0] > 0 || isSlotDisqualified(0)) return null
                 val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs, isCompressedUpload, audioDurationMs)
                     ?: return null
                 pendingCloudIndex = 0
@@ -212,6 +232,9 @@ object TranscriptionChain {
                 )
             }
 
+            while (cloudIndex < cloudCandidates.size && isSlotDisqualified(cloudIndex)) {
+                cloudIndex++
+            }
             if (cloudIndex < cloudCandidates.size) {
                 val idx = cloudIndex
                 val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs, isCompressedUpload, audioDurationMs) ?: return null
@@ -228,6 +251,52 @@ object TranscriptionChain {
             return null
         }
 
+        private fun nextBudgetedCloudStep(nowMs: Long): Step.RunCloud? {
+            if (totalCloudAttempts >= AttemptBudgetCalculator.MAX_CLOUD_ATTEMPTS_PER_LANE) return null
+
+            val retryIdx = pendingQuickRetryIndex
+            if (retryIdx != null) {
+                pendingQuickRetryIndex = null
+                if (retryIdx in attemptsByIndex.indices &&
+                    !isSlotDisqualified(retryIdx) &&
+                    attemptsByIndex[retryIdx] < budgetedCapFor(retryIdx)
+                ) {
+                    val delayMs = pendingQuickRetryBackoffMs
+                    val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs + delayMs, isCompressedUpload, audioDurationMs)
+                    if (timeoutMs != null) {
+                        pendingCloudIndex = retryIdx
+                        return Step.RunCloud(
+                            entry = cloudCandidates[retryIdx],
+                            attemptNumber = attemptsByIndex[retryIdx] + 1,
+                            isRevisit = false,
+                            backoffMs = delayMs,
+                            timeoutMs = timeoutMs,
+                        )
+                    }
+                    cloudIndex = maxOf(cloudIndex, retryIdx + 1)
+                }
+            }
+
+            while (cloudIndex < cloudCandidates.size &&
+                (isSlotDisqualified(cloudIndex) || attemptsByIndex[cloudIndex] >= budgetedCapFor(cloudIndex))
+            ) {
+                cloudIndex++
+            }
+            if (cloudIndex < cloudCandidates.size) {
+                val idx = cloudIndex
+                val timeoutMs = cloudAttemptTimeoutMs(cloudDeadlineAtMs, nowMs, isCompressedUpload, audioDurationMs) ?: return null
+                pendingCloudIndex = idx
+                return Step.RunCloud(
+                    entry = cloudCandidates[idx],
+                    attemptNumber = attemptsByIndex[idx] + 1,
+                    isRevisit = false,
+                    backoffMs = 0L,
+                    timeoutMs = timeoutMs,
+                )
+            }
+            return null
+        }
+
         fun recordCloudFailure(
             errorKind: CloudErrorKind,
             errorMessage: String?,
@@ -241,8 +310,36 @@ object TranscriptionChain {
             if (!errorMessage.isNullOrBlank()) lastError = errorMessage
             if (idx !in attemptsByIndex.indices) return
             attemptsByIndex[idx]++
+            totalCloudAttempts++
+
+            if (CloudErrorClassifier.isAccountDeadError(httpCode)) {
+                slotAccountKeys?.getOrNull(idx)?.takeIf { it.isNotBlank() }?.let { disqualifiedAccounts += it }
+            }
 
             val quick429 = CloudErrorClassifier.isQuickRetryable429(httpCode, retryAfterMs)
+
+            if (isBudgetedMode()) {
+                if (CloudErrorClassifier.isAccountDeadError(httpCode)) {
+                    cloudIndex = idx + 1
+                    return
+                }
+                val canRetrySlot = attemptsByIndex[idx] < budgetedCapFor(idx) &&
+                    totalCloudAttempts < AttemptBudgetCalculator.MAX_CLOUD_ATTEMPTS_PER_LANE
+                when {
+                    canRetrySlot && quick429 -> {
+                        pendingQuickRetryIndex = idx
+                        pendingQuickRetryBackoffMs = CloudErrorClassifier.quick429BackoffMs(retryAfterMs)
+                    }
+                    canRetrySlot && errorKind == CloudErrorKind.TEMPORARY_BUSY -> {
+                        pendingQuickRetryIndex = idx
+                        pendingQuickRetryBackoffMs = backoffMs
+                    }
+                    else -> {
+                        cloudIndex = idx + 1
+                    }
+                }
+                return
+            }
 
             if (cloudCandidates.size == 1) {
                 if (localCandidate != null) {
@@ -269,7 +366,7 @@ object TranscriptionChain {
             }
 
             val canAttemptAgain = attemptsByIndex[idx] < MAX_ATTEMPTS_PER_PROVIDER
-            if (quick429 && canAttemptAgain) {
+            if (quick429 && canAttemptAgain && !CloudErrorClassifier.isAccountDeadError(httpCode)) {
                 // Quick 429 retry stays on this provider and consumes its 2nd attempt.
                 pendingQuickRetryIndex = idx
                 pendingQuickRetryBackoffMs = CloudErrorClassifier.quick429BackoffMs(retryAfterMs)

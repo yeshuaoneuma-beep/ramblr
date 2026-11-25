@@ -50,27 +50,18 @@ fun ProviderKind.supportsCleanup(): Boolean = true
  */
 fun hasConfiguredCloudTranscription(chain: ProviderChain, isConfigured: (ProviderChainEntry) -> Boolean): Boolean =
     chain.entries.any {
-        it.kind != ProviderKind.LOCAL && it.enabled && it.useForTranscription &&
-            it.kind.supportsTranscription() && isConfigured(it)
+        it.kind != ProviderKind.LOCAL && it.isBatchSttActive() && isConfigured(it)
     }
 
 /**
  * True when switching cleanup to Cloud would land on a configured credential: any non-LOCAL entry in
- * [chain] is configured, or -- if [chain] has no cloud entry yet -- the OpenAI default the Cloud
- * switch would seed is configured. Used so deleting the active local cleanup model falls back to
- * Cloud only when it would actually work, else turns cleanup off instead of seeding a config that
- * fails at call time (M14).
- *
- * [isConfigured] is entry-based (#274, per-entry credentials); for the "no cloud entry yet" branch
- * this is called with [ProviderChain.DEFAULT_SINGLE_OPENAI_ENTRY]'s single (unsaved, blank-id)
- * entry as a stand-in for "the OpenAI entry the Cloud switch would seed" -- see
- * [ProviderCredentialStore.isConfiguredOrLegacy] for the production caller that resolves a
- * blank-id entry like this one against the legacy per-kind slot instead of a per-entry one.
+ * [chain] is active for cleanup and configured, or -- if [chain] has no cloud entry yet -- the
+ * OpenAI default the Cloud switch would seed is configured.
  */
 fun canFallBackToCloudCleanup(chain: ProviderChain, isConfigured: (ProviderChainEntry) -> Boolean): Boolean {
     val cloudEntries = chain.entries.filter { it.kind != ProviderKind.LOCAL }
     return if (cloudEntries.isEmpty()) isConfigured(ProviderChain.DEFAULT_SINGLE_OPENAI_ENTRY.entries.first())
-    else cloudEntries.any { isConfigured(it) }
+    else cloudEntries.any { it.isBatchCleanupActive() && isConfigured(it) }
 }
 
 /**
@@ -145,7 +136,70 @@ data class ProviderChainEntry(
      * (OpenAI/Anthropic/Gemini/OmniRoute) -- those keep resolving exactly as before.
      */
     val presetId: String? = null,
-)
+    /** Phase 3A.1: link to a shared secret in [ApiKeyVaultStore], or null for legacy/unlinked entries. */
+    val vaultKeyId: String? = null,
+    /** Phase 3A.1: card-level green lock-in. Unlocking pauses both STT and Cleanup rows and frees their attempts. */
+    val providerLocked: Boolean = true,
+    /** Phase 3A.1: STT row green lock-in. Defaults to [useForTranscription] for backwards compatibility. */
+    val sttLocked: Boolean = useForTranscription,
+    /** Phase 3A.1: Cleanup row green lock-in. Defaults to [useForCleanup] for backwards compatibility. */
+    val cleanupLocked: Boolean = useForCleanup,
+    /** Phase 3A.1: allocated attempts (1..3) for Batch STT within the shared 3-attempt pool. */
+    val sttAttempts: Int = AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS,
+    /** Phase 3A.1: allocated attempts (1..3) for Batch Cleanup within the shared 3-attempt pool. */
+    val cleanupAttempts: Int = AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS,
+    /** Phase 3A.1: optional display label for custom OpenAI-compatible provider cards. */
+    val customLabel: String? = null,
+) {
+    /**
+     * True when this entry actively participates in Batch STT routing.
+     * [ProviderKind.LOCAL] ignores cloud lock flags.
+     */
+    fun isBatchSttActive(): Boolean = when (kind) {
+        ProviderKind.LOCAL -> enabled && useForTranscription
+        else -> enabled &&
+            providerLocked &&
+            sttLocked &&
+            useForTranscription &&
+            kind.supportsTranscription() &&
+            transcriptionModel != SKIP_MODEL_ID
+    }
+
+    /**
+     * True when this entry actively participates in Batch Cleanup routing.
+     * [ProviderKind.LOCAL] ignores cloud lock flags.
+     */
+    fun isBatchCleanupActive(): Boolean = when (kind) {
+        ProviderKind.LOCAL -> enabled && useForCleanup
+        else -> enabled &&
+            providerLocked &&
+            cleanupLocked &&
+            useForCleanup &&
+            kind.supportsCleanup() &&
+            model != SKIP_MODEL_ID
+    }
+
+    /** Synchronizes legacy [useForTranscription]/[useForCleanup] flags with lock and skip state. */
+    fun withSynchronizedParticipation(): ProviderChainEntry = if (kind == ProviderKind.LOCAL) {
+        this
+    } else {
+        copy(
+            useForTranscription = providerLocked &&
+                sttLocked &&
+                kind.supportsTranscription() &&
+                transcriptionModel != SKIP_MODEL_ID,
+            useForCleanup = providerLocked &&
+                cleanupLocked &&
+                kind.supportsCleanup() &&
+                model != SKIP_MODEL_ID,
+        )
+    }
+
+    companion object {
+        /** Sentinel stored in [model] or [transcriptionModel] when a lane is explicitly set to Skip / None. */
+        const val SKIP_MODEL_ID = "__skip__"
+    }
+}
 
 /**
  * The user's single ordered chain of providers. Each feature (transcription, cleanup) walks
@@ -182,9 +236,8 @@ data class ProviderChain(val entries: List<ProviderChainEntry>) {
      */
     fun capableEntriesFor(needsTranscription: Boolean): List<ProviderChainEntry> =
         entries.filter { entry ->
-            if (!entry.enabled) return@filter false
-            if (needsTranscription) entry.useForTranscription && entry.kind.supportsTranscription()
-            else entry.useForCleanup && entry.kind.supportsCleanup()
+            if (needsTranscription) entry.isBatchSttActive()
+            else entry.isBatchCleanupActive()
         }
 
     /**

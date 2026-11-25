@@ -98,6 +98,10 @@
             android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
         <activity android:name=".CloudProviderActivity" android:exported="false"
             android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+        <activity android:name=".ApiKeysVaultActivity" android:exported="false"
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+        <activity android:name=".LiveTranscriptionActivity" android:exported="false"
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
         <!-- Invocation-method chooser (#156): same internal-only + fold/unfold handling as the
              other per-category Settings screens above. -->
         <activity android:name=".InvocationActivity" android:exported="false"

@@ -70,4 +70,86 @@ object EffectiveRouting {
 
         return if (allowLocalFallback && localAvailable) "$cloudDescription \u2192 on-device fallback" else "$cloudDescription only"
     }
+
+    /**
+     * Phase 3A.1 execution-order strip for Batch STT using [AttemptBudgetCalculator], e.g.
+     * `"Gemini (1x) \u2192 Groq (2x) \u2192 On-device"`.
+     */
+    fun batchSttExecutionOrder(
+        chain: ProviderChain,
+        allowLocalFallback: Boolean,
+        localAvailable: Boolean,
+        useLocalTranscription: Boolean = false,
+    ): String {
+        if (useLocalTranscription) return "On-device"
+        val slots = chain.entries
+            .filter { it.kind != ProviderKind.LOCAL }
+            .mapIndexed { idx, entry ->
+                AttemptBudgetCalculator.BudgetSlot(
+                    id = entry.id.ifBlank { "stt_$idx" },
+                    label = ProviderCapabilityRegistry.displayNameFor(entry),
+                    locked = entry.isBatchSttActive(),
+                    attempts = entry.sttAttempts,
+                )
+            }
+        val tail = if (allowLocalFallback && localAvailable) "On-device" else null
+        return AttemptBudgetCalculator.formatExecutionOrderStrip(
+            slots = slots,
+            fallbackTail = tail,
+            emptyLabel = if (localAvailable) "On-device" else "No cloud STT locked",
+        )
+    }
+
+    /**
+     * Phase 3A.1 execution-order strip for Batch Cleanup using [AttemptBudgetCalculator].
+     */
+    fun batchCleanupExecutionOrder(
+        chain: ProviderChain,
+        postProcessingEnabled: Boolean,
+        cloudCleanupEnabled: Boolean,
+        allowLocalFallback: Boolean,
+        localAvailable: Boolean,
+    ): String {
+        if (!postProcessingEnabled) return "Off"
+        if (!cloudCleanupEnabled) return if (localAvailable) "On-device" else "On-device (not installed)"
+        val slots = chain.entries
+            .filter { it.kind != ProviderKind.LOCAL }
+            .mapIndexed { idx, entry ->
+                AttemptBudgetCalculator.BudgetSlot(
+                    id = entry.id.ifBlank { "cleanup_$idx" },
+                    label = ProviderCapabilityRegistry.displayNameFor(entry),
+                    locked = entry.isBatchCleanupActive(),
+                    attempts = entry.cleanupAttempts,
+                )
+            }
+        val tail = if (allowLocalFallback && localAvailable) "On-device" else null
+        return AttemptBudgetCalculator.formatExecutionOrderStrip(
+            slots = slots,
+            fallbackTail = tail,
+            emptyLabel = if (localAvailable) "On-device" else "No cloud cleanup locked",
+        )
+    }
+
+    /**
+     * Phase 3A.1 execution-order strip for Live Post-Cleanup using [AttemptBudgetCalculator].
+     */
+    fun livePostCleanupExecutionOrder(config: LiveTranscriptionConfig): String {
+        if (!config.postCleanupEnabled) return "Direct live text (Post-Cleanup off)"
+        val slots = config.postCleanupSlots
+            .take(LiveTranscriptionConfig.MAX_LIVE_POST_CLEANUP_SLOTS)
+            .map { slot ->
+                val label = ProviderCapabilityRegistry.forId(slot.providerId)?.displayName ?: slot.providerId
+                AttemptBudgetCalculator.BudgetSlot(
+                    id = slot.id,
+                    label = label,
+                    locked = slot.locked && slot.modelId.isNotBlank() && slot.modelId != ProviderChainEntry.SKIP_MODEL_ID,
+                    attempts = slot.attempts,
+                )
+            }
+        return AttemptBudgetCalculator.formatExecutionOrderStrip(
+            slots = slots,
+            fallbackTail = "Raw live text",
+            emptyLabel = "Raw live text (no slots locked)",
+        )
+    }
 }

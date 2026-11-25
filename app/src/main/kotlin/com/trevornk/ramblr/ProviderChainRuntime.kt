@@ -22,15 +22,64 @@ object ProviderChainRuntime {
      */
     fun cleanupWaterfallFor(chain: ProviderChain): CleanupWaterfall = CleanupWaterfall(
         chain.capableEntriesFor(needsTranscription = false).mapNotNull { entry ->
+            val attempts = if (entry.kind == ProviderKind.LOCAL) {
+                AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS
+            } else {
+                entry.cleanupAttempts.coerceIn(
+                    AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS,
+                    AttemptBudgetCalculator.MAX_SLOT_ATTEMPTS,
+                )
+            }
             when (entry.kind) {
-                ProviderKind.OPENAI -> CleanupStep(CleanupStepGroup.OPENAI_DIRECT, entry.model, entry.baseUrlOverride, entry.id, entry.presetId)
-                ProviderKind.ANTHROPIC -> CleanupStep(CleanupStepGroup.ANTHROPIC_DIRECT, entry.model, entry.baseUrlOverride, entry.id, entry.presetId)
-                ProviderKind.GEMINI -> CleanupStep(CleanupStepGroup.GEMINI_DIRECT, entry.model, entry.baseUrlOverride, entry.id, entry.presetId)
-                ProviderKind.OMNIROUTE -> CleanupStep(CleanupStepGroup.OMNIROUTE, entry.model, entry.baseUrlOverride, entry.id, entry.presetId)
-                ProviderKind.LOCAL -> CleanupStep(CleanupStepGroup.LOCAL_LLM, entry.model, entry.baseUrlOverride, entry.id, entry.presetId)
+                ProviderKind.OPENAI -> CleanupStep(CleanupStepGroup.OPENAI_DIRECT, entry.model, entry.baseUrlOverride, entry.id, entry.presetId, attempts, entry.vaultKeyId)
+                ProviderKind.ANTHROPIC -> CleanupStep(CleanupStepGroup.ANTHROPIC_DIRECT, entry.model, entry.baseUrlOverride, entry.id, entry.presetId, attempts, entry.vaultKeyId)
+                ProviderKind.GEMINI -> CleanupStep(CleanupStepGroup.GEMINI_DIRECT, entry.model, entry.baseUrlOverride, entry.id, entry.presetId, attempts, entry.vaultKeyId)
+                ProviderKind.OMNIROUTE -> CleanupStep(CleanupStepGroup.OMNIROUTE, entry.model, entry.baseUrlOverride, entry.id, entry.presetId, attempts, entry.vaultKeyId)
+                ProviderKind.LOCAL -> CleanupStep(CleanupStepGroup.LOCAL_LLM, entry.model, entry.baseUrlOverride, entry.id, entry.presetId, attempts, null)
             }
         }
     )
+
+    /**
+     * Converts [LiveTranscriptionConfig.postCleanupSlots] into an executable [CleanupWaterfall]
+     * for Phase 3A.2 Live Post-Cleanup. Returns an empty waterfall when post-cleanup is disabled
+     * or no locked slots are configured.
+     */
+    fun livePostCleanupWaterfallFor(config: LiveTranscriptionConfig): CleanupWaterfall {
+        if (!config.postCleanupEnabled) return CleanupWaterfall(emptyList())
+        val activeSlots = config.postCleanupSlots
+            .take(LiveTranscriptionConfig.MAX_LIVE_POST_CLEANUP_SLOTS)
+            .filter { it.locked && it.modelId.isNotBlank() && it.modelId != ProviderChainEntry.SKIP_MODEL_ID }
+        var remainingBudget = AttemptBudgetCalculator.MAX_CLOUD_ATTEMPTS_PER_LANE
+        val steps = mutableListOf<CleanupStep>()
+        for (slot in activeSlots) {
+            if (remainingBudget <= 0) break
+            val descriptor = ProviderCapabilityRegistry.forId(slot.providerId) ?: continue
+            val group = when (descriptor.kind) {
+                ProviderKind.OPENAI -> CleanupStepGroup.OPENAI_DIRECT
+                ProviderKind.ANTHROPIC -> CleanupStepGroup.ANTHROPIC_DIRECT
+                ProviderKind.GEMINI -> CleanupStepGroup.GEMINI_DIRECT
+                ProviderKind.OMNIROUTE -> CleanupStepGroup.OMNIROUTE
+                ProviderKind.LOCAL -> continue
+            }
+            val attempts = slot.attempts.coerceIn(AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS, remainingBudget)
+            remainingBudget -= attempts
+            val baseUrl = slot.baseUrlOverride?.takeIf { it.isNotBlank() }
+                ?: descriptor.defaultBaseUrl?.takeIf { descriptor.presetId != null || descriptor.requiresCustomBaseUrl }
+            val vaultKeyId = slot.vaultKeyId?.takeIf { it.isNotBlank() }
+                ?: ProviderCapabilityRegistry.canonicalVaultKeyId(slot.providerId)
+            steps += CleanupStep(
+                group = group,
+                model = slot.modelId,
+                baseUrlOverride = baseUrl,
+                entryId = slot.id,
+                presetId = descriptor.presetId,
+                maxAttempts = attempts,
+                vaultKeyId = vaultKeyId,
+            )
+        }
+        return CleanupWaterfall(steps)
+    }
 
     /** True when [chain] is the unified equivalent of the old single LEGACY OpenAI cleanup path. */
     fun isSingleOpenAiCleanup(chain: ProviderChain): Boolean {

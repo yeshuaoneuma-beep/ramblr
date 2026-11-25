@@ -67,13 +67,7 @@ class CleanupActivity : BaseSettingsActivity() {
 
         val root = vertical(0, 0)
 
-        val header = TextView(this).apply {
-            text = "AI cleanup"
-            textSize = 32f
-            setPadding(dp(24), dp(64), dp(24), dp(24))
-        }
-        root.addView(header)
-
+        val mainCard = oneUiCard()
         val isPostProcessing = prefs().getBoolean("use_post_processing", false)
         postProcessSwitch = MaterialSwitch(this).apply {
             isChecked = isPostProcessing
@@ -88,9 +82,8 @@ class CleanupActivity : BaseSettingsActivity() {
         }
         postProcessRowSub = postProcessRow.findViewWithTag("subtitle")
         postProcessRowDetails = postProcessRow.findViewWithTag("details")
-        root.addView(postProcessRow)
+        mainCard.addView(postProcessRow)
 
-        // Everything below only matters once cleanup is on -- shown/hidden as one unit in refresh().
         cleanupDetailContainer = vertical(0)
 
         val styleGroup = nestedGroup()
@@ -136,9 +129,6 @@ class CleanupActivity : BaseSettingsActivity() {
 
         val cleanupCloudNested = nestedGroup()
 
-        // #95 Phase 3: the contextual OpenAI key row here is replaced by a link into the new
-        // unified CloudProviderActivity -- provider/credential management for cleanup no longer
-        // lives on this screen at all, it's one shared surface for both features.
         val cloudLinkRow = settingsRow("Cloud provider chain", CloudProviderActivity.subtitle(this), indent = 0) {
             startActivity(Intent(this, CloudProviderActivity::class.java))
         }
@@ -162,17 +152,17 @@ class CleanupActivity : BaseSettingsActivity() {
             previewBeforeInjectSwitch.isChecked = newVal
         }
         cleanupDetailContainer.addView(previewBeforeInjectRow)
-        root.addView(cleanupDetailContainer)
+        mainCard.addView(cleanupDetailContainer)
+        root.addView(mainCard)
 
-        // Outside cleanupDetailContainer, moved here from Recording and text: both only act once
-        // cleanup runs, but stay adjustable while it's off so turning it on keeps your choice.
-        root.addView(sectionHeader("Cleanup options"))
+        val optionsCard = oneUiCard()
+        optionsCard.addView(sectionHeader("Cleanup options"))
 
         perAppPersonaSwitch = MaterialSwitch(this).apply {
             isChecked = PerAppPersonaToggle.isEnabled(this@CleanupActivity)
             isClickable = false
         }
-        root.addView(settingsRow(
+        optionsCard.addView(settingsRow(
             "Remember cleanup style per app",
             "Each app keeps the cleanup style you last picked in it",
             perAppPersonaSwitch,
@@ -187,7 +177,7 @@ class CleanupActivity : BaseSettingsActivity() {
             isChecked = RawTextRetryToggle.isEnabled(this@CleanupActivity)
             isClickable = false
         }
-        root.addView(settingsRow(
+        optionsCard.addView(settingsRow(
             "Offer raw text after cleanup",
             "After cleanup changes your words, a bubble lets you swap back to exactly what you said",
             rawTextRetrySwitch,
@@ -197,12 +187,10 @@ class CleanupActivity : BaseSettingsActivity() {
             RawTextRetryToggle.setEnabled(this, newVal)
             rawTextRetrySwitch.isChecked = newVal
         })
+        root.addView(optionsCard)
 
-        // Which languages are offered under "Translate to" on the Ramblr keyboard AND in the floating
-        // icon's long-press menu. Here, not under Voice keyboard: it is no longer keyboard-only, and
-        // translation runs on the cloud provider configured on this screen. Outside
-        // cleanupDetailContainer because translating works with cleanup switched off.
-        root.addView(sectionHeader(getString(R.string.translation_section_title)))
+        val translationCard = oneUiCard()
+        translationCard.addView(sectionHeader(getString(R.string.translation_section_title)))
         val translationLanguagesRow = settingsRow(
             getString(R.string.keyboard_translation_languages_title),
             KeyboardTranslation.summary(this),
@@ -211,20 +199,21 @@ class CleanupActivity : BaseSettingsActivity() {
             TranslationLanguagesDialog.show(this) { refresh() }
         }
         translationLanguagesRowSub = translationLanguagesRow.findViewWithTag("subtitle")
-        root.addView(translationLanguagesRow)
+        translationCard.addView(translationLanguagesRow)
+        root.addView(translationCard)
 
-        // #276: read-only "what will actually happen" line, matching TranscriptionActivity's.
-        // Placed outside cleanupDetailContainer so it's visible even while cleanup itself is off
-        // (in which case it just reads "Cleanup: Off").
-        root.addView(sectionHeader("Effective routing"))
+        val routingCard = oneUiCard()
+        routingCard.addView(sectionHeader("Effective routing"))
         val routingSummaryRow = settingsRow("Cleanup", "", indent = 0)
         routingSummaryRowSub = routingSummaryRow.findViewWithTag("subtitle")
-        root.addView(routingSummaryRow)
+        routingCard.addView(routingSummaryRow)
+        root.addView(routingCard)
 
-        setContentView(ScrollView(this).apply {
-            setBackgroundColor(attrColor(android.R.attr.colorBackground))
-            addView(root)
-        })
+        setOneUiScreenContent(
+            title = "AI cleanup",
+            showBack = true,
+            content = root,
+        )
 
         refresh()
     }

@@ -55,6 +55,28 @@
     "presetId": null
   },
   {
+    "useCase": "TRANSCRIPTION",
+    "tier": "RECOMMENDED",
+    "costPer1MInputUsd": 0,
+    "provider": "GEMINI",
+    "modelId": "gemini-3.5-transcribe",
+    "displayName": "Gemini 3.5 Transcribe",
+    "costPer1MOutputUsd": 0,
+    "description": "Dedicated non-thinking audio transcription model \u2014 fast, clean verbatim batch STT.",
+    "presetId": null
+  },
+  {
+    "useCase": "BOTH",
+    "tier": "GOOD",
+    "costPer1MInputUsd": 0,
+    "provider": "GEMINI",
+    "modelId": "gemini-3.8-flash",
+    "displayName": "Gemini 3.8 Flash",
+    "costPer1MOutputUsd": 0,
+    "description": "High-capability Flash tier supporting both multimodal audio transcription and cleanup.",
+    "presetId": null
+  },
+  {
     "useCase": "BOTH",
     "tier": "GOOD",
     "costPer1MInputUsd": 1.5,
