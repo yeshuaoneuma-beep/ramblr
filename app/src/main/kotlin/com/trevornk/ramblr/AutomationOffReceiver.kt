@@ -110,7 +110,7 @@ class AutomationOffReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        const val ACTION_TURN_OFF = "com.trevornk.ramblr.action.TURN_OFF"
+        const val ACTION_TURN_OFF = "${BuildConfig.APPLICATION_ID}.action.TURN_OFF"
 
         /** #254: read-only status snapshot, see [handleDiagnostic]'s kdoc. Reply comes back as
          *  the ordered broadcast's result DATA string (`am broadcast` prints it as `data="..."`),
@@ -120,7 +120,7 @@ class AutomationOffReceiver : BroadcastReceiver() {
          *  Shipped rather than reverted with the investigation that introduced it: it is the
          *  verify half of the write-then-verify macro pattern that makes an external re-enable
          *  converge. See [RamblrDiagnosticSnapshot] and [automationReEnableVerifyGuidance]. */
-        const val ACTION_DIAGNOSTIC = "com.trevornk.ramblr.action.DIAGNOSTIC"
+        const val ACTION_DIAGNOSTIC = "${BuildConfig.APPLICATION_ID}.action.DIAGNOSTIC"
 
         /** Result code for a successful [ACTION_DIAGNOSTIC] reply; distinct from every
          *  [AutomationOffOutcome]-derived code above so a caller can tell the two actions'

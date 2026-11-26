@@ -76,7 +76,7 @@ class MainActivityOnboardingWiringTest {
 
     @Test fun `a successful silent repair also clears the recovery notification`() {
         val refresh = functionBody("refresh")
-        val repaired = refresh.indexOf("toast(\"Ramblr's accessibility service was restored\")")
+        val repaired = refresh.indexOf("toast(\"Rhema Cadence's accessibility service was restored\")")
         val elseBranch = refresh.indexOf("} else if (!InvocationGuardRail.staleBannerDismissed(this))")
 
         assertTrue("the repair-success branch must exist", repaired >= 0)

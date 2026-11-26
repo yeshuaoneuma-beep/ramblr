@@ -109,7 +109,7 @@ class ProcessTextActivity : Activity() {
         ProcessTextUnavailableReason.CLOUD_CLEANUP_DISABLED ->
             "Cloud cleanup is turned off and no on-device cleanup model is configured"
         ProcessTextUnavailableReason.NO_CLEANUP_CONFIGURED ->
-            "No cleanup provider is configured — set one up in Ramblr"
+            "No cleanup provider is configured — set one up in Rhema Cadence"
         ProcessTextUnavailableReason.MISSING_OPENAI_KEY ->
             "Cleanup needs an OpenAI API key"
     }
@@ -130,18 +130,18 @@ class ProcessTextActivity : Activity() {
         val choices = ProcessTextPicker.choices(personas, KeyboardTranslation.chosen(this))
         val checked = ProcessTextPicker.checkedIndex(choices, current.key)
 
-        pickerDialog = android.app.AlertDialog.Builder(this)
-            .setTitle("Clean up with")
-            .setSingleChoiceItems(choices.map(ProcessTextPicker::label).toTypedArray(), checked) { dialog, which ->
-                dialog.dismiss()
-                when (val choice = choices[which]) {
-                    is ProcessTextChoice.Style -> startCleanup(request, plan, choice.persona)
-                    is ProcessTextChoice.Translate -> startTranslation(request, choice.language)
-                }
+        pickerDialog = OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = "Clean up with",
+            items = choices.map(ProcessTextPicker::label),
+            checkedIndex = checked,
+            onCancel = { cancelAndFinish() },
+        ) { which ->
+            when (val choice = choices[which]) {
+                is ProcessTextChoice.Style -> startCleanup(request, plan, choice.persona)
+                is ProcessTextChoice.Translate -> startTranslation(request, choice.language)
             }
-            .setNegativeButton("Cancel") { _, _ -> cancelAndFinish() }
-            .setOnCancelListener { cancelAndFinish() }
-            .show()
+        }
     }
 
     private fun vocabularyTerms() = VocabularyTerms.parse(
@@ -235,7 +235,7 @@ class ProcessTextActivity : Activity() {
 
         progressDialog = android.app.AlertDialog.Builder(this)
             .setTitle(kind.progressTitle)
-            .setMessage("Ramblr is ${kind.progressVerb} ${request.text.length} characters.")
+            .setMessage("Rhema Cadence is ${kind.progressVerb} ${request.text.length} characters.")
             .setNegativeButton("Cancel") { _, _ -> cancelAndFinish() }
             .setOnCancelListener { cancelAndFinish() }
             .show()

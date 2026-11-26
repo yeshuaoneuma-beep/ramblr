@@ -1,38 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Ramblr</string>
+    <string name="app_name">Rhema Cadence</string>
     <!-- #258: the two accessibility-service components MUST NOT share a label. Only one is ever
          PM-enabled, so system Settings shows one entry either way, but automation apps
          (MacroDroid/Tasker) address services by COMPONENT and let the user pick from a list of
-         labels. With both labelled plain "Ramblr" the user cannot tell which component they
+         labels. With both labelled plain "Rhema Cadence" the user cannot tell which component they
          captured, and a macro holding the inactive one silently no-ops on disable and, on
-         enable, writes a PM-disabled component that AMS strips (taking Ramblr out of
+         enable, writes a PM-disabled component that AMS strips (taking Rhema Cadence out of
          enabled_accessibility_services entirely). Distinct labels make the two visibly
          different at pick time. Keep the mode names identical to the Other ways to start screen's cards
          so a user can map picker entry to mode without guessing. -->
-    <string name="accessibility_service_label_floating">Ramblr (Floating icon)</string>
-    <string name="accessibility_service_label_system">Ramblr (System controls)</string>
-    <string name="accessibility_description">Dictation: records audio, transcribes, and inserts text into focused fields. Note: Android may also show its own system Accessibility Button shortcut for Ramblr in Settings > Accessibility -- that\'s a separate OS-level shortcut, not Ramblr\'s own floating mic button.</string>
+    <string name="accessibility_service_label_floating">Rhema Cadence (Floating icon)</string>
+    <string name="accessibility_service_label_system">Rhema Cadence (System controls)</string>
+    <string name="accessibility_description">Dictation: records audio, transcribes, and inserts text into focused fields. Note: Android may also show its own system Accessibility Button shortcut for Rhema Cadence in Settings > Accessibility -- that\'s a separate OS-level shortcut, not Rhema Cadence\'s own floating mic button.</string>
     <!-- Floating overlay mic button contentDescription (accessibility pass): announced by
          TalkBack per RecordingStateMachine.State, see applyButtonAppearance in
          WhisperAccessibilityService.kt. -->
-    <string name="overlay_button_idle_description">Ramblr dictation button. Double-tap to start recording.</string>
-    <string name="overlay_button_recording_description">Ramblr dictation button. Recording. Double-tap to stop and transcribe, or hold for 3 seconds to discard.</string>
+    <string name="overlay_button_idle_description">Rhema Cadence dictation button. Double-tap to start recording.</string>
+    <string name="overlay_button_recording_description">Rhema Cadence dictation button. Recording. Double-tap to stop and transcribe, or hold for 3 seconds to discard.</string>
     <string name="overlay_discard_hold_countdown">Hold to discard (%1$ds)…</string>
     <string name="overlay_recording_countdown">Recording ends in %1$s</string>
     <string name="recording_countdown_notification_title">Recording nearing 10 min limit</string>
     <string name="recording_countdown_notification_text">%1$s remaining before auto-stop</string>
-    <string name="overlay_button_transcribing_description">Ramblr dictation button. Transcribing. Double-tap and hold to cancel.</string>
-    <string name="overlay_button_cleaning_description">Ramblr dictation button. Cleaning up. Double-tap and hold to cancel.</string>
+    <string name="overlay_button_transcribing_description">Rhema Cadence dictation button. Transcribing. Double-tap and hold to cancel.</string>
+    <string name="overlay_button_cleaning_description">Rhema Cadence dictation button. Cleaning up. Double-tap and hold to cancel.</string>
 
     <!-- Quick Settings tile (#127): an alternative dictation trigger for users who hide the
          floating ring entirely. -->
-    <string name="tile_label">Ramblr</string>
+    <string name="tile_label">Rhema Cadence</string>
     <string name="tile_subtitle_recording">Recording…</string>
     <string name="tile_subtitle_transcribing">Transcribing… tap to cancel</string>
     <string name="tile_subtitle_service_disabled">Tap to enable accessibility service</string>
     <string name="tile_subtitle_service_turned_off">Turned off — tap to turn back on</string>
-    <string name="ime_name">Ramblr Voice</string>
+    <string name="ime_name">Rhema Cadence Voice</string>
     <string name="ime_status_idle">Ready to dictate</string>
     <string name="ime_status_recording">Recording… tap mic to stop</string>
     <string name="ime_status_recording_countdown">Recording… %1$s left</string>
@@ -41,10 +41,10 @@
     <string name="ime_status_error">Couldn’t complete dictation</string>
     <string name="ime_status_secure_field">Voice input unavailable in secure fields</string>
     <string name="ime_partial_hint">Your partial transcript appears here</string>
-    <string name="ime_mic_start">Start Ramblr dictation</string>
+    <string name="ime_mic_start">Start Rhema Cadence dictation</string>
     <string name="ime_mic_stop">Stop recording and transcribe</string>
     <string name="ime_switch_keyboard">Switch keyboard</string>
-    <string name="ime_open_settings">Open Ramblr settings</string>
+    <string name="ime_open_settings">Open Rhema Cadence settings</string>
     <!-- #312: cleanup-style picker + quick edit keys on the voice keyboard -->
     <string name="ime_style_chip_off">Cleanup off</string>
     <string name="ime_style_chip_desc">Cleanup style: %1$s. Tap to change</string>
@@ -61,7 +61,7 @@
     <string name="ime_style_changed_needs_settings">Style: %1$s (enable cleanup in Settings)</string>
     <string name="ime_cleanup_now_on">Cleanup on</string>
     <string name="ime_cleanup_now_off">Cleanup off</string>
-    <string name="ime_cleanup_needs_settings">Enable cleanup once in Ramblr settings first</string>
+    <string name="ime_cleanup_needs_settings">Enable cleanup once in Rhema Cadence settings first</string>
     <!-- Keyboard translation (from #318): lives in the style picker, applies to the next dictation -->
     <string name="ime_style_chip_translate">→ %1$s · %2$s</string>
     <string name="ime_style_chip_translate_desc">Translating to %1$s. Cleanup style: %2$s. Tap to change</string>
@@ -71,17 +71,17 @@
     <string name="ime_translate_original">Original</string>
     <string name="ime_translate_original_desc">Original language, no translation</string>
     <string name="ime_translate_languages_chip">Languages…</string>
-    <string name="ime_translate_languages_desc">Choose which languages appear here, in Ramblr settings</string>
+    <string name="ime_translate_languages_desc">Choose which languages appear here, in Rhema Cadence settings</string>
     <string name="ime_translate_selected_desc">Translate to %1$s, selected</string>
     <string name="ime_translate_choice_desc">Translate to %1$s</string>
     <string name="ime_translate_changed">Translating to %1$s</string>
     <string name="ime_translate_changed_off">Translation off</string>
     <string name="ime_translate_cloud_notice">Translation needs a cloud AI provider with a key. Until one is set up, dictation is inserted untranslated.</string>
     <string name="ime_translate_unavailable_consent">Not translated: allow sending text to the cloud first (open the style picker and choose the language again)</string>
-    <string name="ime_translate_unavailable_cloud">Not translated: translation needs a cloud AI provider with a key (Ramblr settings, Cleanup)</string>
+    <string name="ime_translate_unavailable_cloud">Not translated: translation needs a cloud AI provider with a key (Rhema Cadence settings, Cleanup)</string>
     <!-- Floating icon (ring) wording: the ring has no panel, so these point at where to fix it -->
-    <string name="ring_translate_unavailable_consent">Not translated: allow sending text to the cloud first. Pick the language once on the Ramblr keyboard, or turn on AI cleanup in Settings</string>
-    <string name="ring_translate_unavailable_cloud">Not translated: translation needs a cloud AI provider with a key (Settings > AI cleanup)</string>
+    <string name="ring_translate_unavailable_consent">Not translated: allow sending text to the cloud first. Pick the language once on the Rhema Cadence keyboard, or turn on AI cleanup in Settings</string>
+    <string name="ring_translate_unavailable_cloud">Not translated: translation needs a cloud AI provider with a key (Settings > Cleanup &amp; styles)</string>
     <string name="ring_menu_open_app_title">Open %1$s</string>
     <string name="ring_menu_style_title">Style: %1$s</string>
     <string name="ring_menu_style_subtitle_collapsed">Tap to choose a style</string>
@@ -97,12 +97,12 @@
     <string name="ring_translate_menu_title">Translate to</string>
     <string name="ring_translate_menu_subtitle">Applies to the next dictation, same as on the keyboard</string>
     <string name="ring_translate_menu_busy">Translate to — available when dictation finishes</string>
-    <string name="ring_translate_menu_none">Choose the languages under Settings > AI cleanup > Translation languages</string>
+    <string name="ring_translate_menu_none">Choose the languages under Settings > Cleanup &amp; styles > Translation languages</string>
     <string name="ring_translate_badge_desc">Translating to %1$s</string>
     <string name="ime_translate_failed">Translation failed — inserted untranslated text</string>
     <string name="ime_translate_consent_title">Send text to %1$s?</string>
-    <string name="ime_translate_consent_body">Your speech is recognized on this phone. Translation sends the recognized text to %1$s. Ramblr asks only once.</string>
-    <string name="process_text_translate_consent_body">Translating sends the selected text to %1$s. Ramblr asks only once.</string>
+    <string name="ime_translate_consent_body">Your speech is recognized on this phone. Translation sends the recognized text to %1$s. Rhema Cadence asks only once.</string>
+    <string name="process_text_translate_consent_body">Translating sends the selected text to %1$s. Rhema Cadence asks only once.</string>
     <string name="ime_translate_consent_allow">Allow</string>
     <string name="ime_translate_consent_decline">Not now</string>
     <!-- Voice keyboard / translation settings (from #318) -->
@@ -113,7 +113,7 @@
     <string name="keyboard_translation_languages_title">Translation languages</string>
     <string name="keyboard_translation_languages_none">None yet. Choose the languages offered under Translate to</string>
     <string name="translation_section_title">Translation</string>
-    <string name="translation_languages_details">Offered under Translate to on the Ramblr keyboard and in the floating icon\'s menu. Translating needs a cloud AI provider with a key; without one, dictation is inserted untranslated.</string>
+    <string name="translation_languages_details">Offered under Translate to on the Rhema Cadence keyboard and in the floating icon\'s menu. Translating needs a cloud AI provider with a key; without one, dictation is inserted untranslated.</string>
     <string name="keyboard_translation_languages_dialog">Translate into</string>
     <string name="keyboard_translation_languages_save">Save</string>
     <string name="keyboard_cancel">Cancel</string>
@@ -129,12 +129,12 @@
     <string name="ime_key_enter_previous">Previous field</string>
 
     <!-- #285: audio-file transcription and record-now/transcribe-later. -->
-    <string name="audio_share_label">Transcribe with Ramblr</string>
+    <string name="audio_share_label">Transcribe with Rhema Cadence</string>
     <string name="audio_files_title">Audio files</string>
     <string name="audio_files_row_title">Audio files</string>
     <string name="audio_files_row_idle">Transcribe a recording, or record now and transcribe later</string>
     <string name="audio_files_row_status">%1$d in progress · %2$d saved</string>
-    <string name="audio_files_intro">Transcribe an audio file from your phone or another app (use Share → Ramblr). It runs in the background and notifies you when the text is ready; the result is saved to History. Your Recognition, AI cleanup and Dictation language settings apply.</string>
+    <string name="audio_files_intro">Transcribe an audio file from your phone or another app (use Share → Rhema Cadence). It runs in the background and notifies you when the text is ready; the result is saved to History. Your Recognition, AI cleanup and Dictation language settings apply.</string>
     <string name="audio_files_pick">Transcribe an audio file</string>
     <string name="audio_files_pick_sub">Choose m4a, mp3, ogg, wav, flac and more</string>
     <string name="audio_files_record">Record a note</string>
@@ -152,7 +152,7 @@
     <string name="audio_files_history_off_notice">History is off, so the text was copied to your clipboard</string>
     <string name="audio_files_recorded_name">Recorded note %1$s</string>
     <string name="audio_files_shared_name">Shared audio</string>
-    <string name="audio_files_share_none">Ramblr couldn\'t find any audio in what was shared</string>
+    <string name="audio_files_share_none">Rhema Cadence couldn\'t find any audio in what was shared</string>
     <string name="audio_files_share_too_many">Only the first %1$d files were added</string>
 
     <string name="audio_status_saved">Saved · tap to transcribe</string>
@@ -193,8 +193,8 @@
     <string name="audio_channel_result">Audio transcription results</string>
     <string name="audio_channel_recording">Audio recording</string>
     <string name="audio_notif_working_title">Transcribing audio</string>
-    <string name="audio_notif_working_text_one">Ramblr is working on your audio file.</string>
-    <string name="audio_notif_working_text_many">Ramblr is working on your audio files (%1$d waiting).</string>
+    <string name="audio_notif_working_text_one">Rhema Cadence is working on your audio file.</string>
+    <string name="audio_notif_working_text_many">Rhema Cadence is working on your audio files (%1$d waiting).</string>
     <string name="audio_notif_working_progress">Part %1$d of %2$d</string>
     <string name="audio_notif_done_title">Transcription ready</string>
     <string name="audio_notif_done_text">Your audio was transcribed. Tap to open it in History.</string>
@@ -202,9 +202,9 @@
     <string name="audio_notif_done_text_cleanup_failed">Your audio was transcribed, but cleanup failed, so this is the raw text.</string>
     <string name="audio_notif_done_text_cleanup_partial">Your audio was transcribed. Cleanup worked on %1$d of %2$d sections; the rest is raw text.</string>
     <string name="audio_notif_failed_title">Audio transcription failed</string>
-    <string name="audio_notif_failed_text">%1$s. Tap to see it in Ramblr.</string>
+    <string name="audio_notif_failed_text">%1$s. Tap to see it in Rhema Cadence.</string>
     <string name="audio_notif_recording_title">Recording a note</string>
-    <string name="audio_notif_recording_text">Ramblr is recording. Tap Stop to save it for later.</string>
+    <string name="audio_notif_recording_text">Rhema Cadence is recording. Tap Stop to save it for later.</string>
 
     <!-- Floating icon > "Show the icon" (ring visibility mode). -->
     <string name="ring_visibility_title">Show the icon</string>

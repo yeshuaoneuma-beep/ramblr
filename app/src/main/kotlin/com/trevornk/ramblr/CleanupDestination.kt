@@ -30,6 +30,10 @@ object CleanupDestination {
         ProviderKind.LOCAL -> "your device"
     }
 
+    /** Display label for [entry], using [ProviderCapabilityRegistry.displayNameFor] so Groq,
+     *  OpenRouter, and Custom OpenAI-Compatible entries are never mislabeled as `"OpenAI"`. */
+    fun label(entry: ProviderChainEntry): String = ProviderCapabilityRegistry.displayNameFor(entry)
+
     /** Display label for [kind], e.g. "OpenAI". */
     fun label(kind: ProviderKind): String = when (kind) {
         ProviderKind.OPENAI -> "OpenAI"
@@ -49,24 +53,16 @@ object CleanupDestination {
         val entry = firstCloudEntry(chain)
             ?: return "${label(ProviderKind.OPENAI)} · ${PostProcessor.DEFAULT_MODEL}"
         val model = entry.model.ifBlank { defaultCleanupModelFor(entry.kind) }
-        return "${label(entry.kind)} · $model"
+        return "${ProviderCapabilityRegistry.displayNameFor(entry)} · $model"
     }
 
     /** The "<provider> · <model>" detail for the Transcription row's "Cloud · …" subtitle
-     *  (#101 follow-up to #93/M9: previously showed only "Cloud · OpenAI" with no model, unlike
-     *  the Cleanup row's matching "Cloud · OpenAI · gpt-5.4-mini" -- inconsistent and less
-     *  useful at a glance). Uses [firstCloudTranscription], not [firstCloudEntry], since not
-     *  every cloud provider is transcription-capable (Anthropic never is; OmniRoute isn't
-     *  today), and [ProviderChainEntry.transcriptionModel] (#102: NOT [ProviderChainEntry.model],
-     *  which is the cleanup model -- the two are genuinely different model namespaces on the
-     *  same provider, e.g. OpenAI's gpt-5.4-mini for cleanup vs. gpt-4o-transcribe for
-     *  transcription; showing entry.model here was the actual root cause of #102, not just a
-     *  missing label). */
+     *  (#101 follow-up to #93/M9). */
     fun cloudTranscriptionSubtitleDetail(chain: ProviderChain): String {
         val entry = firstCloudTranscription(chain)
             ?: return "${label(ProviderKind.OPENAI)} · ${TranscriberClient.DEFAULT_MODEL}"
         val model = entry.transcriptionModel?.ifBlank { null } ?: defaultTranscriptionModelFor(entry.kind)
-        return "${label(entry.kind)} · $model"
+        return "${ProviderCapabilityRegistry.displayNameFor(entry)} · $model"
     }
 
     private fun defaultCleanupModelFor(kind: ProviderKind): String = when (kind) {

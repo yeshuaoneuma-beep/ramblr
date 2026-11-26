@@ -353,7 +353,7 @@ internal object BackgroundDictationNotifications {
 
     fun ongoing(ctx: Context, statusText: String? = null): Notification = NotificationCompat.Builder(ctx, WORK_CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_mic)
-        .setContentTitle(statusText?.takeIf { it.isNotBlank() } ?: "Ramblr is transcribing")
+        .setContentTitle(statusText?.takeIf { it.isNotBlank() } ?: "Rhema Cadence is transcribing")
         .setContentText("Finishing your dictation in the background.")
         .setOngoing(true)
         .setOnlyAlertOnce(true)
@@ -392,6 +392,16 @@ internal object BackgroundDictationNotifications {
      *  dictation, which has already finished or failed on its own terms. A single fixed id means a
      *  second background result replaces the first instead of stacking. */
     fun postResult(ctx: Context, notice: BackgroundNotice) {
+        if (notice.isFailure) {
+            runCatching {
+                AppNotificationStore.record(
+                    context = ctx,
+                    category = AppNotificationCategory.DICTATION_ALERT,
+                    title = notice.title,
+                    body = notice.text,
+                )
+            }
+        }
         try {
             ensureChannels(ctx)
             val nm = NotificationManagerCompat.from(ctx)

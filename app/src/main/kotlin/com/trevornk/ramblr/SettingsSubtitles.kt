@@ -93,10 +93,53 @@ fun cloudLiveSubtitleText(
     hasGeminiKey: Boolean,
 ): String = when {
     !enabled -> "Off — cloud transcription returns your text once you stop speaking"
-    useLocalTranscription -> "On, but transcription is set to on-device — needs cloud transcription above"
-    !hasGeminiKey -> "On, but no Gemini key is set — add a Gemini provider under Cloud providers"
-    else -> "On — the keyboard streams to Gemini as you speak. Experimental, costs more than batch"
+    useLocalTranscription -> "On, but transcription is set to on-device — needs cloud transcription"
+    !hasGeminiKey -> "On, but no Gemini key is set — add a Gemini key under API keys"
+    else -> "On — streams to Gemini as you speak"
 }
+
+/** Count-only subtitle for the API keys row on Cloud providers (no parenthesized provider names). */
+fun vaultKeyCountText(savedKeyCount: Int): String = when (savedKeyCount) {
+    0 -> "No keys saved"
+    1 -> "1 key saved"
+    else -> "$savedKeyCount keys saved"
+}
+
+/** Subtitle for the Home screen's Live transcription row. */
+fun liveTranscriptionMainRowSubtitleText(enabled: Boolean, modelId: String, hasGeminiKey: Boolean): String = when {
+    enabled && hasGeminiKey -> "On · $modelId"
+    !hasGeminiKey -> "Off · add a Gemini key in API keys to enable"
+    else -> "Off · $modelId"
+}
+
+/** Subtitle for the Home screen's Fallback row. */
+fun fallbackMainRowSubtitleText(
+    allowLocalFallback: Boolean,
+    allowCloudFallback: Boolean,
+    localSttInstalled: Boolean,
+    localCleanupInstalled: Boolean,
+): String {
+    val parts = mutableListOf<String>()
+    if (allowLocalFallback) {
+        parts += if (localSttInstalled || localCleanupInstalled) "Cloud → on-device" else "Cloud → on-device (not installed)"
+    }
+    if (allowCloudFallback) {
+        parts += "On-device → cloud"
+    }
+    return if (parts.isEmpty()) "No automatic fallback enabled" else parts.joinToString(" · ")
+}
+
+/** Subtitle for the Home screen's Notifications row. */
+fun notificationsMainRowSubtitleText(totalCount: Int, unreadCount: Int): String = when {
+    unreadCount > 0 -> "$unreadCount unread alert${if (unreadCount == 1) "" else "s"}"
+    totalCount > 0 -> "$totalCount recent alert${if (totalCount == 1) "" else "s"} — all read"
+    else -> "No alerts yet"
+}
+
+/** Subtitle for the Home screen's Cleanup styles row. */
+fun cleanupStylesMainRowSubtitleText(cleanupEnabled: Boolean, activeStyleTitle: String): String =
+    if (!cleanupEnabled) "Off · tap to enable AI cleanup and pick styles"
+    else "On · $activeStyleTitle"
 
 /**
  * The Words and snippets screen's "Personal vocabulary" row subtitle: the term list itself, prefixed with

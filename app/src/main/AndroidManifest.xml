@@ -102,6 +102,14 @@
             android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
         <activity android:name=".LiveTranscriptionActivity" android:exported="false"
             android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+        <activity android:name=".DictationModeActivity" android:exported="false"
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+        <activity android:name=".CleanupStylesActivity" android:exported="false"
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+        <activity android:name=".FallbackActivity" android:exported="false"
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+        <activity android:name=".NotificationsActivity" android:exported="false"
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
         <!-- Invocation-method chooser (#156): same internal-only + fold/unfold handling as the
              other per-category Settings screens above. -->
         <activity android:name=".InvocationActivity" android:exported="false"
@@ -392,7 +400,7 @@
             android:name=".ServiceRecoveryDismissReceiver"
             android:exported="false">
             <intent-filter>
-                <action android:name="com.trevornk.ramblr.action.RECOVERY_NOTIFICATION_DISMISSED" />
+                <action android:name="${applicationId}.action.RECOVERY_NOTIFICATION_DISMISSED" />
             </intent-filter>
         </receiver>
 
@@ -432,8 +440,8 @@
             android:name=".AutomationOffReceiver"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.trevornk.ramblr.action.TURN_OFF" />
-                <action android:name="com.trevornk.ramblr.action.DIAGNOSTIC" />
+                <action android:name="${applicationId}.action.TURN_OFF" />
+                <action android:name="${applicationId}.action.DIAGNOSTIC" />
             </intent-filter>
         </receiver>
 

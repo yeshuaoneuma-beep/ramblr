@@ -161,6 +161,17 @@ internal object AudioJobNotifications {
 
     /** Never allowed to fail the job that already finished. */
     fun postResult(ctx: Context, job: AudioJob, kind: AudioNoticeKind) {
+        if (kind == AudioNoticeKind.FAILED) {
+            runCatching {
+                val reason = failureLabel(ctx, job.failure).replaceFirstChar { it.uppercase() }
+                AppNotificationStore.record(
+                    context = ctx,
+                    category = AppNotificationCategory.DICTATION_ALERT,
+                    title = ctx.getString(R.string.audio_notif_failed_title),
+                    body = "$reason (${job.displayName})",
+                )
+            }
+        }
         try {
             ensureChannels(ctx)
             val nm = NotificationManagerCompat.from(ctx)

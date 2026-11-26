@@ -187,9 +187,9 @@ class EffectiveRoutingTest {
         assertEquals("Cloud (not configured) only", summary(emptySet()))
     }
 
-    @Test fun `on-device fallback suffix is gated on localAvailable for transcription and cleanup`() {
+    @Test fun `on-device fallback suffix reports not installed when localAvailable is false`() {
         assertEquals(
-            "Cloud (OpenAI) only",
+            "Cloud (OpenAI) \u2192 on-device not installed",
             EffectiveRouting.transcription(
                 chain = chain(openAiEntry),
                 useLocalTranscription = false,
@@ -200,7 +200,7 @@ class EffectiveRoutingTest {
             ),
         )
         assertEquals(
-            "Cloud (OpenAI) only",
+            "Cloud (OpenAI) \u2192 on-device not installed",
             EffectiveRouting.cleanup(
                 chain = chain(openAiEntry),
                 postProcessingEnabled = true,
@@ -208,6 +208,56 @@ class EffectiveRoutingTest {
                 allowLocalFallback = true,
                 isConfigured = { it.kind == ProviderKind.OPENAI },
                 localAvailable = false,
+            ),
+        )
+    }
+
+    @Test fun `Groq and OpenRouter entries show accurate provider names and keyless cards stay out of execution order`() {
+        val groq = ProviderChainEntry(
+            kind = ProviderKind.OPENAI,
+            model = "openai/gpt-oss-20b",
+            transcriptionModel = "whisper-large-v3-turbo",
+            baseUrlOverride = ProviderPresets.GROQ.baseUrl,
+            presetId = ProviderPresets.GROQ.id,
+            id = "groq1",
+        )
+        val openRouter = ProviderChainEntry(
+            kind = ProviderKind.OPENAI,
+            model = "openai/gpt-oss-120b",
+            transcriptionModel = "openai/whisper-1",
+            baseUrlOverride = ProviderPresets.OPENROUTER.baseUrl,
+            presetId = ProviderPresets.OPENROUTER.id,
+            id = "or1",
+        )
+        assertEquals(
+            "Cloud (Groq) \u2192 on-device fallback",
+            EffectiveRouting.transcription(
+                chain = chain(groq),
+                useLocalTranscription = false,
+                allowLocalFallback = true,
+                allowCloudFallback = false,
+                isConfigured = { true },
+            ),
+        )
+        assertEquals(
+            "Groq (1x) \u2192 On-device (not installed)",
+            EffectiveRouting.batchSttExecutionOrder(
+                chain = chain(groq, openRouter),
+                allowLocalFallback = true,
+                localAvailable = false,
+                useLocalTranscription = false,
+                isConfigured = { it.id == "groq1" },
+            ),
+        )
+        assertEquals(
+            "OpenRouter (1x)",
+            EffectiveRouting.batchCleanupExecutionOrder(
+                chain = chain(groq, openRouter),
+                postProcessingEnabled = true,
+                cloudCleanupEnabled = true,
+                allowLocalFallback = false,
+                localAvailable = false,
+                isConfigured = { it.id == "or1" },
             ),
         )
     }

@@ -28,7 +28,7 @@ internal object ServiceOffFlow {
             serviceConnected = WhisperAccessibilityService.instance != null,
         )
         if (action == ServiceOffAction.ALREADY_OFF) {
-            toast(activity, "Ramblr's accessibility service is already off")
+            toast(activity, "Rhema Cadence's accessibility service is already off")
             refresh()
             return
         }
@@ -39,7 +39,7 @@ internal object ServiceOffFlow {
             canWrite = InvocationSecureSettings.canWrite(activity),
         )
         android.app.AlertDialog.Builder(activity)
-            .setTitle("Turn Ramblr off?")
+            .setTitle("Turn Rhema Cadence off?")
             .setMessage(serviceOffConfirmMessage(risk))
             .setPositiveButton("Turn off") { _, _ -> performServiceOff(activity, action, risk) }
             .setNegativeButton("Cancel", null)
@@ -67,7 +67,7 @@ internal object ServiceOffFlow {
         // detector must not "recover" from it. Cleared when the service next connects.
         InvocationGuardRail.recordUserTurnedOff(activity)
         if (action == ServiceOffAction.SELF_DISABLE && WhisperAccessibilityService.disableServiceFromApp()) {
-            toast(activity, "Ramblr turned off")
+            toast(activity, "Rhema Cadence turned off")
             // The OS unbinds asynchronously, so an immediate re-read can still show the old
             // enabled state; refresh on the next resume instead of asserting a state we
             // haven't observed.
@@ -75,7 +75,7 @@ internal object ServiceOffFlow {
         }
         // Listed as enabled with no live instance to disable (crashed / not yet connected):
         // only system Settings can clear the entry. Same deep link the mode switch uses.
-        toast(activity, "Opening Ramblr's accessibility settings")
+        toast(activity, "Opening Rhema Cadence's accessibility settings")
         openServiceDetailsSettings(activity)
     }
 

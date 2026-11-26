@@ -2,29 +2,25 @@ package com.trevornk.ramblr
 
 import android.app.AlertDialog
 import android.content.Intent
-import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
-import android.widget.RadioGroup
 import android.widget.TextView
 import com.google.android.material.materialswitch.MaterialSwitch
-import com.google.android.material.radiobutton.MaterialRadioButton
 import java.util.UUID
 
 /**
- * Unified Samsung One UI AMOLED Cloud Providers screen (Phase 3A.1).
+ * Dedicated Cloud providers screen (Phase 3A.3 hairline overhaul).
  *
- * Surfaces:
- *  - Shared API Keys Vault summary card -> [ApiKeysVaultActivity]
- *  - Live Batch STT & Batch Cleanup Execution Order strips (`Pool X/3`)
- *  - Unified Batch Provider & Model Cards (up to 10 saved cards, 1-line searchable bottom-sheet
- *    pickers, green lock-in per Provider/STT/Cleanup, tappable `1x`/`2x`/`3x` Attempts pills)
- *  - On-Device Fallback compact status card + fallback switches
- *  - Live Transcription summary card -> [LiveTranscriptionActivity]
- *  - Dictation Mode presets & Mix-and-Match switches
+ * Dedicated solely to Cloud routing:
+ *  - Top `API keys` row showing count ONLY (`"No keys saved"`, `"1 key saved"`, `"N keys saved"`)
+ *  - `Execution order` section (key-gated Batch STT & Batch Cleanup + plain-text `Pool X/3`)
+ *  - `Batch providers` (up to 10 flat hairline blocks, `▲`/`▼`/`✕`, `attemptBadge` `1`/`2`/`3`,
+ *    key-gated `lockCircle`, single green `"Active"` or muted `"No key in vault"` on Provider row)
+ *  - Flat hairline `+ Add provider` row
+ *  - `Audio upload` section with `Compress audio before cloud upload` ([CompressedUploadToggle])
  */
 class CloudProviderActivity : BaseSettingsActivity() {
 
@@ -33,222 +29,67 @@ class CloudProviderActivity : BaseSettingsActivity() {
     private lateinit var chainContainer: LinearLayout
     private lateinit var emptyStateView: View
     private lateinit var addProviderButtonContainer: LinearLayout
-    private lateinit var localFallbackStatusView: TextView
-    private lateinit var localFallbackSwitch: MaterialSwitch
-    private lateinit var localFallbackRowSub: TextView
-    private lateinit var cloudFallbackSwitch: MaterialSwitch
-    private lateinit var cloudFallbackRowSub: TextView
-    private lateinit var liveSummarySub: TextView
-    private lateinit var modeRadioGroup: RadioGroup
-    private lateinit var modeRadioButtons: Map<DictationMode, MaterialRadioButton>
-    private lateinit var modeCustomNote: TextView
-    private lateinit var cloudTranscriptionSwitch: MaterialSwitch
-    private lateinit var cloudTranscriptionRowSub: TextView
-    private lateinit var cloudCleanupSwitch: MaterialSwitch
-    private lateinit var cloudCleanupRowSub: TextView
+    private lateinit var compressedUploadSwitch: MaterialSwitch
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ProviderAccountMigration.runIfNeeded(this)
         ApiKeyVaultMigration.runIfNeeded(this)
+        KeyGateNormalizer.normalizeAndPersistIfChanged(this)
 
         val root = vertical(0, 0)
 
-        // 1. Shared API Keys Vault card
-        val vaultCard = oneUiCard()
+        // 1. API keys row (count ONLY, no parenthesized provider names, no Manage keys pill)
         val vaultRow = settingsRow(
-            title = "API keys vault",
-            subtitle = "Manage keys",
-            widget = OneUiComponents.pillBadge(
-                context = this,
-                label = "Manage keys",
-                textColor = OneUiComponents.resColor(this, R.color.oneui_accent_cobalt),
-                bgColor = OneUiComponents.resColor(this, R.color.oneui_accent_cobalt_container),
-            ),
+            title = "API keys",
+            subtitle = "No keys saved",
         ) {
             startActivity(Intent(this, ApiKeysVaultActivity::class.java))
         }
         vaultSummarySub = vaultRow.findViewWithTag("subtitle")
-        vaultCard.addView(vaultRow)
-        root.addView(vaultCard)
+        root.addView(vaultRow)
 
-        // 2. Execution Order card (live Batch STT + Batch Cleanup strips)
-        val orderCard = oneUiCard(padH = 16, padV = 14)
-        orderCard.addView(TextView(this).apply {
-            text = "Execution Order"
-            textSize = 16f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setTextColor(attrColor(android.R.attr.textColorPrimary))
-            setPadding(0, 0, 0, dp(8))
-        })
+        // 2. Execution order section
+        root.addView(sectionHeader("Execution order"))
         executionOrderContainer = vertical(0)
-        orderCard.addView(executionOrderContainer)
-        root.addView(orderCard)
+        root.addView(executionOrderContainer)
 
-        // 3. Unified Batch Provider & Model Cards
+        // 3. Batch providers section
         root.addView(sectionHeader("Batch providers"))
         chainContainer = vertical(0)
         root.addView(chainContainer)
 
-        emptyStateView = oneUiCard(padH = 16, padV = 14).apply {
-            addView(TextView(this@CloudProviderActivity).apply {
-                text = "No cloud providers saved yet. On-device transcription and cleanup are used instead."
-                textSize = 14f
-                setTextColor(attrColor(android.R.attr.textColorSecondary))
-            })
-        }
+        emptyStateView = explainer(
+            "No cloud providers added yet. Add a provider below to route batch transcription or cleanup to the cloud."
+        )
         root.addView(emptyStateView)
 
-        addProviderButtonContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(2), dp(16), dp(12))
-        }
+        addProviderButtonContainer = vertical(0)
         root.addView(addProviderButtonContainer)
 
-        // 4. On-Device Fallback compact status card
-        val fallbackCard = oneUiCard()
-        val fallbackHeaderRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(24), dp(14), dp(16), dp(6))
+        // 4. Audio upload section (relocated from TranscriptionActivity, same CompressedUploadToggle pref)
+        root.addView(sectionHeader("Audio upload"))
+        compressedUploadSwitch = MaterialSwitch(this).apply {
+            isChecked = CompressedUploadToggle.isEnabled(this@CloudProviderActivity)
+            isClickable = false
         }
-        fallbackHeaderRow.addView(TextView(this).apply {
-            text = "On-device fallback"
-            textSize = 16f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setTextColor(attrColor(android.R.attr.textColorPrimary))
-            layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f)
-        })
-        val accent = OneUiComponents.resColor(this, R.color.oneui_accent_cobalt)
-        fallbackHeaderRow.addView(TextView(this).apply {
-            text = "Edit STT"
-            textSize = 12f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setTextColor(accent)
-            setPadding(dp(8), dp(4), dp(8), dp(4))
-            setOnClickListener { startActivity(Intent(this@CloudProviderActivity, TranscriptionActivity::class.java)) }
-        })
-        fallbackHeaderRow.addView(TextView(this).apply {
-            text = "Edit Cleanup"
-            textSize = 12f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setTextColor(accent)
-            setPadding(dp(8), dp(4), dp(8), dp(4))
-            setOnClickListener { startActivity(Intent(this@CloudProviderActivity, CleanupActivity::class.java)) }
-        })
-        fallbackCard.addView(fallbackHeaderRow)
-
-        localFallbackStatusView = TextView(this).apply {
-            textSize = 13f
-            setTextColor(attrColor(android.R.attr.textColorSecondary))
-            setPadding(dp(24), 0, dp(24), dp(6))
-        }
-        fallbackCard.addView(localFallbackStatusView)
-
-        localFallbackSwitch = MaterialSwitch(this).apply { isClickable = false }
-        val localFallbackRow = settingsRow(
-            "Fall back to on-device if cloud fails",
-            localFallbackSubtitle(),
-            localFallbackSwitch,
-        ) { onToggleLocalFallback(!localFallbackSwitch.isChecked) }
-        localFallbackRowSub = localFallbackRow.findViewWithTag("subtitle")
-        fallbackCard.addView(localFallbackRow)
-
-        cloudFallbackSwitch = MaterialSwitch(this).apply { isClickable = false }
-        val cloudFallbackRow = settingsRow(
-            "Fall back to cloud if on-device fails",
-            cloudFallbackSubtitle(),
-            cloudFallbackSwitch,
-        ) { onToggleCloudFallback(!cloudFallbackSwitch.isChecked) }
-        cloudFallbackRowSub = cloudFallbackRow.findViewWithTag("subtitle")
-        fallbackCard.addView(cloudFallbackRow)
-        root.addView(fallbackCard)
-
-        // 5. Live Transcription card
-        val liveCard = oneUiCard()
-        val liveRow = settingsRow(
-            title = "Live transcription",
-            subtitle = "",
-            widget = OneUiComponents.pillBadge(
-                context = this,
-                label = "Configure",
-                textColor = accent,
-                bgColor = OneUiComponents.resColor(this, R.color.oneui_accent_cobalt_container),
-            ),
-            details = "The streaming preview model is on-device. With Live cloud transcription on (under Speech recognition) or here, Cloud Live supplies the live text instead.",
-        ) {
-            startActivity(Intent(this, LiveTranscriptionActivity::class.java))
-        }
-        liveSummarySub = liveRow.findViewWithTag("subtitle")
-        liveCard.addView(liveRow)
-        root.addView(liveCard)
-
-        // 6. Dictation Mode & Mix-and-Match card
-        val modeCard = oneUiCard()
-        modeCard.addView(TextView(this).apply {
-            text = "Dictation mode"
-            textSize = 16f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setTextColor(attrColor(android.R.attr.textColorPrimary))
-            setPadding(dp(24), dp(14), dp(24), dp(4))
-        })
-        modeCard.addView(TextView(this).apply {
-            text = "Pick how your speech is turned into text and cleaned up, or fine-tune per feature."
-            textSize = 13f
-            setTextColor(attrColor(android.R.attr.textColorSecondary))
-            setPadding(dp(24), 0, dp(24), dp(6))
-        })
-
-        modeRadioGroup = RadioGroup(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(2), dp(24), dp(6))
-        }
-        modeRadioButtons = DICTATION_MODE_OPTIONS.associateWith { mode ->
-            MaterialRadioButton(this).apply {
-                text = DictationModePresets.label(mode)
-                id = View.generateViewId()
-                minHeight = dp(48)
-                buttonTintList = ColorStateList.valueOf(attrColor(com.google.android.material.R.attr.colorPrimary))
-                setOnClickListener { applyMode(mode) }
+        root.addView(
+            settingsRow(
+                title = "Compress audio before cloud upload",
+                subtitle = "Smaller uploads for mobile data or slow internet. Accuracy with compressed audio isn't proven yet",
+                widget = compressedUploadSwitch,
+                details = "Encodes to AAC/M4A before sending to cloud STT providers. Leave off where maximum accuracy matters.",
+            ) {
+                val newVal = !compressedUploadSwitch.isChecked
+                CompressedUploadToggle.setEnabled(this, newVal)
+                compressedUploadSwitch.isChecked = newVal
             }
-        }
-        modeRadioButtons.values.forEach { modeRadioGroup.addView(it) }
-        modeCard.addView(modeRadioGroup)
-
-        modeCustomNote = TextView(this).apply {
-            text = ""
-            textSize = 13f
-            setTextColor(attrColor(android.R.attr.textColorSecondary))
-            setPadding(dp(24), 0, dp(24), dp(8))
-            visibility = View.GONE
-        }
-        modeCard.addView(modeCustomNote)
-
-        modeCard.addView(subsectionHeader("Mix and match", indent = 0))
-
-        cloudTranscriptionSwitch = MaterialSwitch(this).apply { isClickable = false }
-        val transcriptionRow = settingsRow(
-            "Transcription",
-            cloudTranscriptionSubtitle(),
-            cloudTranscriptionSwitch,
-        ) { onToggleCloudTranscription(!cloudTranscriptionSwitch.isChecked) }
-        cloudTranscriptionRowSub = transcriptionRow.findViewWithTag("subtitle")
-        modeCard.addView(transcriptionRow)
-
-        cloudCleanupSwitch = MaterialSwitch(this).apply { isClickable = false }
-        val cleanupRow = settingsRow(
-            "Cleanup",
-            cloudCleanupSubtitle(),
-            cloudCleanupSwitch,
-        ) { onToggleCloudCleanup(!cloudCleanupSwitch.isChecked) }
-        cloudCleanupRowSub = cleanupRow.findViewWithTag("subtitle")
-        modeCard.addView(cleanupRow)
-        root.addView(modeCard)
+        )
 
         setOneUiScreenContent(
             title = "Cloud providers",
             showBack = true,
-            subtitle = "Unified batch & live routing",
+            icon = R.drawable.ic_settings_cloud,
             content = root,
         )
 
@@ -257,6 +98,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
 
     override fun onResume() {
         super.onResume()
+        KeyGateNormalizer.normalizeAndPersistIfChanged(this)
         refresh()
     }
 
@@ -267,41 +109,21 @@ class CloudProviderActivity : BaseSettingsActivity() {
         refresh()
     }
 
+    private fun hasKeyFor(entry: ProviderChainEntry): Boolean =
+        ProviderCredentialStore.isConfiguredOrLegacy(this, entry)
+
     private fun refresh() {
         val chain = currentChain()
         refreshVaultSummary()
         refreshExecutionOrder(chain)
         refreshChainCards(chain)
-        refreshLocalFallbackSummary()
-        refreshLiveSummary()
-
-        cloudTranscriptionSwitch.isChecked = !prefs().getBoolean("use_local", true)
-        cloudTranscriptionRowSub.text = cloudTranscriptionSubtitle()
-
-        cloudCleanupSwitch.isChecked = CloudFeatureToggle.cleanupEnabled(this)
-        cloudCleanupRowSub.text = cloudCleanupSubtitle()
-
-        localFallbackSwitch.isChecked = DictationModeToggle.allowLocalFallback(this)
-        localFallbackRowSub.text = localFallbackSubtitle()
-        cloudFallbackSwitch.isChecked = DictationModeToggle.allowCloudFallback(this)
-        cloudFallbackRowSub.text = cloudFallbackSubtitle()
-
-        refreshModeSelection()
+        compressedUploadSwitch.isChecked = CompressedUploadToggle.isEnabled(this)
     }
 
     private fun refreshVaultSummary() {
         val entries = ApiKeyVaultStore.load(this)
-        val lockedReady = entries.filter { it.locked && ProviderCredentialStore.isVaultConfigured(this, it.id) }
         val totalConfigured = entries.count { ProviderCredentialStore.isVaultConfigured(this, it.id) }
-        vaultSummarySub.text = when {
-            lockedReady.isNotEmpty() -> {
-                val names = lockedReady.take(4).joinToString(", ") { it.displayLabel }
-                val more = if (lockedReady.size > 4) " +${lockedReady.size - 4}" else ""
-                "${lockedReady.size} locked ($names$more)"
-            }
-            totalConfigured > 0 -> "$totalConfigured saved (unlocked) \u2014 tap to lock"
-            else -> "No keys saved yet \u2014 add keys once to reuse across Batch & Live"
-        }
+        vaultSummarySub.text = vaultKeyCountText(totalConfigured)
     }
 
     private fun sttBudgetSlots(chain: ProviderChain): List<AttemptBudgetCalculator.BudgetSlot> =
@@ -310,7 +132,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
             else AttemptBudgetCalculator.BudgetSlot(
                 id = "card_$idx",
                 label = ProviderCapabilityRegistry.displayNameFor(entry),
-                locked = entry.isBatchSttActive(),
+                locked = entry.isBatchSttActive() && hasKeyFor(entry),
                 attempts = entry.sttAttempts,
             )
         }
@@ -321,7 +143,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
             else AttemptBudgetCalculator.BudgetSlot(
                 id = "card_$idx",
                 label = ProviderCapabilityRegistry.displayNameFor(entry),
-                locked = entry.isBatchCleanupActive(),
+                locked = entry.isBatchCleanupActive() && hasKeyFor(entry),
                 attempts = entry.cleanupAttempts,
             )
         }
@@ -337,9 +159,10 @@ class CloudProviderActivity : BaseSettingsActivity() {
 
         val sttSlots = sttBudgetSlots(chain)
         val cleanupSlots = cleanupBudgetSlots(chain)
+        val isConfigured: (ProviderChainEntry) -> Boolean = { hasKeyFor(it) }
 
         executionOrderContainer.addView(
-            OneUiComponents.executionOrderStrip(
+            OneUiComponents.executionOrderRow(
                 context = this,
                 title = "Batch STT",
                 orderText = EffectiveRouting.batchSttExecutionOrder(
@@ -347,17 +170,14 @@ class CloudProviderActivity : BaseSettingsActivity() {
                     allowLocalFallback = allowLocalFallback,
                     localAvailable = localSttReady,
                     useLocalTranscription = useLocalStt,
+                    isConfigured = isConfigured,
                 ),
                 usedAttempts = AttemptBudgetCalculator.usedAttempts(sttSlots),
-            ).apply {
-                layoutParams = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP).apply {
-                    bottomMargin = dp(8)
-                }
-            }
+            )
         )
-
+        executionOrderContainer.addView(hairlineDivider(24, 24))
         executionOrderContainer.addView(
-            OneUiComponents.executionOrderStrip(
+            OneUiComponents.executionOrderRow(
                 context = this,
                 title = "Batch Cleanup",
                 orderText = EffectiveRouting.batchCleanupExecutionOrder(
@@ -366,31 +186,11 @@ class CloudProviderActivity : BaseSettingsActivity() {
                     cloudCleanupEnabled = cloudCleanupOn,
                     allowLocalFallback = allowLocalFallback,
                     localAvailable = localCleanupReady,
+                    isConfigured = isConfigured,
                 ),
                 usedAttempts = AttemptBudgetCalculator.usedAttempts(cleanupSlots),
             )
         )
-    }
-
-    private fun refreshLocalFallbackSummary() {
-        val localStt = TranscriptionActivity.resolveInstalledTranscriptionModel(this, persistIfBlank = false)
-        val localCleanupModel = LocalCleanupProvider.selectedModel(this)
-        val localCleanupInstalled = ModelDownloader.localCleanupModelFile(this, localCleanupModel) != null
-        val sttStatus = if (localStt != null) "STT: ${localStt.name} (ready)" else "STT: not installed"
-        val cleanupStatus = if (localCleanupInstalled) "Cleanup: ${localCleanupModel.name} (ready)" else "Cleanup: not installed"
-        localFallbackStatusView.text = "$sttStatus \u2022 $cleanupStatus"
-    }
-
-    private fun refreshLiveSummary() {
-        val cfg = LiveTranscriptionConfigStore.load(this)
-        val state = if (cfg.enabled) "On" else "Off"
-        val post = if (cfg.postCleanupEnabled) {
-            val active = cfg.postCleanupSlots.count { it.locked }
-            "Post-Cleanup on ($active slot${if (active == 1) "" else "s"})"
-        } else {
-            "Post-Cleanup off"
-        }
-        liveSummarySub.text = "$state \u2022 ${cfg.modelId} \u2022 $post"
     }
 
     private fun refreshChainCards(chain: ProviderChain) {
@@ -405,7 +205,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
             emptyStateView.visibility = View.GONE
             cloudEntries.forEachIndexed { displayPos, (realIndex, entry) ->
                 chainContainer.addView(
-                    buildUnifiedProviderCard(
+                    buildFlatProviderBlock(
                         chain = chain,
                         entry = entry,
                         realIndex = realIndex,
@@ -415,19 +215,25 @@ class CloudProviderActivity : BaseSettingsActivity() {
                         cleanupSlots = cleanupSlots,
                     )
                 )
+                if (displayPos < cloudEntries.lastIndex) {
+                    chainContainer.addView(hairlineDivider(24, 24))
+                }
             }
         }
 
         val atCap = cloudEntries.size >= AttemptBudgetCalculator.MAX_SAVED_CARDS
         addProviderButtonContainer.removeAllViews()
+        if (cloudEntries.isNotEmpty()) {
+            addProviderButtonContainer.addView(hairlineDivider(24, 24))
+        }
         addProviderButtonContainer.addView(
-            OneUiComponents.cobaltButton(
+            OneUiComponents.flatActionRow(
                 context = this,
-                label = "Add provider",
+                label = "+ Add provider",
                 subtitle = if (atCap) {
-                    "${cloudEntries.size}/${AttemptBudgetCalculator.MAX_SAVED_CARDS} saved cards (limit reached)"
+                    "${cloudEntries.size}/${AttemptBudgetCalculator.MAX_SAVED_CARDS} providers saved (limit reached)"
                 } else {
-                    "${cloudEntries.size}/${AttemptBudgetCalculator.MAX_SAVED_CARDS} saved cards \u2022 Shared 3-attempt pool"
+                    "${cloudEntries.size}/${AttemptBudgetCalculator.MAX_SAVED_CARDS} saved \u00b7 Shared 3-attempt pool"
                 },
                 enabled = !atCap,
                 titleTag = true,
@@ -437,7 +243,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
         )
     }
 
-    private fun buildUnifiedProviderCard(
+    private fun buildFlatProviderBlock(
         chain: ProviderChain,
         entry: ProviderChainEntry,
         realIndex: Int,
@@ -446,183 +252,157 @@ class CloudProviderActivity : BaseSettingsActivity() {
         sttSlots: List<AttemptBudgetCalculator.BudgetSlot>,
         cleanupSlots: List<AttemptBudgetCalculator.BudgetSlot>,
     ): View {
-        val card = oneUiCard(padH = 14, padV = 12)
+        val block = vertical(0).apply {
+            setPadding(dp(24), dp(12), dp(16), dp(12))
+        }
         val providerId = ProviderCapabilityRegistry.providerIdFor(entry)
         val descriptor = ProviderCapabilityRegistry.forId(providerId)
         val slotId = "card_$realIndex"
         val primaryText = attrColor(android.R.attr.textColorPrimary)
         val secondaryText = attrColor(android.R.attr.textColorSecondary)
         val lockedGreen = OneUiComponents.resColor(this, R.color.oneui_locked_green)
-        val warningAmber = OneUiComponents.resColor(this, R.color.oneui_warning_amber)
         val dangerRed = OneUiComponents.resColor(this, R.color.oneui_danger_red)
-        val pillSurface = OneUiComponents.resColor(this, R.color.oneui_pill_surface)
-        val borderColor = OneUiComponents.resColor(this, R.color.oneui_card_border)
+        val hasKey = hasKeyFor(entry)
+        val providerLockedEffective = entry.providerLocked && hasKey
 
-        val keyValue = ProviderCredentialStore.getOrLegacy(this, entry)
-        val hasKey = keyValue.isNotBlank()
-
-        // --- Card Header: priority, reorder ▲/▼, remove ✕ ---
+        // --- Compact priority bar: #N + ▲ / ▼ / ✕ ---
         val topMeta = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(2), 0, dp(2), dp(8))
+            setPadding(0, 0, 0, dp(4))
         }
         topMeta.addView(TextView(this).apply {
-            text = "Card ${displayPos + 1}" + if (!entry.providerLocked) " \u2022 Paused" else ""
+            text = "Priority ${displayPos + 1}"
             textSize = 12f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setTextColor(if (entry.providerLocked) secondaryText else warningAmber)
+            setTextColor(secondaryText)
             layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f)
         })
 
-        // Vault key status pill (tappable to jump straight to ApiKeysVaultActivity)
-        val keyPillText = if (hasKey) "Key ${ProviderCredentialStore.maskForDisplay(keyValue)}" else "Add key"
-        topMeta.addView(
-            OneUiComponents.pillBadge(
-                context = this,
-                label = keyPillText,
-                textColor = if (hasKey) lockedGreen else warningAmber,
-                bgColor = pillSurface,
-                borderColor = if (hasKey) lockedGreen else warningAmber,
-            ).apply {
-                layoutParams = LinearLayout.LayoutParams(LP_WRAP, LP_WRAP).apply {
-                    marginEnd = dp(8)
-                }
-                setOnClickListener {
-                    startActivity(
-                        Intent(this@CloudProviderActivity, ApiKeysVaultActivity::class.java)
-                            .putExtra(ApiKeysVaultActivity.EXTRA_FOCUS_PROVIDER_ID, providerId)
-                    )
-                }
-            }
-        )
-
-        fun iconAction(label: String, enabled: Boolean, color: Int = primaryText, onClick: () -> Unit) =
+        fun flatIconAction(label: String, desc: String, enabled: Boolean, color: Int = primaryText, onClick: () -> Unit) =
             TextView(this).apply {
                 text = label
                 textSize = 14f
                 gravity = Gravity.CENTER
+                contentDescription = desc
                 setTextColor(color)
-                background = OneUiComponents.roundedBg(pillSurface, dp(10).toFloat(), dp(1), borderColor)
-                layoutParams = LinearLayout.LayoutParams(dp(32), dp(30)).apply { marginStart = dp(4) }
+                layoutParams = LinearLayout.LayoutParams(dp(34), dp(32))
                 isEnabled = enabled
-                alpha = if (enabled) 1f else 0.35f
-                if (enabled) setOnClickListener { onClick() }
+                isClickable = enabled
+                isFocusable = enabled
+                alpha = if (enabled) 0.9f else 0.3f
+                if (enabled) {
+                    OneUiComponents.applySelectableRipple(this)
+                    setOnClickListener { onClick() }
+                }
             }
 
-        topMeta.addView(iconAction("\u25b2", displayPos > 0) {
+        topMeta.addView(flatIconAction("\u25b2", "Move up", displayPos > 0) {
             saveChain(ProviderChainEditing.moveCloudUp(currentChain().entries, realIndex))
         })
-        topMeta.addView(iconAction("\u25bc", displayPos < totalCloud - 1) {
+        topMeta.addView(flatIconAction("\u25bc", "Move down", displayPos < totalCloud - 1) {
             saveChain(ProviderChainEditing.moveCloudDown(currentChain().entries, realIndex))
         })
-        topMeta.addView(iconAction("\u2715", true, dangerRed) {
+        topMeta.addView(flatIconAction("\u2715", "Remove provider", true, dangerRed) {
             confirmRemoveCard(entry, realIndex)
         })
-        card.addView(topMeta)
+        block.addView(topMeta)
 
-        // --- Provider Selector Row + Side Green Lock-In ---
+        // --- Provider Row (single compact 11sp "Active" or "No key in vault" + lockCircle) ---
+        val providerStatusText = when {
+            !hasKey -> "No key in vault"
+            providerLockedEffective -> "Active"
+            else -> "Paused"
+        }
+        val providerStatusColor = if (providerLockedEffective) lockedGreen else secondaryText
+
         val providerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP).apply {
-                bottomMargin = dp(8)
-            }
         }
         providerRow.addView(
-            OneUiComponents.selectorBox(
+            OneUiComponents.flatSelectorContent(
                 context = this,
                 label = "Provider",
                 valueText = ProviderCapabilityRegistry.displayNameFor(entry),
-                badgeText = if (entry.providerLocked) "Active" else "Unlocked",
+                statusText = providerStatusText,
+                statusColor = providerStatusColor,
                 placeholder = "Select provider",
             ) { openChangeProviderPicker(realIndex, entry) }.apply {
                 layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f).apply {
-                    marginEnd = dp(8)
+                    marginEnd = dp(4)
                 }
             }
         )
         providerRow.addView(
-            OneUiComponents.lockInButton(
+            OneUiComponents.lockCircle(
                 context = this,
-                locked = entry.providerLocked,
+                locked = providerLockedEffective,
                 enabled = true,
                 contentDescription = "Lock provider ${ProviderCapabilityRegistry.displayNameFor(entry)}",
             ) {
-                toggleProviderLock(chain, realIndex, entry, sttSlots, cleanupSlots)
+                toggleProviderLock(chain, realIndex, entry, hasKey, providerId, sttSlots, cleanupSlots)
             }
         )
-        card.addView(providerRow)
+        block.addView(providerRow)
 
         // --- STT Row ---
         val supportsStt = entry.kind.supportsTranscription() && (descriptor?.supports(CapabilityLane.BATCH_STT) != false)
         if (!supportsStt) {
-            card.addView(TextView(this).apply {
-                text = "Batch STT: Cleanup only \u2014 this provider does not support audio transcription."
+            block.addView(TextView(this).apply {
+                text = "STT \u00b7 Cleanup only (no audio transcription)"
                 textSize = 12f
                 setTextColor(secondaryText)
-                setPadding(dp(4), dp(2), dp(4), dp(8))
+                setPadding(0, dp(4), 0, dp(4))
             })
         } else {
             val sttSkipped = entry.transcriptionModel == ProviderChainEntry.SKIP_MODEL_ID
             val sttModelId = if (sttSkipped) null else entry.transcriptionModel?.takeIf { it.isNotBlank() }
                 ?: defaultBatchModelFor(providerId, CapabilityLane.BATCH_STT)
             val sttMeta = sttModelId?.let { ModelCapabilityClassifier.curatedModelById(providerId, it) }
-            val sttBadge = when {
-                sttSkipped -> null
-                sttMeta?.isNonThinking == true -> "Non-thinking"
-                else -> null
-            }
+            val sttActive = entry.isBatchSttActive() && hasKey
 
             val sttRow = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                layoutParams = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP).apply {
-                    bottomMargin = dp(8)
-                }
-                alpha = if (entry.providerLocked) 1f else 0.55f
+                alpha = if (providerLockedEffective) 1f else 0.55f
             }
             sttRow.addView(
-                OneUiComponents.selectorBox(
+                OneUiComponents.flatSelectorContent(
                     context = this,
                     label = "STT",
                     valueText = if (sttSkipped) "Skip / None" else (sttMeta?.displayName ?: sttModelId),
-                    badgeText = sttBadge,
                     placeholder = "Select STT model",
-                    enabled = entry.providerLocked,
+                    enabled = providerLockedEffective,
                 ) { openBatchModelPicker(realIndex, entry, CapabilityLane.BATCH_STT) }.apply {
                     layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f).apply {
-                        marginEnd = dp(8)
+                        marginEnd = dp(4)
                     }
                 }
             )
             val allowedSttAttempts = AttemptBudgetCalculator.allowedAttemptsForSlot(sttSlots, slotId)
             sttRow.addView(
-                OneUiComponents.attemptsPill(
+                OneUiComponents.attemptBadge(
                     context = this,
                     attempts = entry.sttAttempts,
                     allowedAttempts = if (allowedSttAttempts.isEmpty()) listOf(entry.sttAttempts) else allowedSttAttempts,
-                    enabled = entry.providerLocked && !sttSkipped && (entry.isBatchSttActive() || allowedSttAttempts.isNotEmpty()),
+                    enabled = providerLockedEffective && !sttSkipped && (sttActive || allowedSttAttempts.isNotEmpty()),
                 ) { chosen ->
                     val updated = entry.copy(sttAttempts = chosen).withSynchronizedParticipation()
                     saveChain(ProviderChainEditing.replace(currentChain().entries, realIndex, updated))
-                }.apply {
-                    layoutParams = LinearLayout.LayoutParams(LP_WRAP, LP_WRAP).apply {
-                        marginEnd = dp(8)
-                    }
                 }
             )
             sttRow.addView(
-                OneUiComponents.lockInButton(
+                OneUiComponents.lockCircle(
                     context = this,
-                    locked = entry.isBatchSttActive(),
-                    enabled = entry.providerLocked && !sttSkipped,
+                    locked = sttActive,
+                    enabled = !sttSkipped,
                     contentDescription = "Lock STT for ${ProviderCapabilityRegistry.displayNameFor(entry)}",
                 ) {
-                    toggleLaneLock(realIndex, entry, CapabilityLane.BATCH_STT, sttSlots)
+                    toggleLaneLock(realIndex, entry, hasKey, providerId, CapabilityLane.BATCH_STT, sttSlots)
                 }
             )
-            card.addView(sttRow)
+            block.addView(sttRow)
         }
 
         // --- Cleanup Row ---
@@ -630,66 +410,71 @@ class CloudProviderActivity : BaseSettingsActivity() {
         val cleanupModelId = if (cleanupSkipped) null else entry.model.takeIf { it.isNotBlank() }
             ?: defaultBatchModelFor(providerId, CapabilityLane.CLEANUP)
         val cleanupMeta = cleanupModelId?.let { ModelCapabilityClassifier.curatedModelById(providerId, it) }
+        val cleanupActive = entry.isBatchCleanupActive() && hasKey
 
         val cleanupRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            alpha = if (entry.providerLocked) 1f else 0.55f
+            alpha = if (providerLockedEffective) 1f else 0.55f
         }
         cleanupRow.addView(
-            OneUiComponents.selectorBox(
+            OneUiComponents.flatSelectorContent(
                 context = this,
                 label = "Cleanup",
                 valueText = if (cleanupSkipped) "Skip / None" else (cleanupMeta?.displayName ?: cleanupModelId),
                 placeholder = "Select cleanup model",
-                enabled = entry.providerLocked,
+                enabled = providerLockedEffective,
             ) { openBatchModelPicker(realIndex, entry, CapabilityLane.CLEANUP) }.apply {
                 layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f).apply {
-                    marginEnd = dp(8)
+                    marginEnd = dp(4)
                 }
             }
         )
         val allowedCleanupAttempts = AttemptBudgetCalculator.allowedAttemptsForSlot(cleanupSlots, slotId)
         cleanupRow.addView(
-            OneUiComponents.attemptsPill(
+            OneUiComponents.attemptBadge(
                 context = this,
                 attempts = entry.cleanupAttempts,
                 allowedAttempts = if (allowedCleanupAttempts.isEmpty()) listOf(entry.cleanupAttempts) else allowedCleanupAttempts,
-                enabled = entry.providerLocked && !cleanupSkipped && (entry.isBatchCleanupActive() || allowedCleanupAttempts.isNotEmpty()),
+                enabled = providerLockedEffective && !cleanupSkipped && (cleanupActive || allowedCleanupAttempts.isNotEmpty()),
             ) { chosen ->
                 val updated = entry.copy(cleanupAttempts = chosen).withSynchronizedParticipation()
                 saveChain(ProviderChainEditing.replace(currentChain().entries, realIndex, updated))
-            }.apply {
-                layoutParams = LinearLayout.LayoutParams(LP_WRAP, LP_WRAP).apply {
-                    marginEnd = dp(8)
-                }
             }
         )
         cleanupRow.addView(
-            OneUiComponents.lockInButton(
+            OneUiComponents.lockCircle(
                 context = this,
-                locked = entry.isBatchCleanupActive(),
-                enabled = entry.providerLocked && !cleanupSkipped,
+                locked = cleanupActive,
+                enabled = !cleanupSkipped,
                 contentDescription = "Lock Cleanup for ${ProviderCapabilityRegistry.displayNameFor(entry)}",
             ) {
-                toggleLaneLock(realIndex, entry, CapabilityLane.CLEANUP, cleanupSlots)
+                toggleLaneLock(realIndex, entry, hasKey, providerId, CapabilityLane.CLEANUP, cleanupSlots)
             }
         )
-        card.addView(cleanupRow)
+        block.addView(cleanupRow)
 
-        return card
+        return block
+    }
+
+    private fun openVaultForProvider(providerId: String) {
+        startActivity(
+            Intent(this, ApiKeysVaultActivity::class.java)
+                .putExtra(ApiKeysVaultActivity.EXTRA_FOCUS_PROVIDER_ID, providerId)
+        )
     }
 
     private fun toggleProviderLock(
         chain: ProviderChain,
         realIndex: Int,
         entry: ProviderChainEntry,
+        hasKey: Boolean,
+        providerId: String,
         sttSlots: List<AttemptBudgetCalculator.BudgetSlot>,
         cleanupSlots: List<AttemptBudgetCalculator.BudgetSlot>,
     ) {
         val slotId = "card_$realIndex"
-        if (entry.providerLocked) {
-            // Unlocking pauses both STT and Cleanup rows and immediately returns their attempts to the 3-attempt pool.
+        if (entry.providerLocked && hasKey) {
             val paused = entry.copy(
                 providerLocked = false,
                 useForTranscription = false,
@@ -698,11 +483,17 @@ class CloudProviderActivity : BaseSettingsActivity() {
             saveChain(ProviderChainEditing.replace(chain.entries, realIndex, paused))
             return
         }
+        if (!hasKey) {
+            toast("Add a ${ProviderCapabilityRegistry.displayNameFor(entry)} API key in API keys first")
+            openVaultForProvider(providerId)
+            return
+        }
 
-        // Re-locking validates available 3-attempt budget independently per lane.
-        var newSttLocked = entry.sttLocked && entry.kind.supportsTranscription() && entry.transcriptionModel != ProviderChainEntry.SKIP_MODEL_ID
+        val supportsStt = entry.kind.supportsTranscription() && entry.transcriptionModel != ProviderChainEntry.SKIP_MODEL_ID
+        val supportsCleanup = entry.model != ProviderChainEntry.SKIP_MODEL_ID
+        var newSttLocked = supportsStt && (entry.sttLocked || (!entry.sttLocked && !entry.cleanupLocked))
         var newSttAttempts = entry.sttAttempts
-        var newCleanupLocked = entry.cleanupLocked && entry.model != ProviderChainEntry.SKIP_MODEL_ID
+        var newCleanupLocked = supportsCleanup && (entry.cleanupLocked || (!entry.sttLocked && !entry.cleanupLocked))
         var newCleanupAttempts = entry.cleanupAttempts
         val notes = mutableListOf<String>()
 
@@ -710,7 +501,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
             when (val res = AttemptBudgetCalculator.canLockSlot(sttSlots, slotId, newSttAttempts)) {
                 is AttemptBudgetCalculator.LockResult.Allowed -> {
                     newSttAttempts = res.assignedAttempts
-                    if (res.wasClamped) notes += "STT adjusted to ${res.assignedAttempts}x"
+                    if (res.wasClamped) notes += "STT adjusted to ${res.assignedAttempts}"
                 }
                 is AttemptBudgetCalculator.LockResult.Blocked -> {
                     newSttLocked = false
@@ -722,7 +513,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
             when (val res = AttemptBudgetCalculator.canLockSlot(cleanupSlots, slotId, newCleanupAttempts)) {
                 is AttemptBudgetCalculator.LockResult.Allowed -> {
                     newCleanupAttempts = res.assignedAttempts
-                    if (res.wasClamped) notes += "Cleanup adjusted to ${res.assignedAttempts}x"
+                    if (res.wasClamped) notes += "Cleanup adjusted to ${res.assignedAttempts}"
                 }
                 is AttemptBudgetCalculator.LockResult.Blocked -> {
                     newCleanupLocked = false
@@ -731,7 +522,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
             }
         }
 
-        if (notes.isNotEmpty()) toast(notes.joinToString(" \u2022 "))
+        if (notes.isNotEmpty()) toast(notes.joinToString(" \u00b7 "))
         val relocked = entry.copy(
             enabled = true,
             providerLocked = true,
@@ -746,11 +537,13 @@ class CloudProviderActivity : BaseSettingsActivity() {
     private fun toggleLaneLock(
         realIndex: Int,
         entry: ProviderChainEntry,
+        hasKey: Boolean,
+        providerId: String,
         lane: CapabilityLane,
         laneSlots: List<AttemptBudgetCalculator.BudgetSlot>,
     ) {
         val slotId = "card_$realIndex"
-        val currentlyLocked = if (lane == CapabilityLane.BATCH_STT) entry.isBatchSttActive() else entry.isBatchCleanupActive()
+        val currentlyLocked = hasKey && if (lane == CapabilityLane.BATCH_STT) entry.isBatchSttActive() else entry.isBatchCleanupActive()
         if (currentlyLocked) {
             val updated = if (lane == CapabilityLane.BATCH_STT) {
                 entry.copy(sttLocked = false).withSynchronizedParticipation()
@@ -760,13 +553,18 @@ class CloudProviderActivity : BaseSettingsActivity() {
             saveChain(ProviderChainEditing.replace(currentChain().entries, realIndex, updated))
             return
         }
+        if (!hasKey) {
+            toast("Add a ${ProviderCapabilityRegistry.displayNameFor(entry)} API key in API keys first")
+            openVaultForProvider(providerId)
+            return
+        }
 
         val requested = if (lane == CapabilityLane.BATCH_STT) entry.sttAttempts else entry.cleanupAttempts
         when (val res = AttemptBudgetCalculator.canLockSlot(laneSlots, slotId, requested)) {
             is AttemptBudgetCalculator.LockResult.Blocked -> toast(res.reason)
             is AttemptBudgetCalculator.LockResult.Allowed -> {
                 if (res.wasClamped) {
-                    toast("Adjusted to ${res.assignedAttempts}x to fit the 3-attempt pool")
+                    toast("Adjusted to ${res.assignedAttempts} to fit the 3-attempt pool")
                 }
                 val updated = if (lane == CapabilityLane.BATCH_STT) {
                     entry.copy(
@@ -800,7 +598,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
                             OneUiComponents.SearchablePickerSheet.PickerItem(
                                 id = p.id,
                                 title = p.displayName,
-                                subtitle = "Add endpoint & key in API keys vault",
+                                subtitle = "Add endpoint & key in API keys",
                                 badges = listOf("Batch STT", "Cleanup"),
                             )
                         )
@@ -811,7 +609,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
                                     id = "custom_vault:${cv.id}",
                                     title = cv.displayLabel,
                                     subtitle = cv.customBaseUrl ?: "Custom OpenAI-Compatible",
-                                    badges = listOf("Custom", "Vault ready"),
+                                    badges = listOf("Custom"),
                                 )
                             )
                         }
@@ -827,7 +625,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
                         OneUiComponents.SearchablePickerSheet.PickerItem(
                             id = p.id,
                             title = p.displayName,
-                            subtitle = if (hasKey) "Shared vault key ready" else "No key in vault yet",
+                            subtitle = if (hasKey) "Key saved in vault" else "No key in vault",
                             badges = lanes,
                         )
                     )
@@ -857,7 +655,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
             OneUiComponents.SearchablePickerSheet.PickerItem(
                 id = p.id,
                 title = p.displayName,
-                subtitle = if (hasKey) "Shared vault key ready" else "No key in vault yet",
+                subtitle = if (hasKey) "Key saved in vault" else "No key in vault",
                 badges = p.supportedLanes.map {
                     when (it) {
                         CapabilityLane.BATCH_STT -> "Batch STT"
@@ -890,8 +688,9 @@ class CloudProviderActivity : BaseSettingsActivity() {
         if (selectionId.startsWith("custom_vault:")) {
             val vaultId = selectionId.removePrefix("custom_vault:")
             val vaultEntry = ApiKeyVaultStore.findById(this, vaultId) ?: return null
-            val sttLock = AttemptBudgetCalculator.canLockSlot(sttSlots, "new", 1) is AttemptBudgetCalculator.LockResult.Allowed
-            val cleanupLock = AttemptBudgetCalculator.canLockSlot(cleanupSlots, "new", 1) is AttemptBudgetCalculator.LockResult.Allowed
+            val hasKey = ProviderCredentialStore.isVaultConfigured(this, vaultEntry.id)
+            val sttLock = hasKey && AttemptBudgetCalculator.canLockSlot(sttSlots, "new", 1) is AttemptBudgetCalculator.LockResult.Allowed
+            val cleanupLock = hasKey && AttemptBudgetCalculator.canLockSlot(cleanupSlots, "new", 1) is AttemptBudgetCalculator.LockResult.Allowed
             return ProviderChainEntry(
                 kind = ProviderKind.OPENAI,
                 model = "",
@@ -903,7 +702,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
                 useForCleanup = cleanupLock,
                 presetId = null,
                 vaultKeyId = vaultEntry.id,
-                providerLocked = true,
+                providerLocked = hasKey,
                 sttLocked = sttLock,
                 cleanupLocked = cleanupLock,
                 sttAttempts = 1,
@@ -913,10 +712,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
         }
 
         if (selectionId == ProviderCapabilityRegistry.ID_CUSTOM_OPENAI) {
-            startActivity(
-                Intent(this, ApiKeysVaultActivity::class.java)
-                    .putExtra(ApiKeysVaultActivity.EXTRA_FOCUS_PROVIDER_ID, ProviderCapabilityRegistry.ID_CUSTOM_OPENAI)
-            )
+            openVaultForProvider(ProviderCapabilityRegistry.ID_CUSTOM_OPENAI)
             toast("Add your Custom OpenAI-Compatible endpoint and key in API keys first")
             return null
         }
@@ -931,10 +727,12 @@ class CloudProviderActivity : BaseSettingsActivity() {
         val vaultEntry = ApiKeyVaultStore.findLockedForProvider(this, descriptor.id)
             ?: ApiKeyVaultStore.findForProvider(this, descriptor.id).firstOrNull()
         val vaultId = vaultEntry?.id ?: ProviderCapabilityRegistry.canonicalVaultKeyId(descriptor.id)
+        val hasKey = ApiKeyVaultStore.hasSecret(this, vaultId, descriptor.id)
 
-        val canLockStt = descriptor.supports(CapabilityLane.BATCH_STT) &&
+        val canLockStt = hasKey && descriptor.supports(CapabilityLane.BATCH_STT) &&
             AttemptBudgetCalculator.canLockSlot(sttSlots, "new", 1) is AttemptBudgetCalculator.LockResult.Allowed
-        val canLockCleanup = AttemptBudgetCalculator.canLockSlot(cleanupSlots, "new", 1) is AttemptBudgetCalculator.LockResult.Allowed
+        val canLockCleanup = hasKey &&
+            AttemptBudgetCalculator.canLockSlot(cleanupSlots, "new", 1) is AttemptBudgetCalculator.LockResult.Allowed
 
         val baseUrl = if (descriptor.presetId != null) descriptor.defaultBaseUrl else null
 
@@ -949,7 +747,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
             useForCleanup = canLockCleanup,
             presetId = descriptor.presetId,
             vaultKeyId = vaultId,
-            providerLocked = true,
+            providerLocked = hasKey,
             sttLocked = canLockStt,
             cleanupLocked = canLockCleanup,
             sttAttempts = 1,
@@ -976,7 +774,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
 
         val initialModels = LiveModelCatalogStore.modelsFor(this, providerId, lane, entry.baseUrlOverride)
         val apiKey = ProviderCredentialStore.getOrLegacy(this, entry)
-        val laneTitle = if (lane == CapabilityLane.BATCH_STT) "Select STT Model" else "Select Cleanup Model"
+        val laneTitle = if (lane == CapabilityLane.BATCH_STT) "Select STT model" else "Select cleanup model"
 
         OneUiComponents.SearchablePickerSheet.show(
             context = this,
@@ -1039,7 +837,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
     private fun confirmRemoveCard(entry: ProviderChainEntry, realIndex: Int) {
         AlertDialog.Builder(this)
             .setTitle("Remove ${ProviderCapabilityRegistry.displayNameFor(entry)}?")
-            .setMessage("This removes the card from your Batch chain. Your API key stays safe in the API keys vault.")
+            .setMessage("This removes the provider from your Batch chain. Your API key stays safe in API keys.")
             .setPositiveButton("Remove") { _, _ ->
                 saveChain(ProviderChainEditing.remove(currentChain().entries, realIndex))
             }
@@ -1047,87 +845,7 @@ class CloudProviderActivity : BaseSettingsActivity() {
             .show()
     }
 
-    // --- Dictation mode & Mix-and-match ---
-
-    private fun refreshModeSelection() {
-        val mode = DictationModePresets.current(this)
-        val button = modeRadioButtons[mode]
-        if (button == null) modeRadioGroup.clearCheck() else modeRadioGroup.check(button.id)
-        if (mode == DictationMode.CUSTOM) {
-            modeCustomNote.visibility = View.VISIBLE
-            modeCustomNote.text = "Custom \u2014 transcription and cleanup are set independently under Mix and match."
-        } else {
-            modeCustomNote.visibility = View.GONE
-        }
-    }
-
-    private fun applyMode(mode: DictationMode) {
-        DictationModePresets.apply(this, mode)
-        refresh()
-    }
-
-    private fun cloudTranscriptionSubtitle(): String {
-        val useLocal = prefs().getBoolean("use_local", true)
-        if (useLocal) return "Off \u2014 transcription runs on-device"
-        val chain = currentChain()
-        val hasCandidate = ProviderChainRuntime.transcriptionCandidates(chain).any { it.kind != ProviderKind.LOCAL }
-        val hasConfigured = hasConfiguredCloudTranscription(chain) { ProviderCredentialStore.isConfiguredOrLegacy(this, it) }
-        return when {
-            hasConfigured -> "On \u2014 uses the active Batch STT chain"
-            hasCandidate -> "On, but no key is set for an active STT provider yet \u2014 falls back to on-device"
-            else -> "On, but no locked provider supports Batch STT yet \u2014 falls back to on-device"
-        }
-    }
-
-    private fun cloudCleanupSubtitle(): String {
-        if (!CloudFeatureToggle.cleanupEnabled(this)) return "Off \u2014 cleanup runs on-device (or is skipped if no local model is set)"
-        val chain = currentChain()
-        val cloudEntries = chain.capableEntriesFor(needsTranscription = false).filter { it.kind != ProviderKind.LOCAL }
-        val hasConfigured = cloudEntries.any { ProviderCredentialStore.isConfiguredOrLegacy(this, it) }
-        return when {
-            hasConfigured -> "On \u2014 uses the active Batch Cleanup chain"
-            cloudEntries.isNotEmpty() -> "On, but no key is set for an active cleanup provider yet"
-            else -> "On, but no locked cleanup provider is configured yet"
-        }
-    }
-
-    private fun onToggleCloudTranscription(newCloud: Boolean) {
-        prefs().edit().putBoolean("use_local", !newCloud).apply()
-        refresh()
-    }
-
-    private fun onToggleCloudCleanup(enabled: Boolean) {
-        CloudFeatureToggle.setCleanupEnabled(this, enabled)
-        refresh()
-    }
-
-    private fun localFallbackSubtitle(): String =
-        if (DictationModeToggle.allowLocalFallback(this))
-            "On \u2014 if every cloud provider fails, dictation falls back to on-device"
-        else
-            "Off \u2014 if cloud fails, you'll see an error instead of a silent on-device fallback"
-
-    private fun cloudFallbackSubtitle(): String =
-        if (DictationModeToggle.allowCloudFallback(this))
-            "On \u2014 if on-device isn't ready or fails, dictation falls back to cloud"
-        else
-            "Off \u2014 if on-device isn't ready or fails, you'll see an error instead of a silent cloud fallback"
-
-    private fun onToggleLocalFallback(enabled: Boolean) {
-        DictationModeToggle.setAllowLocalFallback(this, enabled)
-        refresh()
-    }
-
-    private fun onToggleCloudFallback(enabled: Boolean) {
-        DictationModeToggle.setAllowCloudFallback(this, enabled)
-        refresh()
-    }
-
     companion object {
-        private const val LP_WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
-
-        private val DICTATION_MODE_OPTIONS = DictationModePresets.OPTIONS
-
         fun subtitle(context: android.content.Context): String =
             subtitleFor(ProviderChainStore.load(context))
 

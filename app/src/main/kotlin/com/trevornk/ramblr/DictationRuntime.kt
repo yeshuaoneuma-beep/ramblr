@@ -247,7 +247,7 @@ class DictationRuntime internal constructor(
     companion object {
         private const val TAG = "PhoneWhisper"
         private const val SAMPLE_RATE = 16000
-        const val BUSY_MESSAGE = "Ramblr is already dictating from another input surface"
+        const val BUSY_MESSAGE = "Rhema Cadence is already dictating from another input surface"
         private const val NO_SPEECH_MESSAGE = "No speech detected"
 
         /** Backstop: 180s Cloud STT + 180s Local STT + 120s Cloud Cleanup + 300s Local Cleanup + 30s margin. */
@@ -807,7 +807,7 @@ class DictationRuntime internal constructor(
         try {
             if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
                 != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                toast("Grant audio permission in Ramblr app"); return
+                toast("Grant audio permission in Rhema Cadence app"); return
             }
 
             warmUpLocalCleanupModelIfNeeded()
@@ -1078,6 +1078,24 @@ class DictationRuntime internal constructor(
             httpCode = failure.errorCode,
             detail = "${failure.reason.name}: ${failure.message}",
         )
+        runCatching {
+            val title = if (failure.reason == CloudLiveFailureReason.SESSION_LIMIT) {
+                "Live session reached 9:00 limit"
+            } else {
+                "Live transcription disconnected"
+            }
+            val body = if (failure.reason == CloudLiveFailureReason.SESSION_LIMIT) {
+                "Switched seamlessly to Batch transcription from your local recording."
+            } else {
+                "Connection dropped during dictation; continued recording for Batch transcription."
+            }
+            AppNotificationStore.record(
+                context = context,
+                category = AppNotificationCategory.LIVE_DISCONNECT,
+                title = title,
+                body = body,
+            )
+        }
         runCatching { liveDisconnectListener?.onLiveDisconnect(event) }
         runCatching { listener.onCloudLiveDisconnected(event) }
         if (attempt.config.smartDisconnectAlertEnabled) {
@@ -1686,7 +1704,17 @@ class DictationRuntime internal constructor(
             // configured -- unless #100's "fall back to cloud if on-device fails" toggle is on,
             // in which case a not-yet-downloaded local model is exactly the case that toggle
             // exists for.
-            useLocal && allowCloudFallback -> transcribeApi(file, token, compressedFile, lease)
+            useLocal && allowCloudFallback -> {
+                runCatching {
+                    AppNotificationStore.record(
+                        context = context,
+                        category = AppNotificationCategory.FALLBACK,
+                        title = "Fell back to cloud transcription",
+                        body = "On-device speech model was unavailable; switched to your cloud provider chain.",
+                    )
+                }
+                transcribeApi(file, token, compressedFile, lease)
+            }
             useLocal -> {
                 compressedFile?.delete()
                 file.delete()
@@ -2032,7 +2060,7 @@ class DictationRuntime internal constructor(
         if (usableCloudCandidates.isEmpty() && localCandidate == null) {
             file.delete()
             compressedFile?.delete()
-            reset("Set API key in Ramblr app", token, lease)
+            reset("Set API key in Rhema Cadence app", token, lease)
             return
         }
 
@@ -2133,6 +2161,14 @@ class DictationRuntime internal constructor(
                 is TranscriptionChain.Step.RunLocal -> {
                     if (anyCloudAttempted) {
                         emitStageStatus(token, "Cloud unavailable — trying on-device…")
+                        runCatching {
+                            AppNotificationStore.record(
+                                context = context,
+                                category = AppNotificationCategory.FALLBACK,
+                                title = "Fell back to on-device transcription",
+                                body = "Cloud transcription failed; switched to your on-device speech model.",
+                            )
+                        }
                     }
                     thread {
                         if (isStaleOrCancelled()) {

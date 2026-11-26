@@ -18,6 +18,11 @@
     <color name="oneui_warning_amber">#D97706</color>
     <color name="oneui_danger_red">#DC2626</color>
 
+    <!-- Phase 3A.3 unified pop-up & unread badge tokens (Light). -->
+    <color name="popup_surface">#FFFFFF</color>
+    <color name="popup_border">#E5E7EB</color>
+    <color name="badge_unread_red">#EF532A</color>
+
     <!-- IME mic states. Only the recording/disabled fills are literal colours: they carry a
          specific meaning (danger, blocked) rather than a theme role, so they are not taken from
          colorPrimary and friends. These light values are the exact greys/reds the panel has always
@@ -26,9 +31,7 @@
     <color name="ime_mic_recording">#BE2D2D</color>
     <color name="ime_mic_disabled">#B0B4BA</color>
 
-    <!-- Launcher icon colors only, intentionally separate from the app's Material theme colors
-         above (primary/primary_container), which stay untouched. Dark background, neon magenta
-         mic glyph, matching the overlay's default border color. -->
-    <color name="launcher_icon_background">#0D0D0F</color>
-    <color name="launcher_icon_foreground">#FF00FF</color>
+    <!-- Rhema Cadence Style 1 Adaptive Vector Icon (Minimal Soundwave Pulse). -->
+    <color name="launcher_icon_background">#000000</color>
+    <color name="launcher_icon_foreground">#3B82F6</color>
 </resources>

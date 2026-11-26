@@ -28,6 +28,6 @@ class ServiceRecoveryDismissReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        const val ACTION_DISMISSED = "com.trevornk.ramblr.action.RECOVERY_NOTIFICATION_DISMISSED"
+        const val ACTION_DISMISSED = "${BuildConfig.APPLICATION_ID}.action.RECOVERY_NOTIFICATION_DISMISSED"
     }
 }

@@ -222,7 +222,7 @@ class RamblrImeTest {
 
         assertTrue(commits.isEmpty())
         assertEquals(listOf("stale"), histories.map { it.rawText })
-        assertEquals(listOf("Text could not be inserted — dictated text was saved in Ramblr history"), messages)
+        assertEquals(listOf("Text could not be inserted — dictated text was saved in Rhema Cadence history"), messages)
     }
 
     @Test
@@ -424,7 +424,7 @@ class RamblrImeTest {
 
         assertTrue(commits.isEmpty())
         assertEquals(
-            listOf("Text could not be inserted — dictated text was saved in Ramblr history"),
+            listOf("Text could not be inserted — dictated text was saved in Rhema Cadence history"),
             messages,
         )
     }
@@ -634,7 +634,7 @@ class RamblrImeTest {
         assertEquals(1, attempts)
         assertEquals(listOf("recover me"), history.map { it.rawText })
         assertEquals(
-            listOf("Text could not be inserted — dictated text was saved in Ramblr history"),
+            listOf("Text could not be inserted — dictated text was saved in Rhema Cadence history"),
             messages,
         )
     }

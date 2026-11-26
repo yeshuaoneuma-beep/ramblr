@@ -18,6 +18,11 @@
     <color name="oneui_warning_amber">#F59E0B</color>
     <color name="oneui_danger_red">#EF4444</color>
 
+    <!-- Phase 3A.3 unified pop-up & unread badge tokens (Night). -->
+    <color name="popup_surface">#141418</color>
+    <color name="popup_border">#26262C</color>
+    <color name="badge_unread_red">#EF532A</color>
+
     <!-- See values/colors.xml. The light disabled grey is brighter than a dark surface, so it
          would read as an active control at night; the recording red is lifted for the same
          reason, keeping the danger cue visible without glowing. -->

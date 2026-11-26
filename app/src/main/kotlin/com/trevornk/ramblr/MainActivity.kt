@@ -36,15 +36,22 @@ class MainActivity : BaseSettingsActivity() {
     private lateinit var setupRowSub: TextView
     private lateinit var transcriptionRowSub: TextView
     private lateinit var cleanupRowSub: TextView
+    private lateinit var cleanupStylesRowSub: TextView
     private lateinit var dictationModeRowSub: TextView
+    private lateinit var liveTranscriptionRowSub: TextView
     private lateinit var cloudRowSub: TextView
+    private lateinit var fallbackRowSub: TextView
     private lateinit var vocabularyRowSub: TextView
     private lateinit var invocationRowSub: TextView
     private lateinit var voiceKeyboardRowSub: TextView
+    private lateinit var notificationsRowSub: TextView
+    private lateinit var notificationsBadge: TextView
     private lateinit var historyRowSub: TextView
+    private lateinit var historyBadge: TextView
     private lateinit var audioFilesRowSub: TextView
     private lateinit var floatingIconRowSub: TextView
     private lateinit var diagnosticsRowSub: TextView
+    private lateinit var diagnosticsBadge: TextView
     private lateinit var sections: LinearLayout
     private lateinit var serviceKilledBanner: View
     private lateinit var staleComponentBanner: View
@@ -76,40 +83,26 @@ class MainActivity : BaseSettingsActivity() {
         // even if WhisperAccessibilityService is never enabled.
         ProviderAccountMigration.runIfNeeded(this)
         ApiKeyVaultMigration.runIfNeeded(this)
+        KeyGateNormalizer.normalizeAndPersistIfChanged(this)
 
-        // A fold/rotation recreates this Activity mid-wizard; without restoring "the wizard has
-        // started", OnboardingWizard.shouldAdvance stops advancing the moment Accessibility gets
-        // enabled (its shouldShow signal clears) and strands the wizard before the
-        // transcription/cleanup/streaming steps (#80). Fold-posture change while in system
-        // Settings is the *normal* way this happens on a Fold.
         onboardingIntroShown = savedInstanceState?.getBoolean(STATE_ONBOARDING_INTRO_SHOWN) ?: false
-        // The invocation choice is persisted before leaving for mic/system settings. A process
-        // recreation must resume that chosen path rather than asking the user to choose again.
         if (onboardingSetupModeOrNull() != null) onboardingIntroShown = true
 
         val root = vertical(0, 0)
 
         val header = TextView(this).apply {
-            text = "Ramblr"
+            text = getString(R.string.app_name)
             textSize = 32f
             setPadding(dp(24), dp(64), dp(24), dp(24))
         }
         root.addView(header)
 
-        // #156 guard rail: the invisible-toggle recovery banner. Built unconditionally and
-        // shown/hidden in refresh() (the #L16 lesson from BehaviorActivity's iconHiddenRow --
-        // the triggering state changes precisely while this Activity is paused, in system
-        // Settings), so onResume picks up a fresh kill immediately.
         serviceKilledBanner = buildServiceKilledBanner()
         root.addView(serviceKilledBanner)
 
-        // #258 stale-component banner: same build-once/toggle-in-refresh pattern, same reason --
-        // an automation macro flips enabled_accessibility_services while this Activity is paused.
         staleComponentBanner = buildStaleComponentBanner()
         root.addView(staleComponentBanner)
 
-        // Status row -- tapping it (re-)launches the setup walkthrough when setup isn't done yet
-        // (#52); once ready it's just informational, same as before.
         val statusRow = settingsRow("Status", "Checking...") { onStatusRowTapped() }
         statusSubtitle = statusRow.findViewWithTag("subtitle")
         root.addView(statusRow)
@@ -119,33 +112,35 @@ class MainActivity : BaseSettingsActivity() {
 
         sections.addView(sectionHeader("Speech and text"))
 
-        // The same three presets as the radio group on Cloud providers (DictationModePresets),
-        // one tap from the top so the most common choice isn't buried two screens down.
         val dictationModeRow = settingsRow("Dictation mode", "Checking...", icon = R.drawable.ic_settings_tune) {
-            promptDictationMode()
+            startActivity(Intent(this, DictationModeActivity::class.java))
         }
         dictationModeRowSub = dictationModeRow.findViewWithTag("subtitle")
         sections.addView(dictationModeRow)
 
-        val transcriptionRow = settingsRow("Speech recognition", "Checking...", icon = R.drawable.ic_settings_mic) {
+        val liveTranscriptionRow = settingsRow("Live transcription", "Checking...", icon = R.drawable.ic_settings_live_stream) {
+            startActivity(Intent(this, LiveTranscriptionActivity::class.java))
+        }
+        liveTranscriptionRowSub = liveTranscriptionRow.findViewWithTag("subtitle")
+        sections.addView(liveTranscriptionRow)
+
+        val transcriptionRow = settingsRow("Local speech recognition", "Checking...", icon = R.drawable.ic_settings_mic) {
             startActivity(Intent(this, TranscriptionActivity::class.java))
         }
         transcriptionRowSub = transcriptionRow.findViewWithTag("subtitle")
         sections.addView(transcriptionRow)
 
-        val cleanupRow = settingsRow("AI cleanup", "Checking...", icon = R.drawable.ic_settings_auto_awesome) {
+        val cleanupRow = settingsRow("Local AI cleanup", "Checking...", icon = R.drawable.ic_settings_auto_awesome) {
             startActivity(Intent(this, CleanupActivity::class.java))
         }
         cleanupRowSub = cleanupRow.findViewWithTag("subtitle")
         sections.addView(cleanupRow)
 
-        // Personal vocabulary (#217) now opens its own screen together with snippets and smart
-        // suggestions, still one tap from here and findable through search.
-        val vocabularyRow = settingsRow("Words and snippets", "Checking...", icon = R.drawable.ic_settings_menu_book) {
-            startActivity(BehaviorActivity.intent(this, BehaviorActivity.Section.WORDS))
+        val cleanupStylesRow = settingsRow("Cleanup styles", "Checking...", icon = R.drawable.ic_settings_cleanup_styles) {
+            startActivity(Intent(this, CleanupStylesActivity::class.java))
         }
-        vocabularyRowSub = vocabularyRow.findViewWithTag("subtitle")
-        sections.addView(vocabularyRow)
+        cleanupStylesRowSub = cleanupStylesRow.findViewWithTag("subtitle")
+        sections.addView(cleanupStylesRow)
 
         val cloudRow = settingsRow("Cloud providers", "Checking...", icon = R.drawable.ic_settings_cloud) {
             startActivity(Intent(this, CloudProviderActivity::class.java))
@@ -153,8 +148,17 @@ class MainActivity : BaseSettingsActivity() {
         cloudRowSub = cloudRow.findViewWithTag("subtitle")
         sections.addView(cloudRow)
 
-        // Live Preview keeps its own screen; its entry point now sits on Recognition, next to
-        // the other speech-to-text options.
+        val fallbackRow = settingsRow("Fallback", "Checking...", icon = R.drawable.ic_settings_fallback) {
+            startActivity(Intent(this, FallbackActivity::class.java))
+        }
+        fallbackRowSub = fallbackRow.findViewWithTag("subtitle")
+        sections.addView(fallbackRow)
+
+        val vocabularyRow = settingsRow("Words and snippets", "Checking...", icon = R.drawable.ic_settings_menu_book) {
+            startActivity(BehaviorActivity.intent(this, BehaviorActivity.Section.WORDS))
+        }
+        vocabularyRowSub = vocabularyRow.findViewWithTag("subtitle")
+        sections.addView(vocabularyRow)
 
         sections.addView(sectionHeader("Starting dictation"))
 
@@ -164,14 +168,12 @@ class MainActivity : BaseSettingsActivity() {
         floatingIconRowSub = floatingIconRow.findViewWithTag("subtitle")
         sections.addView(floatingIconRow)
 
-        // Reports live IME state (#238) and opens the keyboard part of Invocation.
         val voiceKeyboardRow = settingsRow("Voice keyboard", "Checking...", icon = R.drawable.ic_settings_keyboard) {
             startActivity(InvocationActivity.intent(this, InvocationActivity.Section.KEYBOARD))
         }
         voiceKeyboardRowSub = voiceKeyboardRow.findViewWithTag("subtitle")
         sections.addView(voiceKeyboardRow)
 
-        // Invocation-method chooser (#156): the mode and the OS-owned ways to start dictation.
         val invocationRow = settingsRow("Other ways to start", "Checking...", icon = R.drawable.ic_settings_touch_app) {
             startActivity(InvocationActivity.intent(this, InvocationActivity.Section.SHORTCUTS))
         }
@@ -186,9 +188,25 @@ class MainActivity : BaseSettingsActivity() {
 
         sections.addView(sectionHeader("Your recordings"))
 
-        // Top-level History entry (#283): opens the viewer directly; with history off it lands
-        // on the History screen's toggle instead.
-        val historyRow = settingsRow("History", "Checking...", icon = R.drawable.ic_settings_history) {
+        notificationsBadge = OneUiComponents.unreadBadge(this)
+        val notificationsRow = settingsRow(
+            "Notifications",
+            "Checking...",
+            widget = notificationsBadge,
+            icon = R.drawable.ic_settings_notifications,
+        ) {
+            startActivity(Intent(this, NotificationsActivity::class.java))
+        }
+        notificationsRowSub = notificationsRow.findViewWithTag("subtitle")
+        sections.addView(notificationsRow)
+
+        historyBadge = OneUiComponents.unreadBadge(this)
+        val historyRow = settingsRow(
+            "History",
+            "Checking...",
+            widget = historyBadge,
+            icon = R.drawable.ic_settings_history,
+        ) {
             startActivity(
                 DataLogsActivity.intent(this, DataLogsActivity.Section.HISTORY)
                     .putExtra(DataLogsActivity.EXTRA_SHOW_HISTORY, true)
@@ -197,8 +215,6 @@ class MainActivity : BaseSettingsActivity() {
         historyRowSub = historyRow.findViewWithTag("subtitle")
         sections.addView(historyRow)
 
-        // Audio files (#285): transcribe a recording from the phone or another app, or record a
-        // note now and transcribe it later.
         val audioFilesRow = settingsRow(
             getString(R.string.audio_files_row_title),
             getString(R.string.audio_files_row_idle),
@@ -211,7 +227,7 @@ class MainActivity : BaseSettingsActivity() {
 
         sections.addView(settingsRow(
             "Privacy",
-            "Apps where Ramblr stays off, turning Ramblr off, automation",
+            "Apps where Rhema Cadence stays off, turning Rhema Cadence off, automation",
             icon = R.drawable.ic_settings_shield,
         ) { startActivity(BehaviorActivity.intent(this, BehaviorActivity.Section.PRIVACY)) })
 
@@ -229,7 +245,13 @@ class MainActivity : BaseSettingsActivity() {
         setupRowSub = setupRow.findViewWithTag("subtitle")
         sections.addView(setupRow)
 
-        val diagnosticsRow = settingsRow("Diagnostics", "Checking...", icon = R.drawable.ic_settings_bolt) {
+        diagnosticsBadge = OneUiComponents.unreadBadge(this)
+        val diagnosticsRow = settingsRow(
+            "Diagnostics",
+            "Checking...",
+            widget = diagnosticsBadge,
+            icon = R.drawable.ic_settings_bolt,
+        ) {
             startActivity(DataLogsActivity.intent(this, DataLogsActivity.Section.DIAGNOSTICS))
         }
         diagnosticsRowSub = diagnosticsRow.findViewWithTag("subtitle")
@@ -335,55 +357,6 @@ class MainActivity : BaseSettingsActivity() {
         }
     }
 
-    /** Single-choice dialog over the same presets as Cloud providers' radio group, each option a
-     *  bold name over a lighter one-line explanation. A custom mix (set under Mix and match) has
-     *  no preset to tick, so nothing is checked then and the dialog says what picking one does. */
-    private fun promptDictationMode() {
-        val current = DictationModePresets.current(this)
-        val secondary = attrColor(android.R.attr.textColorSecondary)
-        val span = android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-        lateinit var dialog: android.app.AlertDialog
-        val group = android.widget.RadioGroup(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(24), dp(8))
-        }
-        for (mode in DictationModePresets.OPTIONS) {
-            val parts = DictationModePresets.label(mode).split(" — ", limit = 2)
-            group.addView(com.google.android.material.radiobutton.MaterialRadioButton(this).apply {
-                id = View.generateViewId()
-                text = android.text.SpannableStringBuilder().apply {
-                    append(parts[0], android.text.style.StyleSpan(android.graphics.Typeface.BOLD), span)
-                    parts.getOrNull(1)?.let { detail ->
-                        append("\n")
-                        val start = length
-                        append(detail.replaceFirstChar { it.uppercase() })
-                        setSpan(android.text.style.RelativeSizeSpan(0.85f), start, length, span)
-                        setSpan(android.text.style.ForegroundColorSpan(secondary), start, length, span)
-                    }
-                }
-                isChecked = mode == current
-                setLineSpacing(dp(2).toFloat(), 1f)
-                setPadding(paddingLeft + dp(4), dp(10), paddingRight, dp(10))
-                buttonTintList = android.content.res.ColorStateList.valueOf(attrColor(com.google.android.material.R.attr.colorPrimary))
-                setOnClickListener {
-                    DictationModePresets.apply(this@MainActivity, mode)
-                    dialog.dismiss()
-                    refresh()
-                }
-            })
-        }
-        val message = "Where your speech is recognized and where AI cleanup runs. Whether cleanup runs at all " +
-            "is set under AI cleanup." +
-            if (current == DictationMode.CUSTOM) "\n\nYou have a custom mix from Cloud providers › Mix and match; " +
-                "picking a mode here replaces it." else ""
-        dialog = android.app.AlertDialog.Builder(this)
-            .setTitle("Dictation mode")
-            .setMessage(message)
-            .setView(ScrollView(this).apply { addView(group) })
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
     private fun floatingIconSubtitle(): String {
         // The on/off switch for the ring itself moved onto this screen, so say when it's hidden.
         if (IconHiddenState.isHidden(this)) return "Off — the ring is hidden"
@@ -407,6 +380,7 @@ class MainActivity : BaseSettingsActivity() {
 
     override fun onResume() {
         super.onResume() // sets the #35 foreground flag via BaseSettingsActivity
+        KeyGateNormalizer.normalizeAndPersistIfChanged(this)
         refresh()
         advanceOnboarding()
     }
@@ -443,28 +417,35 @@ class MainActivity : BaseSettingsActivity() {
 
         setupRowSub.text = if (setupMode == OnboardingSetupMode.VOICE_KEYBOARD) {
             when {
-                audio && imeEnabled -> "Permission and Ramblr Voice enabled"
-                !audio && !imeEnabled -> "Audio permission and Ramblr Voice needed"
+                audio && imeEnabled -> "Permission and Rhema Cadence Voice enabled"
+                !audio && !imeEnabled -> "Audio permission and Rhema Cadence Voice needed"
                 !audio -> "Audio permission needed"
-                else -> "Ramblr Voice needs enabling"
+                else -> "Rhema Cadence Voice needs enabling"
             }
         } else {
             SetupActivity.subtitle(hasAudio = audio, hasAccessibility = acc)
         }
         transcriptionRowSub.text = TranscriptionActivity.subtitle(this)
         cleanupRowSub.text = CleanupActivity.subtitle(this)
+        cleanupStylesRowSub.text = CleanupStylesActivity.subtitle(this)
         dictationModeRowSub.text = DictationModePresets.summary(
             DictationModePresets.current(this),
             cleanupOn = PostProcessingToggle.isEnabled(this),
         )
+        liveTranscriptionRowSub.text = LiveTranscriptionActivity.subtitle(this)
         cloudRowSub.text = CloudProviderActivity.subtitle(this)
+        fallbackRowSub.text = FallbackActivity.subtitle(this)
         vocabularyRowSub.text = vocabularyMainRowSubtitleText(VocabularyEditor.terms(this).size)
         invocationRowSub.text = InvocationActivity.subtitle(this)
         voiceKeyboardRowSub.text = invocationVoiceKeyboardSubtitleText(voiceKeyboardStatus())
+        notificationsRowSub.text = NotificationsActivity.subtitle(this)
+        OneUiComponents.updateUnreadBadge(notificationsBadge, AppNotificationStore.unreadCount(this))
         historyRowSub.text = DataLogsActivity.historyRowSubtitle(this)
+        OneUiComponents.updateUnreadBadge(historyBadge, DictationHistoryStore.unreadCount(this))
         audioFilesRowSub.text = AudioFilesActivity.rowSubtitle(this)
         floatingIconRowSub.text = floatingIconSubtitle()
         diagnosticsRowSub.text = DataLogsActivity.diagnosticsSubtitle(this)
+        OneUiComponents.updateUnreadBadge(diagnosticsBadge, DiagnosticErrorLog.unreadCount(this))
         serviceKilledBanner.visibility =
             if (InvocationGuardRail.shouldShowBanner(this)) View.VISIBLE else View.GONE
 
@@ -475,7 +456,7 @@ class MainActivity : BaseSettingsActivity() {
         when (InvocationGuardRail.staleComponentAction(this)) {
             StaleComponentAction.REPAIR_TO_ACTIVE ->
                 if (InvocationSecureSettings.repairToActiveComponent(this)) {
-                    toast("Ramblr's accessibility service was restored")
+                    toast("Rhema Cadence's accessibility service was restored")
                     // #254: the repair just fixed the very condition the notification reports, so
                     // drop it here rather than leaving it until the next worker tick.
                     ServiceRecoveryNotifications.cancel(this)
@@ -507,7 +488,7 @@ class MainActivity : BaseSettingsActivity() {
 
         statusSubtitle.text = when {
             !ready -> "Setup required — tap to finish setup"
-            setupMode == OnboardingSetupMode.VOICE_KEYBOARD -> "Ready — select Ramblr Voice to dictate"
+            setupMode == OnboardingSetupMode.VOICE_KEYBOARD -> "Ready — select Rhema Cadence Voice to dictate"
             else -> "Ready — tap the overlay dot to dictate"
         }
         statusSubtitle.setTextColor(if (ready) attrColor(com.google.android.material.R.attr.colorPrimary) else attrColor(android.R.attr.textColorSecondary))
@@ -575,7 +556,7 @@ class MainActivity : BaseSettingsActivity() {
             visibility = View.GONE
         }
         banner.addView(TextView(this).apply {
-            text = "Ramblr was turned off by the system shortcut switch"
+            text = "Rhema Cadence was turned off by the system shortcut switch"
             textSize = 16f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setTextColor(attrColor(android.R.attr.textColorPrimary))
@@ -628,7 +609,7 @@ class MainActivity : BaseSettingsActivity() {
             visibility = View.GONE
         }
         banner.addView(TextView(this).apply {
-            text = "Ramblr's accessibility service was turned off"
+            text = "Rhema Cadence's accessibility service was turned off"
             textSize = 16f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setTextColor(attrColor(android.R.attr.textColorPrimary))
@@ -662,7 +643,7 @@ class MainActivity : BaseSettingsActivity() {
         // writes bypass the invisible-toggle sync, and here that's exactly what we want: restore
         // enabled_accessibility_services without the OS "helpfully" re-syncing shortcuts).
         if (InvocationSecureSettings.reEnableService(this)) {
-            toast("Ramblr re-enabled")
+            toast("Rhema Cadence re-enabled")
             refresh()
             return
         }
@@ -774,12 +755,12 @@ class MainActivity : BaseSettingsActivity() {
 
     private fun showOnboardingIntro() {
         onboardingDialog = android.app.AlertDialog.Builder(this)
-            .setTitle("Welcome to Ramblr")
+            .setTitle("Welcome to Rhema Cadence")
             .setMessage(
                 "Choose how you want to dictate:\n\n" +
                     "• Floating button — dictate over any app. This path uses Android Accessibility " +
-                    "only to insert text after you tap Ramblr's overlay.\n\n" +
-                    "• Voice keyboard — explicitly enable Ramblr Voice as an Android input method " +
+                    "only to insert text after you tap Rhema Cadence's overlay.\n\n" +
+                    "• Voice keyboard — explicitly enable Rhema Cadence Voice as an Android input method " +
                     "and dictate from its compact keyboard panel. This path does not require Accessibility.\n\n" +
                     "Both paths need microphone access and use the same transcription settings."
             )
@@ -813,7 +794,7 @@ class MainActivity : BaseSettingsActivity() {
         }
         onboardingDialog = android.app.AlertDialog.Builder(this)
             .setTitle("Step 1 of 5: Microphone access")
-            .setMessage("Ramblr needs the microphone to record what you say before transcribing it.")
+            .setMessage("Rhema Cadence needs the microphone to record what you say before transcribing it.")
             .setCancelable(false)
             .setPositiveButton("Continue") { _, _ ->
                 dismissOnboarding()
@@ -831,9 +812,9 @@ class MainActivity : BaseSettingsActivity() {
         onboardingDialog = android.app.AlertDialog.Builder(this)
             .setTitle("Step 1 of 5: Microphone access")
             .setMessage(
-                "Microphone access is turned off for Ramblr, and Android won't ask again from " +
-                    "here. Ramblr can't record without it.\n\n" +
-                    "Tap below to open Ramblr's App info, then choose Permissions → Microphone " +
+                "Microphone access is turned off for Rhema Cadence, and Android won't ask again from " +
+                    "here. Rhema Cadence can't record without it.\n\n" +
+                    "Tap below to open Rhema Cadence's App info, then choose Permissions → Microphone " +
                     "→ Allow, and come back here."
             )
             .setCancelable(false)
@@ -861,21 +842,21 @@ class MainActivity : BaseSettingsActivity() {
         // isBlocked() is now false the button correctly points at Accessibility Settings instead.
         val blocked = RestrictedSettingsCheck.isBlocked(this)
         val message = if (blocked) {
-            "Ramblr uses Android's Accessibility service for one narrow reason: to insert " +
+            "Rhema Cadence uses Android's Accessibility service for one narrow reason: to insert " +
                 "dictated text into whatever text field is currently focused. It doesn't replace your " +
                 "keyboard and doesn't run background automation.\n\n" +
-                "\u26a0\ufe0f Since Ramblr was installed outside the Play Store, Android blocks the " +
+                "\u26a0\ufe0f Since Rhema Cadence was installed outside the Play Store, Android blocks the " +
                 "Accessibility toggle by default (a security feature, not a bug) until you allow it " +
                 "once per install.\n\n" +
-                "Tap below to open Ramblr's App info, then:\n" +
+                "Tap below to open Rhema Cadence's App info, then:\n" +
                 "1. Tap the \u22ee menu in the top-right corner\n" +
                 "2. Choose \"Allow restricted settings\"\n" +
                 "3. Come back here"
         } else {
-            "Ramblr uses Android's Accessibility service for one narrow reason: to insert " +
+            "Rhema Cadence uses Android's Accessibility service for one narrow reason: to insert " +
                 "dictated text into whatever text field is currently focused. It doesn't replace your " +
                 "keyboard and doesn't run background automation.\n\n" +
-                "On the next screen, look for \"Ramblr\" in the list and turn it on."
+                "On the next screen, look for \"Rhema Cadence\" in the list and turn it on."
         }
         onboardingDialog = android.app.AlertDialog.Builder(this)
             .setTitle("Step 2 of 5: Turn on Accessibility")
@@ -900,11 +881,11 @@ class MainActivity : BaseSettingsActivity() {
 
     private fun showOnboardingVoiceKeyboardStep() {
         onboardingDialog = android.app.AlertDialog.Builder(this)
-            .setTitle("Step 2 of 5: Enable Ramblr Voice")
+            .setTitle("Step 2 of 5: Enable Rhema Cadence Voice")
             .setMessage(
                 "Android controls which keyboards are enabled. On the next screen, enable " +
-                    "Ramblr Voice, then return here. Ramblr will not enable or select itself.\n\n" +
-                    "When you want to dictate, select Ramblr Voice using Android's keyboard switch."
+                    "Rhema Cadence Voice, then return here. Rhema Cadence will not enable or select itself.\n\n" +
+                    "When you want to dictate, select Rhema Cadence Voice using Android's keyboard switch."
             )
             .setCancelable(false)
             .setPositiveButton("Open Keyboard Settings") { _, _ ->
@@ -1275,7 +1256,7 @@ class MainActivity : BaseSettingsActivity() {
         val setupMode = onboardingSetupMode()
         val testField = EditText(this).apply {
             hint = if (setupMode == OnboardingSetupMode.VOICE_KEYBOARD) {
-                "Select Ramblr Voice, then tap its mic to dictate a test phrase"
+                "Select Rhema Cadence Voice, then tap its mic to dictate a test phrase"
             } else {
                 "Tap here, then use the floating button to dictate a test phrase"
             }
@@ -1283,7 +1264,7 @@ class MainActivity : BaseSettingsActivity() {
         }
         val modelReady = transcriptionModelReady()
         val invocationInstructions = if (setupMode == OnboardingSetupMode.VOICE_KEYBOARD) {
-            "Tap the field below, select Ramblr Voice with Android's keyboard switch, then tap its mic."
+            "Tap the field below, select Rhema Cadence Voice with Android's keyboard switch, then tap its mic."
         } else {
             "If the floating button is visible, tap it, speak a test phrase, and tap it again."
         }

@@ -291,12 +291,12 @@ class InvocationMethodsTest {
         // The whole point of the banner: tell the user WHICH picker entry is right. In floating
         // mode that's the floating label, and the wrong one it warns about is the system label.
         val floating = staleComponentBannerText(InvocationMode.FLOATING_ICON)
-        assertTrue(floating.contains("Ramblr (System controls)"))
-        assertTrue(floating.contains("Ramblr (Floating icon)"))
+        assertTrue(floating.contains("Rhema Cadence (System controls)"))
+        assertTrue(floating.contains("Rhema Cadence (Floating icon)"))
 
         val system = staleComponentBannerText(InvocationMode.SYSTEM_CONTROLS)
-        assertTrue(system.contains("Ramblr (Floating icon)"))
-        assertTrue(system.contains("Ramblr (System controls)"))
+        assertTrue(system.contains("Rhema Cadence (Floating icon)"))
+        assertTrue(system.contains("Rhema Cadence (System controls)"))
     }
 
     // --- #254 shouldPostServiceRecoveryNotification -------------------------------------------
@@ -560,7 +560,7 @@ class InvocationMethodsTest {
         for (mode in InvocationMode.entries) {
             assertTrue(
                 serviceOffRowSubtitleText(serviceEnabled = false, mode = mode)
-                    .startsWith("Ramblr's accessibility service is off"),
+                    .startsWith("Rhema Cadence's accessibility service is off"),
             )
         }
     }
@@ -678,7 +678,7 @@ class InvocationMethodsTest {
         // on/off rather than invoking dictation -- the copy must say so, not just grey out.
         val text = invocationVolumeKeysSubtitleText(modeActive = false, bound = false, directControl = true)
         assertTrue(text.contains("Requires System controls mode"))
-        assertTrue(text.contains("turn Ramblr itself off and on"))
+        assertTrue(text.contains("turn Rhema Cadence itself off and on"))
     }
 
     @Test fun `qs tile subtitle offers one-tap add only where the API exists`() {
@@ -718,7 +718,7 @@ class InvocationMethodsTest {
     @Test fun `voice keyboard subtitle names the next action for each state`() {
         assertTrue(
             invocationVoiceKeyboardSubtitleText(VoiceKeyboardStatus.DISABLED)
-                .contains("tap to turn the Ramblr keyboard on"),
+                .contains("tap to turn the Rhema Cadence keyboard on"),
         )
         // The enabled-not-default case is the one users cannot otherwise diagnose: the keyboard
         // is on but nothing appears to happen, because another IME is still the default.

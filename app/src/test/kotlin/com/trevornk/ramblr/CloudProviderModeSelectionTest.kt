@@ -6,6 +6,7 @@ import android.view.ViewGroup
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.TextView
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -15,20 +16,21 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
- * Drives the Cloud screen's "Dictation mode" presets the way a user does: pick a preset, flip one
- * per-feature override (the mode becomes Custom, so no preset is checked), then tap the preset
- * again. Regression for the preset un-checking itself under the user's finger: the radios were
- * cleared one by one with `isChecked = false`, which left [RadioGroup]'s own checked id pointing
- * at the cleared button, so re-checking that same button made the group immediately uncheck it.
+ * Drives [DictationModeActivity]'s "Dictation mode" presets (using circular selectionDots with
+ * zero RadioButtons/RadioGroups): pick a preset, flip one per-feature override (mode becomes
+ * Custom, so no preset is selected), then tap the previous or a different preset and verify it
+ * stays selected.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class CloudProviderModeSelectionTest {
 
+    private val app get() = RuntimeEnvironment.getApplication()
+
     private fun startInCloudMode() {
-        val prefs = RuntimeEnvironment.getApplication().getSharedPreferences("ramblr", Context.MODE_PRIVATE)
+        val prefs = app.getSharedPreferences("ramblr", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("use_local", false).apply()
-        CloudFeatureToggle.setCleanupEnabled(RuntimeEnvironment.getApplication(), true)
+        CloudFeatureToggle.setCleanupEnabled(app, true)
     }
 
     private fun View.allDescendants(): Sequence<View> = sequence {
@@ -43,31 +45,29 @@ class CloudProviderModeSelectionTest {
 
     @Test fun `re-tapping the previous preset after a per-feature override keeps it checked`() {
         startInCloudMode()
-        val activity = Robolectric.buildActivity(CloudProviderActivity::class.java).setup().get()
+        val activity = Robolectric.buildActivity(DictationModeActivity::class.java).setup().get()
         val root = activity.window.decorView
-        val group = root.allDescendants().filterIsInstance<RadioGroup>().first()
-        val cloudPreset = group.allDescendants().filterIsInstance<RadioButton>().first()
-        assertTrue("Cloud preset starts checked", cloudPreset.isChecked)
+        assertTrue("zero RadioButtons", root.allDescendants().none { it is RadioButton || it is RadioGroup })
+        assertEquals(DictationMode.CLOUD, DictationModePresets.current(app))
 
         // Flip cloud cleanup off: transcription stays cloud, cleanup goes local -> Custom.
         root.rowTitled("Cleanup").performClick()
+        assertEquals(DictationMode.CUSTOM, DictationModePresets.current(app))
 
-        cloudPreset.performClick()
-
-        assertTrue("Cloud preset must stay checked after the user taps it", cloudPreset.isChecked)
+        root.rowTitled("Cloud").performClick()
+        assertEquals(DictationMode.CLOUD, DictationModePresets.current(app))
     }
 
     @Test fun `picking a different preset after a per-feature override checks exactly that preset`() {
         startInCloudMode()
-        val activity = Robolectric.buildActivity(CloudProviderActivity::class.java).setup().get()
+        val activity = Robolectric.buildActivity(DictationModeActivity::class.java).setup().get()
         val root = activity.window.decorView
-        val group = root.allDescendants().filterIsInstance<RadioGroup>().first()
-        val presets = group.allDescendants().filterIsInstance<RadioButton>().toList()
+        assertTrue("zero RadioButtons", root.allDescendants().none { it is RadioButton || it is RadioGroup })
 
         root.rowTitled("Cleanup").performClick()
-        presets[2].performClick() // Fastest
+        assertEquals(DictationMode.CUSTOM, DictationModePresets.current(app))
 
-        assertTrue("Fastest preset is checked", presets[2].isChecked)
-        assertTrue("only one preset is checked", presets.count { it.isChecked } == 1)
+        root.rowTitled("Fastest").performClick()
+        assertEquals(DictationMode.FASTEST, DictationModePresets.current(app))
     }
 }

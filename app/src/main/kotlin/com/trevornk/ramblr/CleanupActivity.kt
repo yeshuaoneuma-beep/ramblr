@@ -1,65 +1,38 @@
 package com.trevornk.ramblr
 
-import android.content.Intent
-import android.content.res.ColorStateList
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
+import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
-import com.google.android.material.radiobutton.MaterialRadioButton
 
 /**
- * "Cleanup" category screen (#93 restructure, updated #95 Phase 3, #103 Style manager): on/off
- * switch, a link into the Style manager, the simple Local/Cloud choice (+ local model catalog),
- * preview-before-inject toggle. Cloud provider/credential management now lives entirely on the
- * unified CloudProviderActivity -- this screen just links to it (see [CloudProviderActivity.subtitle])
- * rather than duplicating any key-entry UI.
+ * Dedicated "Local AI cleanup" screen (Phase 3A.3 hairline overhaul).
  *
- * The flat built-in-only prompt-preset radio list (#3, #40) that used to live directly on this
- * screen has been replaced by a single summary row linking to [StyleManagerActivity] (#103): full
- * persona CRUD (create/edit/delete/quick-menu selection) didn't fit as an inline radio list once
- * custom personas joined the five built-ins, so it moved to its own screen. Day-to-day switching
- * between styles now happens via the floating icon's long-press quick menu, not here.
+ * Strictly manages local cleanup readiness status and on-device cleanup models (`Mumble Cleanup`,
+ * `LFM2.5`) using [OneUiComponents.selectionDot], download/cancel/delete, and progress indicators.
+ * Shared AI cleanup toggle, styles, and options now live in [CleanupStylesActivity]; cloud vs.
+ * local routing lives in [DictationModeActivity] and [CloudProviderActivity].
  */
 class CleanupActivity : BaseSettingsActivity() {
 
-    private lateinit var postProcessSwitch: MaterialSwitch
-    private lateinit var postProcessRowSub: TextView
-    private lateinit var cleanupDetailContainer: LinearLayout
-    private lateinit var styleSummaryRow: LinearLayout
-    private lateinit var styleSummaryRowTitle: TextView
-    private lateinit var cleanupLocalRadio: MaterialRadioButton
-    private lateinit var cleanupCloudRadio: MaterialRadioButton
-    private lateinit var cleanupLocalGroup: View
-    private lateinit var cleanupLocalHeader: TextView
-    private lateinit var cleanupCloudGroup: View
-    private lateinit var cloudLinkRowSub: TextView
-    private lateinit var previewBeforeInjectSwitch: MaterialSwitch
-    private lateinit var routingSummaryRowSub: TextView
-    private lateinit var postProcessRowDetails: TextView
-    private lateinit var perAppPersonaSwitch: MaterialSwitch
-    private lateinit var rawTextRetrySwitch: MaterialSwitch
-    private lateinit var translationLanguagesRowSub: TextView
+    private lateinit var readinessStatusSub: TextView
 
-    // internal (not private) only so CleanupLocalSwitchTest can drive the download-completion path.
-    internal var pendingLocalCleanupSelection = false
     private val cleanupModelRows = mutableMapOf<String, ModelRowViews>()
     private val cleanupModelDownloadState = mutableMapOf<String, WorkInfo.State>()
     private val cleanupModelDownloadGate = DownloadCompletionGate()
 
     private data class ModelRowViews(
-        val radio: MaterialRadioButton,
+        val selectionDot: FrameLayout,
         val progress: LinearProgressIndicator,
         val subtitle: TextView,
         val dlBtn: MaterialButton,
-        val deleteBtn: MaterialButton
+        val deleteBtn: MaterialButton,
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -67,151 +40,22 @@ class CleanupActivity : BaseSettingsActivity() {
 
         val root = vertical(0, 0)
 
-        val mainCard = oneUiCard()
-        val isPostProcessing = prefs().getBoolean("use_post_processing", false)
-        postProcessSwitch = MaterialSwitch(this).apply {
-            isChecked = isPostProcessing
-            isClickable = false
-        }
-        val postProcessRow = settingsRow(
-            "Improve my dictation with AI", cleanupSubtitle(), postProcessSwitch, details = cleanupCostNote().orEmpty(),
-        ) {
-            val newVal = !postProcessSwitch.isChecked
-            val useLocal = prefs().getBoolean("use_local", true)
-            applyLocalCleanupChange(useLocal, newVal)
-        }
-        postProcessRowSub = postProcessRow.findViewWithTag("subtitle")
-        postProcessRowDetails = postProcessRow.findViewWithTag("details")
-        mainCard.addView(postProcessRow)
+        root.addView(explainer(
+            "Download and select an on-device AI cleanup model. Runs completely on this phone with no API key."
+        ))
 
-        cleanupDetailContainer = vertical(0)
+        root.addView(sectionHeader("Readiness"))
+        val statusRow = settingsRow("On-device cleanup status", "Checking...")
+        readinessStatusSub = statusRow.findViewWithTag("subtitle")
+        root.addView(statusRow)
 
-        val styleGroup = nestedGroup()
-        styleGroup.content.addView(subsectionHeader("Style", indent = 0))
-        styleSummaryRow = settingsRow(
-            currentPersonaSummary(),
-            "Manage styles, quick-menu selection, and custom prompts",
-            indent = 0
-        ) { startActivity(Intent(this, StyleManagerActivity::class.java)) }
-        styleSummaryRowTitle = styleSummaryRow.findViewWithTag("title")
-        styleGroup.content.addView(styleSummaryRow)
-        cleanupDetailContainer.addView(styleGroup.outer)
-
-        cleanupDetailContainer.addView(subsectionHeader("How cleanup runs", indent = 0))
-
-        cleanupLocalRadio = MaterialRadioButton(this).apply {
-            isClickable = false
-            buttonTintList = ColorStateList.valueOf(attrColor(com.google.android.material.R.attr.colorPrimary))
-        }
-        cleanupDetailContainer.addView(
-            settingsRow("Local", "Private, runs on-device, no API key needed", cleanupLocalRadio) {
-                onSelectSimpleCleanup(SimpleCleanupChoice.LOCAL)
-            }
-        )
-        val cleanupLocalNested = nestedGroup()
-        cleanupLocalHeader = subsectionHeader("Local cleanup models", indent = 0).apply {
-            visibility = View.GONE
-        }
-        cleanupLocalNested.content.addView(cleanupLocalHeader)
-        for (m in LOCAL_CLEANUP_MODEL_CATALOG) cleanupLocalNested.content.addView(buildCleanupModelRow(m))
-        cleanupLocalGroup = cleanupLocalNested.outer
-        cleanupDetailContainer.addView(cleanupLocalGroup)
-
-        cleanupCloudRadio = MaterialRadioButton(this).apply {
-            isClickable = false
-            buttonTintList = ColorStateList.valueOf(attrColor(com.google.android.material.R.attr.colorPrimary))
-        }
-        cleanupDetailContainer.addView(
-            settingsRow("Cloud", "Configure providers and keys under Cloud providers", cleanupCloudRadio) {
-                onSelectSimpleCleanup(SimpleCleanupChoice.CLOUD)
-            }
-        )
-
-        val cleanupCloudNested = nestedGroup()
-
-        val cloudLinkRow = settingsRow("Cloud provider chain", CloudProviderActivity.subtitle(this), indent = 0) {
-            startActivity(Intent(this, CloudProviderActivity::class.java))
-        }
-        cloudLinkRowSub = cloudLinkRow.findViewWithTag("subtitle")
-        cleanupCloudNested.content.addView(cloudLinkRow)
-
-        cleanupCloudGroup = cleanupCloudNested.outer
-        cleanupDetailContainer.addView(cleanupCloudGroup)
-
-        previewBeforeInjectSwitch = MaterialSwitch(this).apply {
-            isChecked = PreviewBeforeInjectToggle.isEnabled(this@CleanupActivity)
-            isClickable = false
-        }
-        val previewBeforeInjectRow = settingsRow(
-            "Preview before inserting",
-            "Review the cleaned-up text and tap to insert it, instead of inserting automatically",
-            previewBeforeInjectSwitch
-        ) {
-            val newVal = !previewBeforeInjectSwitch.isChecked
-            PreviewBeforeInjectToggle.setEnabled(this, newVal)
-            previewBeforeInjectSwitch.isChecked = newVal
-        }
-        cleanupDetailContainer.addView(previewBeforeInjectRow)
-        mainCard.addView(cleanupDetailContainer)
-        root.addView(mainCard)
-
-        val optionsCard = oneUiCard()
-        optionsCard.addView(sectionHeader("Cleanup options"))
-
-        perAppPersonaSwitch = MaterialSwitch(this).apply {
-            isChecked = PerAppPersonaToggle.isEnabled(this@CleanupActivity)
-            isClickable = false
-        }
-        optionsCard.addView(settingsRow(
-            "Remember cleanup style per app",
-            "Each app keeps the cleanup style you last picked in it",
-            perAppPersonaSwitch,
-            details = "Instead of always using your global default style",
-        ) {
-            val newVal = !perAppPersonaSwitch.isChecked
-            PerAppPersonaToggle.setEnabled(this, newVal)
-            perAppPersonaSwitch.isChecked = newVal
-        })
-
-        rawTextRetrySwitch = MaterialSwitch(this).apply {
-            isChecked = RawTextRetryToggle.isEnabled(this@CleanupActivity)
-            isClickable = false
-        }
-        optionsCard.addView(settingsRow(
-            "Offer raw text after cleanup",
-            "After cleanup changes your words, a bubble lets you swap back to exactly what you said",
-            rawTextRetrySwitch,
-            details = "The \u201cTap to use raw text\u201d bubble stays for a few seconds",
-        ) {
-            val newVal = !rawTextRetrySwitch.isChecked
-            RawTextRetryToggle.setEnabled(this, newVal)
-            rawTextRetrySwitch.isChecked = newVal
-        })
-        root.addView(optionsCard)
-
-        val translationCard = oneUiCard()
-        translationCard.addView(sectionHeader(getString(R.string.translation_section_title)))
-        val translationLanguagesRow = settingsRow(
-            getString(R.string.keyboard_translation_languages_title),
-            KeyboardTranslation.summary(this),
-            details = getString(R.string.translation_languages_details),
-        ) {
-            TranslationLanguagesDialog.show(this) { refresh() }
-        }
-        translationLanguagesRowSub = translationLanguagesRow.findViewWithTag("subtitle")
-        translationCard.addView(translationLanguagesRow)
-        root.addView(translationCard)
-
-        val routingCard = oneUiCard()
-        routingCard.addView(sectionHeader("Effective routing"))
-        val routingSummaryRow = settingsRow("Cleanup", "", indent = 0)
-        routingSummaryRowSub = routingSummaryRow.findViewWithTag("subtitle")
-        routingCard.addView(routingSummaryRow)
-        root.addView(routingCard)
+        root.addView(sectionHeader("Local cleanup models"))
+        for (m in LOCAL_CLEANUP_MODEL_CATALOG) root.addView(buildCleanupModelRow(m))
 
         setOneUiScreenContent(
-            title = "AI cleanup",
+            title = "Local AI cleanup",
             showBack = true,
+            icon = R.drawable.ic_settings_auto_awesome,
             content = root,
         )
 
@@ -224,177 +68,32 @@ class CleanupActivity : BaseSettingsActivity() {
     }
 
     private fun refresh() {
-        val usePostProcessing = prefs().getBoolean("use_post_processing", false)
-        postProcessSwitch.isChecked = usePostProcessing
-        postProcessRowSub.text = cleanupSubtitle()
-        val costNote = cleanupCostNote()
-        postProcessRowDetails.text = costNote.orEmpty()
-        postProcessRowDetails.visibility = if (costNote == null) View.GONE else View.VISIBLE
-        perAppPersonaSwitch.isChecked = PerAppPersonaToggle.isEnabled(this)
-        rawTextRetrySwitch.isChecked = RawTextRetryToggle.isEnabled(this)
-        previewBeforeInjectSwitch.isChecked = PreviewBeforeInjectToggle.isEnabled(this)
-        cleanupDetailContainer.visibility = if (usePostProcessing) View.VISIBLE else View.GONE
-
-        cloudLinkRowSub.text = CloudProviderActivity.subtitle(this)
-        styleSummaryRowTitle.text = currentPersonaSummary()
-
-        translationLanguagesRowSub.text = KeyboardTranslation.summary(this)
-
-        refreshWaterfallDependentUi()
+        val activeModel = selectedCleanupModel()
+        val installed = ModelDownloader.isInstalled(this, activeModel)
+        readinessStatusSub.text = if (installed) {
+            "Ready \u00b7 ${activeModel.name} installed on this device"
+        } else {
+            "Not installed \u00b7 download a model below for offline AI cleanup or cloud fallback"
+        }
         refreshAllCleanupRows()
     }
 
-    /** Everything downstream of the waterfall that needs recomputing after any edit to it
-     *  (choice radios, group visibility, caption, key row) -- mirrors MainActivity's original
-     *  saveWaterfallSteps() comment on why a full refresh (not just the step list) matters: an
-     *  edit changes the effective simple choice, and with it the radios, subtitle, and the
-     *  OpenAI-key row's visibility (#81).
-     *
-     *  The active LOCAL/CLOUD radio choice reads [CloudFeatureToggle.cleanupEnabled] directly
-     *  (#37 follow-up), not the chain's shape: since [onSelectSimpleCleanup] now maintains a
-     *  permanent LOCAL floor entry alongside whatever cloud providers exist (see
-     *  [ProviderChain.withLocalFloor]), the chain routinely has more than one entry even in the
-     *  simple "Local" or "Cloud" state, so [simpleCleanupChoiceForChain]'s single-entry-shape
-     *  classification no longer reflects the user's actual choice here -- it would misreport
-     *  CUSTOM the moment any cloud provider is configured. */
-    private fun refreshWaterfallDependentUi() {
-        if (!CloudFeatureToggle.cleanupEnabled(this)) pendingLocalCleanupSelection = false
-        val persistedChoice = if (CloudFeatureToggle.cleanupEnabled(this)) SimpleCleanupChoice.CLOUD else SimpleCleanupChoice.LOCAL
-        val choice = displayedCleanupChoice(persistedChoice, pendingLocalCleanupSelection)
-        cleanupLocalRadio.isChecked = choice == SimpleCleanupChoice.LOCAL
-        cleanupCloudRadio.isChecked = choice == SimpleCleanupChoice.CLOUD
-
-        // #276: cleanup's resolver only has one runtime fallback direction -- a Cloud choice
-        // falls through to the LOCAL floor entry when "fall back to on-device if cloud fails"
-        // is on (see ProviderChainRuntime.effectiveChainForCleanup's allowLocalFallback gate).
-        // There is no matching Local-active-with-cloud-fallback case (a failed on-device cleanup
-        // never retries in the cloud), so the cloud group's fallbackAllowed is always false --
-        // it stays exactly as hidden as before whenever Local is the active choice.
-        val localState = fallbackSectionState(
-            isActiveSide = choice == SimpleCleanupChoice.LOCAL,
-            fallbackAllowed = DictationModeToggle.allowLocalFallback(this),
-        )
-        cleanupLocalGroup.visibility = if (localState == FallbackSectionState.HIDDEN) View.GONE else View.VISIBLE
-        cleanupLocalHeader.visibility = if (localState == FallbackSectionState.FALLBACK) View.VISIBLE else View.GONE
-        cleanupCloudGroup.visibility = if (choice == SimpleCleanupChoice.CLOUD) View.VISIBLE else View.GONE
-
-        routingSummaryRowSub.text = effectiveCleanupRouting()
-    }
-
-    /** "Cleanup: ..." routing summary (#276), delegating to the pure [EffectiveRouting]
-     *  formatter so this row can never disagree with what the cleanup executor would actually
-     *  do. */
-    private fun effectiveCleanupRouting(): String = "Cleanup: " + EffectiveRouting.cleanup(
-        chain = ProviderChainStore.load(this),
-        postProcessingEnabled = prefs().getBoolean("use_post_processing", false),
-        cloudCleanupEnabled = CloudFeatureToggle.cleanupEnabled(this),
-        allowLocalFallback = DictationModeToggle.allowLocalFallback(this),
-        isConfigured = { ProviderCredentialStore.isConfiguredOrLegacy(this, it) },
-        localAvailable = ModelDownloader.localCleanupModelFile(this, LocalCleanupProvider.selectedModel(this)) != null,
-    )
-
-    /** Applies a change to the local/cleanup toggles, inserting the one-time consent dialog from
-     *  #23 when the change would first combine local transcription with cleanup. */
-    private fun applyLocalCleanupChange(useLocal: Boolean, usePostProcessing: Boolean) {
-        val hasConsented = prefs().getBoolean(KEY_LOCAL_CLEANUP_CONSENT, false)
-        val cleanupIsLocalOnly = !CloudFeatureToggle.cleanupEnabled(this)
-        if (!LocalCleanupConsent.shouldPrompt(useLocal, usePostProcessing, hasConsented, cleanupIsLocalOnly)) {
-            prefs().edit()
-                .putBoolean("use_local", useLocal)
-                .putBoolean("use_post_processing", usePostProcessing)
-                .apply()
-            refresh()
-            return
-        }
-
-        val declineCleanup = {
-            prefs().edit()
-                .putBoolean("use_local", useLocal)
-                .putBoolean("use_post_processing", false)
-                .apply()
-            refresh()
-        }
-
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Cleanup sends text off-device")
-            .setMessage(
-                "Local transcription keeps audio on your phone, but cleanup sends the " +
-                    "transcribed text to ${CleanupDestination.consentHost(ProviderChainStore.load(this))} to fix " +
-                    "grammar and punctuation. Enable cleanup anyway?"
-            )
-            .setPositiveButton("Enable cleanup") { _, _ ->
-                prefs().edit()
-                    .putBoolean("use_local", useLocal)
-                    .putBoolean("use_post_processing", true)
-                    .putBoolean(KEY_LOCAL_CLEANUP_CONSENT, true)
-                    .apply()
-                refresh()
-            }
-            .setNegativeButton("Keep cleanup off") { _, _ -> declineCleanup() }
-            .setOnCancelListener { declineCleanup() }
-            .show()
-    }
-
-    /** Subtitle for the cleanup toggle, naming the actual network destination and the real provider
-     *  whose key it uses (#23, #4, #6) -- both derived from the live provider chain's first cloud
-     *  entry, not a legacy pref that always read OpenAI even when cleanup routed elsewhere (M9). */
-    private fun cleanupSubtitle(): String {
-        if (!CloudFeatureToggle.cleanupEnabled(this)) {
-            return "Cleans up your dictation on-device — the text never leaves your phone"
-        }
-        val useLocal = prefs().getBoolean("use_local", true)
-        val chain = ProviderChainStore.load(this)
-        val entry = CleanupDestination.firstCloudEntry(chain)
-        val host = entry?.let { CleanupDestination.hostFor(it) } ?: CleanupDestination.consentHost(chain)
-        return if (useLocal) "Sends transcript over the network to $host, even though transcription stays on-device."
-        else "Sends transcript to $host to fix grammar and punctuation."
-    }
-
-    /** The billing half of the cleanup disclosure, shown as the row's fine print under
-     *  [cleanupSubtitle]; null when cleanup stays on-device or no cloud entry is set up yet. */
-    private fun cleanupCostNote(): String? {
-        if (!CloudFeatureToggle.cleanupEnabled(this)) return null
-        val entry = CleanupDestination.firstCloudEntry(ProviderChainStore.load(this)) ?: return null
-        return "Uses your ${CleanupDestination.label(entry.kind)} API key and is billed pay-per-use (typically a fraction of a cent per dictation)."
-    }
-
-    // --- Style summary (#103) ---
-
-    /** Title text for the Style summary row: the currently active global persona's name,
-     *  resolved through [PersonaRegistry] so a custom or seeded-legacy persona shows its real
-     *  name instead of falling back to "Formal". Mirrors [WhisperAccessibilityService]'s own
-     *  global-persona resolution so the Settings screen and the long-press quick menu never
-     *  disagree about what's currently selected. */
-    private fun currentPersonaSummary(): String {
-        val prompt = PostProcessor.effectiveSavedPrompt(prefs().getString("post_processing_prompt", null), prefs().getString("cleanup_style", null))
-        val persona = PersonaRegistry.currentPersona(this, prefs().getString("cleanup_style", null), prompt)
-        return "Style: ${persona.title}"
-    }
-
-    // --- Simple Local/Cloud cleanup choice (#38, verbatim from MainActivity) ---
-
     private fun selectedCleanupModel(): Model =
-        // Must match the service's resolution exactly (LocalCleanupProvider.selectedModel routes
-        // through the same installed-aware overload, #134) -- the picker highlighting a model the
-        // service isn't actually using is the divergence that overload exists to prevent.
         ModelDownloader.resolveActiveModel(
             LOCAL_CLEANUP_MODEL_CATALOG,
             prefs().getString(KEY_LOCAL_CLEANUP_MODEL_NAME, "") ?: "",
         ) { ModelDownloader.isInstalled(this, it) }
 
     private fun buildCleanupModelRow(model: Model): View {
-        val radio = MaterialRadioButton(this).apply {
-            isClickable = false
-            buttonTintList = ColorStateList.valueOf(attrColor(com.google.android.material.R.attr.colorPrimary))
-        }
+        val dot = OneUiComponents.selectionDot(this, selected = false, contentDescription = model.name)
         val dlBtn = MaterialButton(this, null, com.google.android.material.R.attr.materialIconButtonStyle).apply {
-            text = "↓"
+            text = "\u2193"
             textSize = 18f
             setTextColor(attrColor(com.google.android.material.R.attr.colorPrimary))
             setOnClickListener { onCleanupModelAction(model) }
         }
         val deleteBtn = MaterialButton(this, null, com.google.android.material.R.attr.materialIconButtonStyle).apply {
-            text = "🗑"
+            text = "\uD83D\uDDD1"
             textSize = 16f
             setOnClickListener { confirmDeleteCleanupModel(model) }
         }
@@ -403,7 +102,7 @@ class CleanupActivity : BaseSettingsActivity() {
             gravity = Gravity.CENTER_VERTICAL
             addView(dlBtn)
             addView(deleteBtn)
-            addView(radio)
+            addView(dot)
         }
         val progress = LinearProgressIndicator(this).apply {
             visibility = View.GONE
@@ -417,7 +116,7 @@ class CleanupActivity : BaseSettingsActivity() {
         textContainer.addView(progress)
 
         cleanupModelRows[model.archive] = ModelRowViews(
-            radio, progress, textContainer.findViewWithTag("subtitle"), dlBtn, deleteBtn
+            dot, progress, textContainer.findViewWithTag("subtitle"), dlBtn, deleteBtn
         )
         observeCleanupModelDownload(model)
         refreshCleanupModelRow(model)
@@ -429,27 +128,23 @@ class CleanupActivity : BaseSettingsActivity() {
             selectCleanupModel(model.archive)
             return
         }
-        // A sideload-only entry (#H7) can't be downloaded -- its button is hidden, but guard the
-        // row-tap path too so a tap on the row itself never enqueues a guaranteed-404 download.
         if (ModelDownloader.isSideloadOnly(model)) {
             toast("${model.name} must be sideloaded manually — no download available")
             return
         }
         if (ModelDownloadWorker.isInFlight(cleanupModelDownloadState[model.archive])) return
-        // Non-free cleanup models (LFM2.5-350M) must show their license terms before downloading.
         downloadModelWithLicenseConsent(model)
     }
 
     private fun selectCleanupModel(archive: String) {
         prefs().edit().putString(KEY_LOCAL_CLEANUP_MODEL_NAME, archive).apply()
-        refreshAllCleanupRows(); refresh()
+        ProviderChainStore.save(this, ProviderChainStore.load(this).withLocalFloor(archive))
+        refresh()
     }
 
     private fun confirmDeleteCleanupModel(model: Model) {
         val isActive = !CloudFeatureToggle.cleanupEnabled(this) &&
             selectedCleanupModel().archive == model.archive
-        // Only promise a Cloud fallback if one would actually work; otherwise deleting the active
-        // model turns cleanup off rather than seeding a key-less cloud config that fails (M14).
         val activeNote = if (!isActive) "" else if (canFallBackToCloud()) {
             " Cleanup will switch back to Cloud."
         } else {
@@ -467,22 +162,17 @@ class CleanupActivity : BaseSettingsActivity() {
         val wasActive = !CloudFeatureToggle.cleanupEnabled(this) &&
             selectedCleanupModel().archive == model.archive
         ModelDownloader.delete(this, model)
-        // Deleting a non-free model revokes its license acceptance: re-downloading it later is a
-        // fresh decision and should show the terms again, not silently reuse consent given for a
-        // copy the user deliberately removed.
         ModelLicenseConsent.clearAccepted(this, model)
         if (wasActive) {
             if (canFallBackToCloud()) {
-                onSelectSimpleCleanup(SimpleCleanupChoice.CLOUD)
+                CloudFeatureToggle.setCleanupEnabled(this, true)
             } else {
-                // No usable cloud credential: turn cleanup off instead of switching to a cloud
-                // config that would fail at call time for a local-only user (M14).
                 prefs().edit().putBoolean("use_post_processing", false).apply()
                 toast("Cleanup turned off — no cloud provider configured")
             }
         }
         toast("${model.name} deleted")
-        refreshAllCleanupRows(); refresh()
+        refresh()
     }
 
     private fun canFallBackToCloud(): Boolean =
@@ -502,12 +192,9 @@ class CleanupActivity : BaseSettingsActivity() {
 
         when (info?.state) {
             WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING -> {
-                // While downloading, the download button becomes a cancel button (L10): tapping it
-                // cancels the WorkManager job, which aborts the download (the partial file is kept
-                // so a later re-download resumes it).
                 views.dlBtn.visibility = View.VISIBLE
                 views.dlBtn.isEnabled = true
-                views.dlBtn.text = "✕"
+                views.dlBtn.text = "\u2715"
                 views.dlBtn.setOnClickListener { ModelDownloadWorker.cancel(this, model) }
                 views.progress.visibility = View.VISIBLE
                 val phase = info.progress.getString(ModelDownloadWorker.KEY_PHASE)
@@ -532,28 +219,14 @@ class CleanupActivity : BaseSettingsActivity() {
                 views.dlBtn.isEnabled = true
                 if (cleanupModelDownloadGate.shouldActOnSuccess(info.id.toString())) {
                     selectCleanupModel(model.archive)
-                    // #345: the user already chose Local before this model existed
-                    // (onSelectSimpleCleanup parked that as pending and told them the switch
-                    // would finish after the download). Finish it now -- without this the radio
-                    // sat on Local while cleanup kept routing to the cloud step. The flag is
-                    // cleared by tapping Cloud or by anything that leaves cleanup on-device, so
-                    // it only fires for a switch the user actually asked for and never finished.
-                    val wasPending = pendingLocalCleanupSelection
-                    if (wasPending) onSelectSimpleCleanup(SimpleCleanupChoice.LOCAL)
-                    // Re-check the flag: onSelectSimpleCleanup clears it only when it really switched.
-                    if (wasPending && !pendingLocalCleanupSelection) {
-                        toast("${model.name} ready — now used for cleanup")
-                    } else {
-                        toast("${model.name} ready — tap Local above to use it for cleanup")
-                    }
+                    toast("${model.name} ready")
                 }
                 refreshCleanupModelRow(model)
             }
             WorkInfo.State.FAILED -> {
                 views.progress.visibility = View.GONE
                 views.dlBtn.isEnabled = true
-                // Restore the download button (a prior RUNNING state may have swapped it to cancel, L10).
-                views.dlBtn.text = "↓"
+                views.dlBtn.text = "\u2193"
                 views.dlBtn.setOnClickListener { onCleanupModelAction(model) }
                 val err = info.outputData.getString(ModelDownloadWorker.KEY_ERROR) ?: "Unknown error"
                 views.subtitle.text = "Error: $err"
@@ -568,18 +241,14 @@ class CleanupActivity : BaseSettingsActivity() {
 
     private fun refreshCleanupModelRow(model: Model) {
         val views = cleanupModelRows[model.archive] ?: return
-        // Restore the download affordance whenever the row isn't mid-download (the in-flight branch
-        // in onCleanupModelWorkInfos swaps it to a cancel button) (L10).
-        views.dlBtn.text = "↓"
+        views.dlBtn.text = "\u2193"
         views.dlBtn.setOnClickListener { onCleanupModelAction(model) }
         val active = selectedCleanupModel().archive == model.archive
         val installed = ModelDownloader.isInstalled(this, model)
-        // A sideload-only model has no download URL (#H7): showing its "↓" button guarantees a
-        // 404, so hide it and label the row "sideload only" until the file is pushed manually.
         val sideloadOnly = ModelDownloader.isSideloadOnly(model)
 
-        views.radio.isChecked = active
-        views.radio.visibility = if (installed) View.VISIBLE else View.GONE
+        OneUiComponents.setSelectionDotChecked(views.selectionDot, active)
+        views.selectionDot.visibility = if (installed) View.VISIBLE else View.GONE
         views.dlBtn.visibility = if (installed || sideloadOnly) View.GONE else View.VISIBLE
         views.deleteBtn.visibility = if (installed) View.VISIBLE else View.GONE
 
@@ -588,20 +257,6 @@ class CleanupActivity : BaseSettingsActivity() {
         }
     }
 
-    /**
-     * The single source of truth for a cleanup model row's subtitle.
-     *
-     * Both the row builder and [refreshCleanupModelRow] must produce the same string, or whichever
-     * runs last silently wins. That is exactly what went wrong in #153: the builder appended the
-     * non-FOSS license note and the refresh -- which runs immediately afterwards and again on every
-     * download/selection change -- rebuilt the subtitle without it, so the note was never visible
-     * for more than a frame. Keeping the formatting here means a future edit can't reintroduce
-     * that drift.
-     *
-     * The license is surfaced in the row rather than only inside the consent dialog so a user
-     * comparing cleanup models can see that one isn't free/open-source before tapping anything
-     * (F-Droid review, fdroiddata!42401).
-     */
     private fun cleanupModelSubtitle(
         model: Model,
         installed: Boolean = ModelDownloader.isInstalled(this, model),
@@ -613,78 +268,20 @@ class CleanupActivity : BaseSettingsActivity() {
 
     private fun refreshAllCleanupRows() = LOCAL_CLEANUP_MODEL_CATALOG.forEach { refreshCleanupModelRow(it) }
 
-    internal fun onSelectSimpleCleanup(choice: SimpleCleanupChoice) {
-        when (choice) {
-            SimpleCleanupChoice.LOCAL -> {
-                val model = selectedCleanupModel()
-                if (!ModelDownloader.isInstalled(this, model)) {
-                    pendingLocalCleanupSelection = true
-                    toast("Download a local cleanup model below to finish switching")
-                    refreshWaterfallDependentUi()
-                    return
-                }
-                pendingLocalCleanupSelection = false
-                ensureLocalFloor(model.archive)
-                CloudFeatureToggle.setCleanupEnabled(this, false)
-                refresh()
-            }
-            SimpleCleanupChoice.CLOUD -> {
-                pendingLocalCleanupSelection = false
-                // Seed a default OpenAI entry only if the chain has no cloud-capable entry at
-                // all yet (fresh install / a user who never visited Cloud Providers) -- if
-                // Trevor already configured real providers there, switching Cleanup to "Cloud"
-                // must use exactly those, never silently add or replace anything of his.
-                val chain = ProviderChainStore.load(this)
-                if (chain.capableEntriesFor(needsTranscription = false).none { it.kind != ProviderKind.LOCAL }) {
-                    ProviderChainStore.save(this, ProviderChain(chain.entries + ProviderChainEntry(ProviderKind.OPENAI, PostProcessor.DEFAULT_MODEL)))
-                }
-                CloudFeatureToggle.setCleanupEnabled(this, true)
-                refresh()
-            }
-        }
-        refreshWaterfallDependentUi()
-    }
-
-    /**
-     * Ensures the persisted [ProviderChain] has a [ProviderKind.LOCAL] entry using [modelArchive]
-     * (#37 follow-up, real regression Trevor hit live: the previous fix persisted "Local" as a
-     * full chain OVERWRITE -- `ProviderChain(listOf(ProviderChainEntry(LOCAL, model)))` -- which
-     * silently deleted every cloud provider entry the instant "Local" was tapped, even though
-     * those providers, their credentials, and their order in the Cloud Providers screen were
-     * never something this simple picker should be allowed to touch). Uses
-     * [ProviderChain.withLocalFloor] to add/update only the LOCAL entry, leaving every other
-     * entry exactly as CloudProviderActivity left it; [CloudFeatureToggle] is what actually
-     * decides whether cleanup prefers local or cloud right now, not the chain's contents.
-     */
-    private fun ensureLocalFloor(modelArchive: String) {
-        ProviderChainStore.save(this, ProviderChainStore.load(this).withLocalFloor(modelArchive))
-    }
-
     companion object {
         private const val LP_MATCH = LinearLayout.LayoutParams.MATCH_PARENT
-        private const val KEY_LOCAL_CLEANUP_CONSENT = "local_cleanup_consent_seen"
         private const val KEY_LOCAL_CLEANUP_MODEL_NAME = "local_cleanup_model_name"
 
-        /** Category subtitle for MainActivity's Cleanup row (#93), e.g. "Off", "Local ·
-         *  LFM2.5 350M", or "Cloud · GPT-4o mini" (#37 follow-up: reads
-         *  [CloudFeatureToggle.cleanupEnabled] directly rather than the chain's shape -- see
-         *  [refreshWaterfallDependentUi]'s kdoc for why the chain can no longer be classified by
-         *  entry count once a permanent LOCAL floor coexists with cloud entries). */
         fun subtitle(context: android.content.Context): String {
             val prefs = context.getSharedPreferences("ramblr", android.content.Context.MODE_PRIVATE)
-            if (!prefs.getBoolean("use_post_processing", false)) return "Off"
-            return if (!CloudFeatureToggle.cleanupEnabled(context)) {
-                val archive = prefs.getString(KEY_LOCAL_CLEANUP_MODEL_NAME, "") ?: ""
-                // Same installed-aware resolution as the service (#134) -- this subtitle naming a
-                // model the service wouldn't actually run is the M9 class of bug all over again.
-                val model = ModelDownloader.resolveActiveModel(LOCAL_CLEANUP_MODEL_CATALOG, archive) {
-                    ModelDownloader.isInstalled(context, it)
-                }
-                "Local · ${model.name}"
+            val archive = prefs.getString(KEY_LOCAL_CLEANUP_MODEL_NAME, "") ?: ""
+            val model = ModelDownloader.resolveActiveModel(LOCAL_CLEANUP_MODEL_CATALOG, archive) {
+                ModelDownloader.isInstalled(context, it)
+            }
+            return if (ModelDownloader.isInstalled(context, model)) {
+                "Local \u00b7 ${model.name}"
             } else {
-                // Derive the provider + model from the live chain's first cloud entry, not the
-                // unwritten legacy "cleanup_model" pref that always read "gpt-4o-mini" (M9).
-                "Cloud · ${CleanupDestination.cloudSubtitleDetail(ProviderChainStore.load(context))}"
+                "Local \u00b7 no model installed yet"
             }
         }
     }

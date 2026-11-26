@@ -104,7 +104,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.trevornk.ramblr"
+        applicationId = "com.yeshua.rhemacadence"
         minSdk = 30
         targetSdk = 36
         versionCode = 60

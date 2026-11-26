@@ -1,9 +1,9 @@
 package com.trevornk.ramblr
 
-import android.content.res.ColorStateList
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -12,7 +12,6 @@ import androidx.work.WorkManager
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
-import com.google.android.material.radiobutton.MaterialRadioButton
 
 /**
  * "Live Preview" category screen (#93 restructure): streaming preview switch + streaming model
@@ -25,7 +24,7 @@ class LivePreviewActivity : BaseSettingsActivity() {
     private lateinit var streamingPreviewRowSub: TextView
 
     private data class ModelRowViews(
-        val radio: MaterialRadioButton,
+        val selectionDot: FrameLayout,
         val progress: LinearProgressIndicator,
         val subtitle: TextView,
         val dlBtn: MaterialButton,
@@ -118,10 +117,7 @@ class LivePreviewActivity : BaseSettingsActivity() {
     }
 
     private fun buildStreamingModelRow(model: Model): View {
-        val radio = MaterialRadioButton(this).apply {
-            isClickable = false
-            buttonTintList = ColorStateList.valueOf(attrColor(com.google.android.material.R.attr.colorPrimary))
-        }
+        val dot = OneUiComponents.selectionDot(this, selected = false, contentDescription = model.name)
         val dlBtn = MaterialButton(this, null, com.google.android.material.R.attr.materialIconButtonStyle).apply {
             text = "↓"
             textSize = 18f
@@ -138,7 +134,7 @@ class LivePreviewActivity : BaseSettingsActivity() {
             gravity = Gravity.CENTER_VERTICAL
             addView(dlBtn)
             addView(deleteBtn)
-            addView(radio)
+            addView(dot)
         }
         val progress = LinearProgressIndicator(this).apply {
             visibility = View.GONE
@@ -152,7 +148,7 @@ class LivePreviewActivity : BaseSettingsActivity() {
         textContainer.addView(progress)
 
         streamingModelRows[model.archive] = ModelRowViews(
-            radio, progress, textContainer.findViewWithTag("subtitle"), dlBtn, deleteBtn
+            dot, progress, textContainer.findViewWithTag("subtitle"), dlBtn, deleteBtn
         )
         observeStreamingDownload(model)
         refreshStreamingModelRow(model)
@@ -253,8 +249,8 @@ class LivePreviewActivity : BaseSettingsActivity() {
         val active = selectedStreamingModel().archive == model.archive
         val installed = ModelDownloader.isInstalled(this, model)
 
-        views.radio.isChecked = active
-        views.radio.visibility = if (installed) View.VISIBLE else View.GONE
+        OneUiComponents.setSelectionDotChecked(views.selectionDot, active)
+        views.selectionDot.visibility = if (installed) View.VISIBLE else View.GONE
         views.dlBtn.visibility = if (installed) View.GONE else View.VISIBLE
         views.deleteBtn.visibility = if (installed) View.VISIBLE else View.GONE
 

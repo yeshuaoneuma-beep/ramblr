@@ -83,6 +83,14 @@ object SelfUpdateNotifications {
      *  a missing POST_NOTIFICATIONS grant must not affect the check itself, mirrors
      *  [DownloadNotifications.post]. */
     fun postUpdateAvailable(ctx: Context, update: UpdateCheckResult.UpdateAvailable) {
+        runCatching {
+            AppNotificationStore.record(
+                context = ctx,
+                category = AppNotificationCategory.UPDATE,
+                title = "Update available: v${update.versionName}",
+                body = "A new release is available in Settings > Updates.",
+            )
+        }
         ensureChannel(ctx)
         try {
             NotificationManagerCompat.from(ctx).notify(notificationId(update.versionCode), buildNotification(ctx, update))

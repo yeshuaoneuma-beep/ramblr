@@ -133,8 +133,8 @@ class BehaviorActivity : BaseSettingsActivity() {
             isClickable = false
         }
         place(Section.PRIVACY, 20, settingsRow(
-            "Let automation apps turn Ramblr off",
-            "Lets Tasker or MacroDroid switch Ramblr off. Any app on your phone could use it, " +
+            "Let automation apps turn Rhema Cadence off",
+            "Lets Tasker or MacroDroid switch Rhema Cadence off. Any app on your phone could use it, " +
                 "so leave this off unless you need it",
             automationOffHookSwitch,
             details = "Adds a broadcast that switches the accessibility service off, more reliable " +
@@ -167,7 +167,7 @@ class BehaviorActivity : BaseSettingsActivity() {
         // control sits on one screen. In system-controls mode this is the ONLY off switch that
         // exists anywhere, because the OS hides the master toggle on Ramblr's own Accessibility
         // page for INVISIBLE_TOGGLE services -- so it must stay easy to find.
-        val serviceOffRow = settingsRow("Turn Ramblr off", "Checking...") {
+        val serviceOffRow = settingsRow("Turn Rhema Cadence off", "Checking...") {
             ServiceOffFlow.onRowTapped(this) { refresh() }
         }
         serviceOffRowSub = serviceOffRow.findViewWithTag("subtitle")
@@ -394,20 +394,16 @@ class BehaviorActivity : BaseSettingsActivity() {
 
     private fun promptRingVisibility() {
         val modes = RingVisibilityMode.entries
-        android.app.AlertDialog.Builder(this)
-            .setTitle(R.string.ring_visibility_title)
-            .setSingleChoiceItems(
-                modes.map { ringVisibilityLabel(it) }.toTypedArray(),
-                modes.indexOf(RingVisibilityMode.read(this)),
-            ) { dialog, which ->
-                // The running service watches this preference and re-subscribes / re-lays-out the
-                // ring itself (WhisperAccessibilityService.startObservingRingMode).
-                RingVisibilityMode.write(this, modes[which])
-                refresh()
-                dialog.dismiss()
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+        OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = getString(R.string.ring_visibility_title),
+            items = modes.map { ringVisibilityLabel(it) },
+            checkedIndex = modes.indexOf(RingVisibilityMode.read(this)),
+            negativeLabel = getString(android.R.string.cancel),
+        ) { which ->
+            RingVisibilityMode.write(this, modes[which])
+            refresh()
+        }
     }
 
     private fun refresh() {
@@ -505,15 +501,15 @@ class BehaviorActivity : BaseSettingsActivity() {
         android.app.AlertDialog.Builder(this)
             .setTitle("Automation off-hook enabled")
             .setMessage(
-                "Ramblr now responds to this broadcast by turning its accessibility service " +
+                "Rhema Cadence now responds to this broadcast by turning its accessibility service " +
                     "off:\n\n$offCommand\n\nIn MacroDroid or Tasker, use a \u201CShell\u201D / \u201CRun " +
                     "command\u201D action with that line -- it runs as an ordinary same-user " +
                     "command, no ADB or root needed.\n\nThe broadcast reports back a result " +
                     "code if your automation tool captures one: 0 means the off-hook toggle is " +
-                    "off (nothing happened), 1 means Ramblr's service was live and disableSelf " +
+                    "off (nothing happened), 1 means Rhema Cadence's service was live and disableSelf " +
                     "was requested, 2 means the toggle is on but no live service was found to " +
                     "disable.\n\n" +
-                    "CHECKING RAMBLR'S STATUS\n\nThis companion broadcast reports status without " +
+                    "CHECKING RHEMA CADENCE'S STATUS\n\nThis companion broadcast reports status without " +
                     "changing anything:\n\n$diagnosticCommand\n\nIt replies with result code 3 " +
                     "and a data line of five true/false fields, the useful one being " +
                     "active_component_enabled.\n\n" + automationReEnableVerifyGuidance() +
@@ -522,10 +518,10 @@ class BehaviorActivity : BaseSettingsActivity() {
                     "so that stays your automation tool's own \u201CAccessibility Service " +
                     "\u2192 Enable\u201D action, or Android's Accessibility settings.\n\nWhere you " +
                     "control a shell that already holds WRITE_SECURE_SETTINGS itself (an adb " +
-                    "shell granted it, or root), this command re-adds Ramblr directly:\n\n" +
+                    "shell granted it, or root), this command re-adds Rhema Cadence directly:\n\n" +
                     "$enableCommand\n\nIt is written for user $hostingUserId and " +
                     "$enableComponent as of now -- copy it again if the mode or hosting user " +
-                    "changes. Granting that permission to Ramblr does NOT give it to an " +
+                    "changes. Granting that permission to Rhema Cadence does NOT give it to an " +
                     "automation tool's shell action; whether a given shell action can run this " +
                     "depends on what that action executes as, and it fails with a permission " +
                     "error anywhere that authority is missing. It preserves other apps' " +
@@ -562,9 +558,9 @@ class BehaviorActivity : BaseSettingsActivity() {
             .setTitle("Copy which command?")
             .setItems(choices) { _, which ->
                 when (which) {
-                    0 -> copyToClipboard("Ramblr off-hook", offCommand)
-                    1 -> copyToClipboard("Ramblr status check", diagnosticCommand)
-                    else -> copyToClipboard("Ramblr re-enable (privileged)", enableCommand)
+                    0 -> copyToClipboard("Rhema Cadence off-hook", offCommand)
+                    1 -> copyToClipboard("Rhema Cadence status check", diagnosticCommand)
+                    else -> copyToClipboard("Rhema Cadence re-enable (privileged)", enableCommand)
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -629,8 +625,8 @@ class BehaviorActivity : BaseSettingsActivity() {
     private fun exclusionListSummary(): String {
         val count = PerAppExclusionStore.exclusions(this).size
         val countText = if (count == 0) "No apps excluded" else "$count app${if (count == 1) "" else "s"} excluded"
-        return "$countText. Ramblr won't record or insert text there. Not a full off switch: " +
-            "use \"Turn Ramblr off\" for that"
+        return "$countText. Rhema Cadence won't record or insert text there. Not a full off switch: " +
+            "use \"Turn Rhema Cadence off\" for that"
     }
 
     // --- Auto-hide delay (Feature A follow-up) ---
@@ -692,17 +688,17 @@ class BehaviorActivity : BaseSettingsActivity() {
     private fun promptBubbleShortcut() {
         val candidates = BubbleShortcut.candidates(this)
         val current = BubbleShortcut.resolve(this)?.component
-        val labels = (listOf(getString(R.string.bubble_shortcut_none)) + candidates.map { it.label }).toTypedArray()
+        val labels = listOf(getString(R.string.bubble_shortcut_none)) + candidates.map { it.label }
         val checked = candidates.indexOfFirst { it.component == current } + 1 // 0 = None
-        android.app.AlertDialog.Builder(this)
-            .setTitle(R.string.bubble_shortcut_dialog_title)
-            .setSingleChoiceItems(labels, checked) { dialog, which ->
-                BubbleShortcut.set(this, if (which == 0) null else candidates[which - 1].component)
-                refresh()
-                dialog.dismiss()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = getString(R.string.bubble_shortcut_dialog_title),
+            items = labels,
+            checkedIndex = checked,
+        ) { which ->
+            BubbleShortcut.set(this, if (which == 0) null else candidates[which - 1].component)
+            refresh()
+        }
     }
 
     // --- Haptics (#385) ---
@@ -717,30 +713,30 @@ class BehaviorActivity : BaseSettingsActivity() {
 
     private fun promptHapticsStrength() {
         val values = HapticStrength.values()
-        val labels = values.map { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } }.toTypedArray()
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Vibration strength")
-            .setSingleChoiceItems(labels, values.indexOf(HapticPrefs.load(this).strength)) { dialog, which ->
-                HapticPrefs.setStrength(this, values[which])
-                refresh()
-                dialog.dismiss()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        val labels = values.map { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } }
+        OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = "Vibration strength",
+            items = labels,
+            checkedIndex = values.indexOf(HapticPrefs.load(this).strength),
+        ) { which ->
+            HapticPrefs.setStrength(this, values[which])
+            refresh()
+        }
     }
 
     private fun promptHapticsLength() {
         val presets = HapticPrefs.PRESET_LENGTHS_MS
         val current = HapticPrefs.load(this).lengthMs
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Vibration length")
-            .setSingleChoiceItems(presets.map { "$it ms" }.toTypedArray(), presets.indexOf(current)) { dialog, which ->
-                HapticPrefs.setLengthMs(this, presets[which])
-                refresh()
-                dialog.dismiss()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = "Vibration length",
+            items = presets.map { "$it ms" },
+            checkedIndex = presets.indexOf(current),
+        ) { which ->
+            HapticPrefs.setLengthMs(this, presets[which])
+            refresh()
+        }
     }
 
     // --- Silence-based auto-stop (#108, mode 1) ---
@@ -847,24 +843,23 @@ class BehaviorActivity : BaseSettingsActivity() {
 
     private fun promptSilenceAutoStopThreshold() {
         val presets = SilenceAutoStopThreshold.PRESET_DECISECONDS
-        val labels = presets.map { SilenceAutoStopThreshold.formatSeconds(it) }.toTypedArray()
+        val labels = presets.map { SilenceAutoStopThreshold.formatSeconds(it) }
         val current = SilenceAutoStopThreshold.decisecondsOrDefault(this)
         val checkedIndex = presets.indexOf(current).let { if (it < 0) presets.size else it }
         val items = labels + "Custom…"
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Silence threshold")
-            .setSingleChoiceItems(items, checkedIndex) { dialog, which ->
-                if (which < presets.size) {
-                    SilenceAutoStopThreshold.setDeciseconds(this, presets[which])
-                    refresh()
-                    dialog.dismiss()
-                } else {
-                    dialog.dismiss()
-                    promptSilenceAutoStopCustomThreshold()
-                }
+        OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = "Silence threshold",
+            items = items,
+            checkedIndex = checkedIndex,
+        ) { which ->
+            if (which < presets.size) {
+                SilenceAutoStopThreshold.setDeciseconds(this, presets[which])
+                refresh()
+            } else {
+                promptSilenceAutoStopCustomThreshold()
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
     }
 
     private fun promptSilenceAutoStopCustomThreshold() {

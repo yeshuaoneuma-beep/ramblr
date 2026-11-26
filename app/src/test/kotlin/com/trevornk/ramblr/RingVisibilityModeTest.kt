@@ -130,15 +130,31 @@ class RingVisibilityModeTest {
             val summaryMethod = BehaviorActivity::class.java.getDeclaredMethod("ringVisibilitySummary")
                 .apply { isAccessible = true }
 
+            fun dialogOptionRows(dialog: AlertDialog): List<Pair<String, android.view.View>> {
+                val out = mutableListOf<Pair<String, android.view.View>>()
+                fun walk(v: android.view.View) {
+                    if (v is android.view.ViewGroup && v.isClickable && v.hasOnClickListeners()) {
+                        val tv = (0 until v.childCount).map { v.getChildAt(it) }
+                            .filterIsInstance<android.widget.TextView>()
+                            .firstOrNull { !it.text.isNullOrBlank() }
+                        if (tv != null) out += tv.text.toString() to v
+                    }
+                    if (v is android.view.ViewGroup) {
+                        for (i in 0 until v.childCount) walk(v.getChildAt(i))
+                    }
+                }
+                walk(dialog.window!!.decorView)
+                return out
+            }
+
             promptMethod.invoke(activity)
             val dialog = ShadowAlertDialog.getLatestAlertDialog() as AlertDialog
             val expectedLabels = RingVisibilityMode.entries.map { activity.getString(it.labelRes) }
-            val actualLabels = (0 until dialog.listView.adapter.count).map { dialog.listView.adapter.getItem(it).toString() }
-            assertEquals(expectedLabels, actualLabels)
+            val firstRows = dialogOptionRows(dialog).filter { it.first in expectedLabels }
+            assertEquals(expectedLabels, firstRows.map { it.first })
 
-            // Pick KEYBOARD (index 1).
-            val keyboardIdx = RingVisibilityMode.entries.indexOf(RingVisibilityMode.KEYBOARD)
-            dialog.listView.performItemClick(null, keyboardIdx, keyboardIdx.toLong())
+            // Pick KEYBOARD.
+            firstRows.first { it.first == activity.getString(RingVisibilityMode.KEYBOARD.labelRes) }.second.performClick()
             shadowOf(Looper.getMainLooper()).idle()
 
             assertEquals(RingVisibilityMode.KEYBOARD, RingVisibilityMode.read(activity))
@@ -148,11 +164,11 @@ class RingVisibilityModeTest {
             )
             assertEquals(0f, overlayAlpha(service), 0.001f)
 
-            // Pick ALWAYS (index 0) and confirm live overlay reappears immediately.
+            // Pick ALWAYS and confirm live overlay reappears immediately.
             promptMethod.invoke(activity)
             val secondDialog = ShadowAlertDialog.getLatestAlertDialog() as AlertDialog
-            val alwaysIdx = RingVisibilityMode.entries.indexOf(RingVisibilityMode.ALWAYS)
-            secondDialog.listView.performItemClick(null, alwaysIdx, alwaysIdx.toLong())
+            val secondRows = dialogOptionRows(secondDialog).filter { it.first in expectedLabels }
+            secondRows.first { it.first == activity.getString(RingVisibilityMode.ALWAYS.labelRes) }.second.performClick()
             shadowOf(Looper.getMainLooper()).idle()
 
             assertEquals(RingVisibilityMode.ALWAYS, RingVisibilityMode.read(activity))

@@ -83,11 +83,11 @@ object ModelLicenseConsent {
         } else {
             "an optional alternative transcription model -- the standard models remain available"
         }
-        return "\"${model.name}\" is not free/open-source software, unlike Ramblr itself (GPLv3).\n\n" +
+        return "\"${model.name}\" is not free/open-source software, unlike Rhema Cadence itself (GPLv3).\n\n" +
             "It is published by its authors under the ${model.license.name}, which places " +
             "restrictions on use that an open-source license would not — $restriction.\n\n" +
-            "The model is downloaded from its publisher, not bundled with Ramblr, and is " +
-            "$role. You can use Ramblr fully without it.\n\n" +
+            "The model is downloaded from its publisher, not bundled with Rhema Cadence, and is " +
+            "$role. You can use Rhema Cadence fully without it.\n\n" +
             "License terms: ${model.license.url}"
     }
 }

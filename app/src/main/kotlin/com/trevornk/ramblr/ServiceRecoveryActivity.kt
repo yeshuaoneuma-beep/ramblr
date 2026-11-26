@@ -27,7 +27,7 @@ class ServiceRecoveryActivity : Activity() {
         // bypass the invisible-toggle sync, which is exactly what is wanted -- restore
         // enabled_accessibility_services without the OS re-syncing shortcuts (#156 memo §3).
         if (InvocationSecureSettings.reEnableService(this)) {
-            Toast.makeText(this, "Ramblr re-enabled", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Rhema Cadence re-enabled", Toast.LENGTH_SHORT).show()
             finish()
             overridePendingTransition(0, 0)
             return

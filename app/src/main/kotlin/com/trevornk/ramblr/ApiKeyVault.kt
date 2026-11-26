@@ -25,6 +25,7 @@ data class ApiKeyVaultEntry(
 data class ApiKeyFormatCheck(
     val isValid: Boolean,
     val message: String? = null,
+    val softWarning: String? = null,
 )
 
 /** One active or linked consumer referencing a vault key, used by the delete-in-use guard. */
@@ -35,20 +36,36 @@ data class ApiKeyUsage(
 )
 
 /**
- * Local format validation for vault API keys before enabling the green lock-in state.
+ * Local format sanitization & non-blocking validation for vault API keys.
+ *
+ * Hard-blocks ONLY when the sanitized key is blank, contains internal whitespace, or a Custom
+ * OpenAI-Compatible Base URL is blank/invalid. Never hard-blocks Lock or Save on any provider key
+ * prefix or length (e.g. `AQ.` Google Cloud/Vertex Express keys, OpenRouter, Groq, OpenAI,
+ * Anthropic, OmniRoute, Custom all pass with `isValid = true`).
  */
 object ApiKeyVaultValidator {
+    private val ZERO_WIDTH_AND_NEWLINES = Regex("[\u200B\u200C\u200D\u2060\uFEFF\\r\\n]")
+
+    /** Strips zero-width characters, line breaks, surrounding whitespace, and matching outer quotes. */
+    fun sanitize(raw: String): String {
+        var s = ZERO_WIDTH_AND_NEWLINES.replace(raw, "").trim()
+        if (s.length >= 2 && ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith('\'') && s.endsWith('\'')))) {
+            s = s.substring(1, s.length - 1).trim()
+        }
+        return s
+    }
+
     fun validate(
         providerId: String,
         key: String,
         customBaseUrl: String? = null,
     ): ApiKeyFormatCheck {
-        val trimmedKey = key.trim()
-        if (trimmedKey.isEmpty()) {
+        val cleanedKey = sanitize(key)
+        if (cleanedKey.isEmpty()) {
             return ApiKeyFormatCheck(false, "Enter an API key first.")
         }
-        if (trimmedKey.any { it.isWhitespace() }) {
-            return ApiKeyFormatCheck(false, "API key cannot contain spaces or line breaks.")
+        if (cleanedKey.any { it.isWhitespace() }) {
+            return ApiKeyFormatCheck(false, "API key cannot contain spaces.")
         }
 
         if (providerId == ProviderCapabilityRegistry.ID_CUSTOM_OPENAI) {
@@ -65,53 +82,109 @@ object ApiKeyVaultValidator {
             if (parsed == null || (scheme != "https" && scheme != "http") || parsed.host.isNullOrBlank()) {
                 return ApiKeyFormatCheck(false, "Base URL must be a valid http:// or https:// URL.")
             }
-            if (trimmedKey.length < 4) {
-                return ApiKeyFormatCheck(false, "API key looks too short.")
-            }
-            return ApiKeyFormatCheck(true, null)
+            return ApiKeyFormatCheck(true, null, softWarning = null)
         }
 
-        if (trimmedKey.length < 8) {
-            return ApiKeyFormatCheck(false, "API key looks too short.")
-        }
-
-        return when (providerId) {
+        val softWarning = when (providerId) {
             ProviderCapabilityRegistry.ID_GEMINI -> {
-                if (!trimmedKey.startsWith("AIza") || trimmedKey.length < 20) {
-                    ApiKeyFormatCheck(false, "Gemini keys start with \"AIza\" (at least 20 characters).")
-                } else {
-                    ApiKeyFormatCheck(true, null)
-                }
+                if (!cleanedKey.startsWith("AIza") && !cleanedKey.startsWith("AQ.")) {
+                    "Unusual prefix for Gemini (typically AIza... or AQ....) — saved anyway."
+                } else null
             }
             ProviderCapabilityRegistry.ID_GROQ -> {
-                if (!trimmedKey.startsWith("gsk_") || trimmedKey.length < 20) {
-                    ApiKeyFormatCheck(false, "Groq keys start with \"gsk_\" (at least 20 characters).")
-                } else {
-                    ApiKeyFormatCheck(true, null)
-                }
+                if (!cleanedKey.startsWith("gsk_")) {
+                    "Unusual prefix for Groq (typically gsk_...) — saved anyway."
+                } else null
             }
             ProviderCapabilityRegistry.ID_OPENROUTER -> {
-                if (!trimmedKey.startsWith("sk-or-") || trimmedKey.length < 20) {
-                    ApiKeyFormatCheck(false, "OpenRouter keys start with \"sk-or-\" (at least 20 characters).")
-                } else {
-                    ApiKeyFormatCheck(true, null)
-                }
+                if (!cleanedKey.startsWith("sk-or-")) {
+                    "Unusual prefix for OpenRouter (typically sk-or-...) — saved anyway."
+                } else null
             }
             ProviderCapabilityRegistry.ID_OPENAI -> {
-                if (!trimmedKey.startsWith("sk-") || trimmedKey.length < 20) {
-                    ApiKeyFormatCheck(false, "OpenAI keys start with \"sk-\" (at least 20 characters).")
-                } else {
-                    ApiKeyFormatCheck(true, null)
-                }
+                if (!cleanedKey.startsWith("sk-")) {
+                    "Unusual prefix for OpenAI (typically sk-...) — saved anyway."
+                } else null
             }
             ProviderCapabilityRegistry.ID_ANTHROPIC -> {
-                if (!trimmedKey.startsWith("sk-ant-") || trimmedKey.length < 20) {
-                    ApiKeyFormatCheck(false, "Anthropic keys start with \"sk-ant-\" (at least 20 characters).")
-                } else {
-                    ApiKeyFormatCheck(true, null)
-                }
+                if (!cleanedKey.startsWith("sk-ant-")) {
+                    "Unusual prefix for Anthropic (typically sk-ant-...) — saved anyway."
+                } else null
             }
-            else -> ApiKeyFormatCheck(true, null)
+            else -> null
+        }
+
+        return ApiKeyFormatCheck(isValid = true, message = null, softWarning = softWarning)
+    }
+}
+
+/**
+ * Pure key-gating normalizer ensuring keyless cloud entries/slots can never stay locked or active.
+ */
+object KeyGateNormalizer {
+    fun normalizeChain(
+        chain: ProviderChain,
+        hasKey: (ProviderChainEntry) -> Boolean,
+    ): ProviderChain {
+        var changed = false
+        val updated = chain.entries.map { entry ->
+            if (entry.kind == ProviderKind.LOCAL) return@map entry
+            if (!hasKey(entry)) {
+                val unlocked = entry.copy(
+                    providerLocked = false,
+                    sttLocked = false,
+                    cleanupLocked = false,
+                    useForTranscription = false,
+                    useForCleanup = false,
+                )
+                if (unlocked != entry) changed = true
+                unlocked
+            } else {
+                entry
+            }
+        }
+        return if (changed) ProviderChain(updated) else chain
+    }
+
+    fun normalizeLiveConfig(
+        config: LiveTranscriptionConfig,
+        hasGeminiKey: Boolean,
+        hasSlotKey: (LivePostCleanupSlot) -> Boolean,
+    ): LiveTranscriptionConfig {
+        val updatedSlots = config.postCleanupSlots.map { slot ->
+            if (!hasSlotKey(slot) && slot.locked) slot.copy(locked = false) else slot
+        }
+        return if (!hasGeminiKey) {
+            config.copy(
+                enabled = false,
+                providerLocked = false,
+                modelLocked = false,
+                postCleanupSlots = updatedSlots,
+            )
+        } else {
+            config.copy(postCleanupSlots = updatedSlots)
+        }
+    }
+
+    fun normalizeAndPersistIfChanged(context: Context) {
+        val chain = ProviderChainStore.load(context)
+        val normalizedChain = normalizeChain(chain) { entry ->
+            ProviderCredentialStore.isConfiguredOrLegacy(context, entry)
+        }
+        if (normalizedChain != chain) {
+            ProviderChainStore.save(context, normalizedChain)
+        }
+
+        val liveConfig = LiveTranscriptionConfigStore.load(context)
+        val hasGeminiKey = ApiKeyVaultStore.hasSecret(context, liveConfig.effectiveVaultKeyId(), liveConfig.providerId) ||
+            ProviderCredentialStore.isConfiguredForKind(context, normalizedChain, ProviderKind.GEMINI)
+        val normalizedLive = normalizeLiveConfig(
+            config = liveConfig,
+            hasGeminiKey = hasGeminiKey,
+            hasSlotKey = { slot -> ApiKeyVaultStore.hasSecret(context, slot.vaultKeyId, slot.providerId) },
+        )
+        if (normalizedLive != liveConfig) {
+            LiveTranscriptionConfigStore.save(context, normalizedLive)
         }
     }
 }
@@ -214,6 +287,7 @@ object ApiKeyUsageScanner {
             }
         }
         return config.copy(
+            enabled = if (detachLive) false else config.enabled,
             providerLocked = if (detachLive) false else config.providerLocked,
             modelLocked = if (detachLive) false else config.modelLocked,
             vaultKeyId = if (detachLive) null else config.vaultKeyId,
@@ -286,10 +360,11 @@ object ApiKeyVaultStore {
 
     fun upsert(context: Context, entry: ApiKeyVaultEntry, secret: String? = null) {
         if (secret != null) {
-            if (secret.isBlank()) {
+            val sanitized = ApiKeyVaultValidator.sanitize(secret)
+            if (sanitized.isBlank()) {
                 ProviderCredentialStore.clearVaultSecret(context, entry.id)
             } else {
-                ProviderCredentialStore.setVaultSecret(context, entry.id, secret.trim())
+                ProviderCredentialStore.setVaultSecret(context, entry.id, sanitized)
             }
         }
         val current = load(context).toMutableList()
@@ -483,11 +558,15 @@ object ApiKeyVaultMigration {
                 allocateForProvider(providerId, secret, entry.baseUrlOverride, entry.customLabel)
             }
 
+            val hasEntrySecret = !effectiveSecrets[targetVaultId].isNullOrBlank() || secret.isNotBlank()
+            val lockedProvider = hasEntrySecret && entry.enabled && entry.providerLocked
             entry.copy(
                 vaultKeyId = targetVaultId,
-                providerLocked = entry.enabled && entry.providerLocked,
-                sttLocked = entry.enabled && entry.providerLocked && entry.sttLocked && entry.useForTranscription && entry.kind.supportsTranscription() && entry.transcriptionModel != ProviderChainEntry.SKIP_MODEL_ID,
-                cleanupLocked = entry.enabled && entry.providerLocked && entry.cleanupLocked && entry.useForCleanup && entry.kind.supportsCleanup() && entry.model != ProviderChainEntry.SKIP_MODEL_ID,
+                providerLocked = lockedProvider,
+                sttLocked = lockedProvider && entry.sttLocked && entry.useForTranscription && entry.kind.supportsTranscription() && entry.transcriptionModel != ProviderChainEntry.SKIP_MODEL_ID,
+                cleanupLocked = lockedProvider && entry.cleanupLocked && entry.useForCleanup && entry.kind.supportsCleanup() && entry.model != ProviderChainEntry.SKIP_MODEL_ID,
+                useForTranscription = if (hasEntrySecret) entry.useForTranscription else false,
+                useForCleanup = if (hasEntrySecret) entry.useForCleanup else false,
                 sttAttempts = entry.sttAttempts.coerceIn(AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS, AttemptBudgetCalculator.MAX_SLOT_ATTEMPTS),
                 cleanupAttempts = entry.cleanupAttempts.coerceIn(AttemptBudgetCalculator.MIN_SLOT_ATTEMPTS, AttemptBudgetCalculator.MAX_SLOT_ATTEMPTS),
             )
@@ -558,7 +637,7 @@ object ApiKeyVaultMigration {
             val geminiVaultId = ProviderCapabilityRegistry.canonicalVaultKeyId(ProviderCapabilityRegistry.ID_GEMINI)
             val hasGeminiKey = !effectiveSecrets[geminiVaultId].isNullOrBlank()
             LiveTranscriptionConfig(
-                enabled = cloudLiveEnabled,
+                enabled = cloudLiveEnabled && hasGeminiKey,
                 providerId = ProviderCapabilityRegistry.ID_GEMINI,
                 modelId = LiveTranscriptionConfig.DEFAULT_LIVE_MODEL_ID,
                 vaultKeyId = geminiVaultId,

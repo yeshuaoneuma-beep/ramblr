@@ -15,15 +15,15 @@ import androidx.activity.OnBackPressedCallback
 import java.util.UUID
 
 /**
- * Shared API Keys Vault screen (Phase 3A.1).
+ * Shared API Keys Vault screen (Phase 3A.3 hairline overhaul).
  *
- * Driven exclusively from [ProviderCapabilityRegistry.vaultProviders] plus user-created Custom
- * OpenAI-Compatible vault entries. Secrets live in [ProviderCredentialStore]'s encrypted prefs
- * under `"vault_<vaultKeyId>_key"`; metadata lives in [ApiKeyVaultStore].
+ * Flat hairline sections per provider, underlined EditText inputs, inline flat text actions
+ * (`Show`/`Hide`, `Save`, `Delete` — zero pills/boxes), circular `lockCircle` + green `"Active"`,
+ * auto-sanitized non-blocking save, and flat hairline `+ Add Custom OpenAI-Compatible` row.
  */
 class ApiKeysVaultActivity : BaseSettingsActivity() {
 
-    private lateinit var cardsContainer: LinearLayout
+    private lateinit var sectionsContainer: LinearLayout
     private var focusProviderId: String? = null
     private val dirtyCardIds = mutableSetOf<String>()
 
@@ -42,40 +42,36 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
 
         val body = vertical(0, 0)
         body.addView(explainer(
-            "One shared vault for Batch STT, Cleanup, and Live transcription. Lock a key green " +
-                "and tap Save to store it encrypted on this device."
+            "One shared encrypted vault for Batch STT, Cleanup, and Live transcription. Keys are " +
+                "sanitized automatically on save and stored encrypted on this device."
         ))
 
-        cardsContainer = vertical(0, 0)
-        body.addView(cardsContainer)
+        sectionsContainer = vertical(0, 0)
+        body.addView(sectionsContainer)
 
-        val addCustomWrap = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(4), dp(16), dp(12))
-        }
-        addCustomWrap.addView(
-            OneUiComponents.cobaltButton(
+        body.addView(hairlineDivider(24, 24))
+        body.addView(
+            OneUiComponents.flatActionRow(
                 context = this,
                 label = "+ Add Custom OpenAI-Compatible",
                 subtitle = "Self-hosted or third-party OpenAI-format endpoint",
             ) { promptAddCustomVaultKey() }
         )
-        body.addView(addCustomWrap)
 
         setOneUiScreenContent(
             title = "API keys",
             showBack = true,
-            subtitle = "Shared encrypted vault",
+            icon = R.drawable.ic_settings_cloud,
             content = body,
             onBack = { handleNavigateBack() },
         )
 
-        renderCards()
+        renderSections()
     }
 
     override fun onResume() {
         super.onResume()
-        if (dirtyCardIds.isEmpty()) renderCards()
+        if (dirtyCardIds.isEmpty()) renderSections()
     }
 
     private fun handleNavigateBack() {
@@ -85,7 +81,7 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
         }
         AlertDialog.Builder(this)
             .setTitle("Unsaved API key changes")
-            .setMessage("You have unsaved edits in ${dirtyCardIds.size} key card(s). Discard them and go back?")
+            .setMessage("You have unsaved edits in ${dirtyCardIds.size} provider(s). Discard them and go back?")
             .setPositiveButton("Discard") { _, _ ->
                 dirtyCardIds.clear()
                 finish()
@@ -94,14 +90,15 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
             .show()
     }
 
-    private fun renderCards() {
-        cardsContainer.removeAllViews()
+    private fun renderSections() {
+        sectionsContainer.removeAllViews()
         dirtyCardIds.clear()
 
         val savedEntries = ApiKeyVaultStore.load(this)
         val savedById = savedEntries.associateBy { it.id }
 
-        // 1. Standard registry-driven vault providers
+        val rowsToRender = mutableListOf<Triple<ProviderDescriptor, ApiKeyVaultEntry, Boolean>>()
+
         ProviderCapabilityRegistry.vaultProviders().forEach { descriptor ->
             val canonicalId = ProviderCapabilityRegistry.canonicalVaultKeyId(descriptor.id)
             val entry = savedById[canonicalId] ?: ApiKeyVaultEntry(
@@ -111,31 +108,38 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
                 customBaseUrl = null,
                 locked = false,
             )
-            cardsContainer.addView(buildVaultCard(descriptor, entry, isSecondaryOrCustom = false))
+            rowsToRender += Triple(descriptor, entry, false)
 
-            // Render any secondary migrated vault slots for the same provider
             savedEntries
                 .filter { it.providerId == descriptor.id && it.id != canonicalId }
                 .forEach { extra ->
-                    cardsContainer.addView(buildVaultCard(descriptor, extra, isSecondaryOrCustom = true))
+                    rowsToRender += Triple(descriptor, extra, true)
                 }
         }
 
-        // 2. Saved Custom OpenAI-Compatible entries
         val customDescriptor = ProviderCapabilityRegistry.CUSTOM_OPENAI
         savedEntries
             .filter { it.providerId == ProviderCapabilityRegistry.ID_CUSTOM_OPENAI }
             .forEach { customEntry ->
-                cardsContainer.addView(buildVaultCard(customDescriptor, customEntry, isSecondaryOrCustom = true))
+                rowsToRender += Triple(customDescriptor, customEntry, true)
             }
+
+        rowsToRender.forEachIndexed { idx, (descriptor, entry, isSecondaryOrCustom) ->
+            sectionsContainer.addView(buildVaultSection(descriptor, entry, isSecondaryOrCustom))
+            if (idx < rowsToRender.lastIndex) {
+                sectionsContainer.addView(hairlineDivider(24, 24))
+            }
+        }
     }
 
-    private fun buildVaultCard(
+    private fun buildVaultSection(
         descriptor: ProviderDescriptor,
         initialEntry: ApiKeyVaultEntry,
         isSecondaryOrCustom: Boolean,
     ): View {
-        val card = oneUiCard(padH = 16, padV = 14)
+        val section = vertical(0).apply {
+            setPadding(dp(24), dp(14), dp(16), dp(14))
+        }
         val existingSecret = ProviderCredentialStore.getVaultSecret(this, initialEntry.id)
         val hasSavedSecret = existingSecret.isNotBlank()
         var currentLocked = initialEntry.locked && hasSavedSecret
@@ -143,17 +147,16 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
 
         val primaryText = attrColor(android.R.attr.textColorPrimary)
         val secondaryText = attrColor(android.R.attr.textColorSecondary)
-        val pillSurface = OneUiComponents.resColor(this, R.color.oneui_pill_surface)
-        val borderColor = OneUiComponents.resColor(this, R.color.oneui_card_border)
-        val accentColor = OneUiComponents.resColor(this, R.color.oneui_accent_cobalt)
+        val accentColor = attrColor(com.google.android.material.R.attr.colorPrimary)
         val dangerColor = OneUiComponents.resColor(this, R.color.oneui_danger_red)
         val lockedGreen = OneUiComponents.resColor(this, R.color.oneui_locked_green)
         val warningAmber = OneUiComponents.resColor(this, R.color.oneui_warning_amber)
 
-        // Header row: label + focused badge + status
+        // Header row: provider title + subtle lane caption + Active/Not set status
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, dp(8), dp(2))
         }
         headerRow.addView(TextView(this).apply {
             text = initialEntry.displayLabel
@@ -163,44 +166,27 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
             layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f)
         })
         val statusText = TextView(this).apply {
-            textSize = 12f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            textSize = 11f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         }
         headerRow.addView(statusText)
-        card.addView(headerRow)
+        section.addView(headerRow)
 
-        // Capability chips
-        val chipRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(6), 0, dp(10))
-        }
-        descriptor.supportedLanes.forEach { lane ->
-            val label = when (lane) {
+        val lanesSummary = descriptor.supportedLanes.joinToString(" \u00b7 ") { lane ->
+            when (lane) {
                 CapabilityLane.BATCH_STT -> "Batch STT"
                 CapabilityLane.CLEANUP -> "Cleanup"
                 CapabilityLane.LIVE_STT -> "Live STT"
             }
-            chipRow.addView(
-                OneUiComponents.pillBadge(this, label).apply {
-                    layoutParams = LinearLayout.LayoutParams(LP_WRAP, LP_WRAP).apply {
-                        marginEnd = dp(6)
-                    }
-                }
-            )
-        }
-        if (focusProviderId == descriptor.id) {
-            chipRow.addView(
-                OneUiComponents.pillBadge(
-                    this,
-                    "Needed",
-                    textColor = accentColor,
-                    bgColor = OneUiComponents.resColor(this, R.color.oneui_accent_cobalt_container),
-                )
-            )
-        }
-        card.addView(chipRow)
+        } + if (focusProviderId == descriptor.id) " \u00b7 Needed" else ""
+        section.addView(TextView(this).apply {
+            text = lanesSummary
+            textSize = 12f
+            setTextColor(if (focusProviderId == descriptor.id) accentColor else secondaryText)
+            setPadding(0, 0, dp(8), dp(8))
+        })
 
-        // Optional custom label & base URL inputs for Custom OpenAI-Compatible
+        // Optional flat underlined label & base URL inputs for Custom OpenAI-Compatible
         var labelInput: EditText? = null
         var baseUrlInput: EditText? = null
         if (descriptor.requiresCustomBaseUrl) {
@@ -211,9 +197,10 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
                 isSingleLine = true
                 setTextColor(primaryText)
                 setHintTextColor(secondaryText)
-                background = OneUiComponents.roundedBg(pillSurface, dp(12).toFloat(), dp(1), borderColor)
-                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = OneUiComponents.flatUnderlineBg(this@ApiKeysVaultActivity)
+                setPadding(0, dp(6), 0, dp(8))
                 layoutParams = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP).apply {
+                    marginEnd = dp(8)
                     bottomMargin = dp(8)
                 }
             }
@@ -225,58 +212,37 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
                 setTextColor(primaryText)
                 setHintTextColor(secondaryText)
-                background = OneUiComponents.roundedBg(pillSurface, dp(12).toFloat(), dp(1), borderColor)
-                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = OneUiComponents.flatUnderlineBg(this@ApiKeysVaultActivity)
+                setPadding(0, dp(6), 0, dp(8))
                 layoutParams = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP).apply {
+                    marginEnd = dp(8)
                     bottomMargin = dp(8)
                 }
             }
-            card.addView(labelInput)
-            card.addView(baseUrlInput)
+            section.addView(labelInput)
+            section.addView(baseUrlInput)
         }
 
-        // Key input + show/hide + side green lock-in button
+        // Flat underlined key input + lockCircle
         val inputRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         val keyInput = EditText(this).apply {
             hint = if (hasSavedSecret) {
-                "Saved (${ProviderCredentialStore.maskForDisplay(existingSecret)}) — paste to replace"
+                "Saved (${ProviderCredentialStore.maskForDisplay(existingSecret)}) \u2014 paste to replace"
             } else {
-                "Paste key (${descriptor.keyHint.ifBlank { "API key" }})"
+                "Paste API key (${descriptor.keyHint.ifBlank { "API key" }})"
             }
             textSize = 14f
             isSingleLine = true
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setTextColor(primaryText)
             setHintTextColor(secondaryText)
-            background = OneUiComponents.roundedBg(pillSurface, dp(12).toFloat(), dp(1), borderColor)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = OneUiComponents.flatUnderlineBg(this@ApiKeysVaultActivity)
+            setPadding(0, dp(8), 0, dp(10))
             layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f).apply {
                 marginEnd = dp(8)
-            }
-        }
-        val toggleVisibilityBtn = TextView(this).apply {
-            text = "Show"
-            textSize = 12f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setTextColor(accentColor)
-            background = OneUiComponents.roundedBg(pillSurface, dp(10).toFloat(), dp(1), borderColor)
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            layoutParams = LinearLayout.LayoutParams(LP_WRAP, LP_WRAP).apply {
-                marginEnd = dp(8)
-            }
-            setOnClickListener {
-                keyVisible = !keyVisible
-                val sel = keyInput.selectionEnd
-                keyInput.inputType = if (keyVisible) {
-                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-                } else {
-                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                }
-                if (sel >= 0) keyInput.setSelection(sel.coerceAtMost(keyInput.text?.length ?: 0))
-                text = if (keyVisible) "Hide" else "Show"
             }
         }
         val lockHost = LinearLayout(this).apply {
@@ -285,44 +251,46 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
         }
 
         inputRow.addView(keyInput)
-        inputRow.addView(toggleVisibilityBtn)
         inputRow.addView(lockHost)
-        card.addView(inputRow)
+        section.addView(inputRow)
 
         val helperText = TextView(this).apply {
             textSize = 12f
-            setPadding(dp(2), dp(6), dp(2), dp(8))
+            setPadding(0, dp(6), dp(8), dp(4))
         }
-        card.addView(helperText)
+        section.addView(helperText)
 
         fun effectiveKey(): String {
-            val typed = keyInput.text?.toString()?.trim().orEmpty()
+            val typed = ApiKeyVaultValidator.sanitize(keyInput.text?.toString().orEmpty())
             return typed.ifEmpty { existingSecret }
         }
 
         fun effectiveBaseUrl(): String? =
             baseUrlInput?.text?.toString()?.trim()?.takeIf { it.isNotEmpty() } ?: initialEntry.customBaseUrl
 
-        fun refreshCardVisuals() {
-            val check = ApiKeyVaultValidator.validate(descriptor.id, effectiveKey(), effectiveBaseUrl())
+        fun refreshVisuals() {
+            val currentSecret = effectiveKey()
+            val check = ApiKeyVaultValidator.validate(descriptor.id, currentSecret, effectiveBaseUrl())
+            val isLockedAndValid = currentLocked && check.isValid
             statusText.text = when {
-                currentLocked && check.isValid -> "Locked \u2022 ${ProviderCredentialStore.maskForDisplay(effectiveKey())}"
-                hasSavedSecret || keyInput.text?.isNotBlank() == true -> "Draft (unlocked)"
+                isLockedAndValid -> "Active \u00b7 ${ProviderCredentialStore.maskForDisplay(currentSecret)}"
+                hasSavedSecret || keyInput.text?.isNotBlank() == true -> "Unlocked"
                 else -> "Not set"
             }
             statusText.setTextColor(
                 when {
-                    currentLocked && check.isValid -> lockedGreen
+                    isLockedAndValid -> lockedGreen
                     dirtyCardIds.contains(initialEntry.id) -> warningAmber
                     else -> secondaryText
                 }
             )
             helperText.text = when {
-                dirtyCardIds.contains(initialEntry.id) && !check.isValid -> check.message ?: "Check API key format."
-                dirtyCardIds.contains(initialEntry.id) -> "Unsaved changes — tap Save to persist."
-                !hasSavedSecret -> "Expected format: ${descriptor.keyHint.ifBlank { "API key" }}"
-                currentLocked -> "Active in shared vault. Tap lock to unlock or Save to update."
-                else -> "Saved unlocked. Tap lock and Save to mark active."
+                dirtyCardIds.contains(initialEntry.id) && !check.isValid -> check.message ?: "Enter a valid API key."
+                dirtyCardIds.contains(initialEntry.id) && check.softWarning != null -> check.softWarning
+                dirtyCardIds.contains(initialEntry.id) -> "Unsaved changes \u2014 tap Save."
+                !hasSavedSecret -> "Paste your key and tap Save."
+                isLockedAndValid -> "Active in shared vault."
+                else -> "Saved unlocked."
             }
             helperText.setTextColor(
                 when {
@@ -334,24 +302,24 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
 
             lockHost.removeAllViews()
             lockHost.addView(
-                OneUiComponents.lockInButton(
+                OneUiComponents.lockCircle(
                     context = this,
-                    locked = currentLocked,
+                    locked = isLockedAndValid,
                     enabled = true,
                     contentDescription = "Lock ${initialEntry.displayLabel} API key",
                 ) {
                     if (currentLocked) {
                         currentLocked = false
                         dirtyCardIds.add(initialEntry.id)
-                        refreshCardVisuals()
+                        refreshVisuals()
                     } else {
                         val validation = ApiKeyVaultValidator.validate(descriptor.id, effectiveKey(), effectiveBaseUrl())
                         if (!validation.isValid) {
-                            toast(validation.message ?: "Invalid API key format")
+                            toast(validation.message ?: "Enter an API key first")
                         } else {
                             currentLocked = true
                             dirtyCardIds.add(initialEntry.id)
-                            refreshCardVisuals()
+                            refreshVisuals()
                         }
                     }
                 }
@@ -363,70 +331,86 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
                 dirtyCardIds.add(initialEntry.id)
-                refreshCardVisuals()
+                refreshVisuals()
             }
         }
         keyInput.addTextChangedListener(watcher)
         labelInput?.addTextChangedListener(watcher)
         baseUrlInput?.addTextChangedListener(watcher)
 
-        // Action row: Save + Delete
+        // Inline flat text actions: Show/Hide, Delete, Save (NO pills)
         val actionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
-            setPadding(0, dp(4), 0, 0)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(2), dp(8), 0)
         }
 
-        if (hasSavedSecret || isSecondaryOrCustom) {
-            actionRow.addView(TextView(this).apply {
-                text = "Delete"
+        fun flatTextAction(label: String, color: Int, onClick: (TextView) -> Unit): TextView =
+            TextView(this).apply {
+                text = label
                 textSize = 13f
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                setTextColor(dangerColor)
-                background = OneUiComponents.roundedBg(pillSurface, dp(12).toFloat(), dp(1), borderColor)
-                setPadding(dp(14), dp(8), dp(14), dp(8))
+                setTextColor(color)
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+                isClickable = true
+                isFocusable = true
+                OneUiComponents.applySelectableRipple(this)
+                setOnClickListener { onClick(this) }
+            }
+
+        actionRow.addView(flatTextAction("Show", secondaryText) { btn ->
+            keyVisible = !keyVisible
+            val sel = keyInput.selectionEnd
+            keyInput.inputType = if (keyVisible) {
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            } else {
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+            if (sel >= 0) keyInput.setSelection(sel.coerceAtMost(keyInput.text?.length ?: 0))
+            btn.text = if (keyVisible) "Hide" else "Show"
+        })
+
+        actionRow.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        })
+
+        if (hasSavedSecret || isSecondaryOrCustom) {
+            actionRow.addView(flatTextAction("Delete", dangerColor) {
+                confirmDeleteVaultKey(initialEntry)
+            }.apply {
                 layoutParams = LinearLayout.LayoutParams(LP_WRAP, LP_WRAP).apply {
                     marginEnd = dp(8)
                 }
-                setOnClickListener { confirmDeleteVaultKey(initialEntry) }
             })
         }
 
-        actionRow.addView(TextView(this).apply {
-            text = "Save"
-            textSize = 13f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setTextColor(android.graphics.Color.WHITE)
-            background = OneUiComponents.roundedBg(accentColor, dp(12).toFloat())
-            setPadding(dp(18), dp(8), dp(18), dp(8))
-            setOnClickListener {
-                val keyToSave = effectiveKey()
-                val baseUrlToSave = effectiveBaseUrl()
-                val labelToSave = labelInput?.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: initialEntry.displayLabel
-                val check = ApiKeyVaultValidator.validate(descriptor.id, keyToSave, baseUrlToSave)
-                if (!check.isValid) {
-                    toast(check.message ?: "Invalid API key")
-                    refreshCardVisuals()
-                    return@setOnClickListener
-                }
-                // Auto-lock on valid save if the user pasted a fresh key and hadn't toggled lock yet.
-                val lockOnSave = if (keyInput.text?.isNotBlank() == true && !hasSavedSecret) true else currentLocked
-                val updated = initialEntry.copy(
-                    displayLabel = labelToSave,
-                    customBaseUrl = baseUrlToSave,
-                    locked = lockOnSave,
-                )
-                ApiKeyVaultStore.upsert(this@ApiKeysVaultActivity, updated, secret = keyToSave)
-                dirtyCardIds.remove(initialEntry.id)
-                toast("${updated.displayLabel} key saved")
-                renderCards()
+        actionRow.addView(flatTextAction("Save", accentColor) {
+            val rawTyped = keyInput.text?.toString().orEmpty()
+            val keyToSave = if (rawTyped.isNotBlank()) ApiKeyVaultValidator.sanitize(rawTyped) else existingSecret
+            val baseUrlToSave = effectiveBaseUrl()
+            val labelToSave = labelInput?.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: initialEntry.displayLabel
+            val check = ApiKeyVaultValidator.validate(descriptor.id, keyToSave, baseUrlToSave)
+            if (!check.isValid) {
+                toast(check.message ?: "Enter an API key first")
+                refreshVisuals()
+                return@flatTextAction
             }
+            val lockOnSave = if (rawTyped.isNotBlank() && !hasSavedSecret) true else currentLocked
+            val updated = initialEntry.copy(
+                displayLabel = labelToSave,
+                customBaseUrl = baseUrlToSave,
+                locked = lockOnSave,
+            )
+            ApiKeyVaultStore.upsert(this@ApiKeysVaultActivity, updated, secret = keyToSave)
+            dirtyCardIds.remove(initialEntry.id)
+            toast("${updated.displayLabel} key saved")
+            renderSections()
         })
-        card.addView(actionRow)
+        section.addView(actionRow)
 
-        refreshCardVisuals()
-        return card
+        refreshVisuals()
+        return section
     }
 
     private fun confirmDeleteVaultKey(entry: ApiKeyVaultEntry) {
@@ -441,7 +425,7 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
                 .setPositiveButton("Delete") { _, _ ->
                     ApiKeyVaultStore.delete(this, entry.id)
                     toast("${entry.displayLabel} key deleted")
-                    renderCards()
+                    renderSections()
                 }
                 .setNegativeButton("Cancel", null)
                 .show()
@@ -462,7 +446,7 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
                 LiveTranscriptionConfigStore.save(this, detachedLive)
                 ApiKeyVaultStore.delete(this, entry.id)
                 toast("${entry.displayLabel} key detached and deleted")
-                renderCards()
+                renderSections()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -492,7 +476,7 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val url = urlInput.text.toString().trim()
-                val key = keyInput.text.toString().trim()
+                val key = ApiKeyVaultValidator.sanitize(keyInput.text.toString())
                 val check = ApiKeyVaultValidator.validate(ProviderCapabilityRegistry.ID_CUSTOM_OPENAI, key, url)
                 if (!check.isValid) {
                     toast(check.message ?: "Invalid custom endpoint or key")
@@ -511,7 +495,7 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
                 ApiKeyVaultStore.upsert(this, newEntry, secret = key)
                 dialog.dismiss()
                 toast("$label added to vault")
-                renderCards()
+                renderSections()
             }
         }
         dialog.show()

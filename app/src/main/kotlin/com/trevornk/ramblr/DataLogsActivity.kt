@@ -30,6 +30,7 @@ class DataLogsActivity : BaseSettingsActivity() {
     private lateinit var debugVisibilitySwitch: com.google.android.material.materialswitch.MaterialSwitch
     private lateinit var backupRowSub: TextView
     private lateinit var recentErrorsRowSub: TextView
+    private var shownSection: Section? = null
 
     /** The screens this activity's rows are split across since the settings regroup (see
      *  [EXTRA_SECTION]); no section shows all three, under the old "Data & Logs" title. */
@@ -54,6 +55,8 @@ class DataLogsActivity : BaseSettingsActivity() {
         // on the History screen.
         val shown = intent.getStringExtra(EXTRA_SECTION)?.let { name -> Section.entries.firstOrNull { it.name == name } }
             ?: Section.HISTORY.takeIf { intent.getBooleanExtra(EXTRA_SHOW_HISTORY, false) }
+        shownSection = shown
+        clearUnreadForShownSection()
 
         root.addView(TextView(this).apply {
             text = shown?.title ?: "Data & Logs"
@@ -182,7 +185,20 @@ class DataLogsActivity : BaseSettingsActivity() {
 
     override fun onResume() {
         super.onResume()
+        clearUnreadForShownSection()
         refresh()
+    }
+
+    private fun clearUnreadForShownSection() {
+        when (shownSection) {
+            Section.HISTORY -> DictationHistoryStore.clearUnreadCount(this)
+            Section.DIAGNOSTICS -> DiagnosticErrorLog.clearUnreadCount(this)
+            null -> {
+                DictationHistoryStore.clearUnreadCount(this)
+                DiagnosticErrorLog.clearUnreadCount(this)
+            }
+            Section.BACKUP -> Unit
+        }
     }
 
     private fun refresh() {
@@ -333,10 +349,12 @@ class DataLogsActivity : BaseSettingsActivity() {
             .setPositiveButton("Clear history") { _, _ ->
                 prefs().edit().putBoolean(KEY_HISTORY_ENABLED, false).apply()
                 DictationHistoryStore.forContext(this).clear()
+                DictationHistoryStore.clearUnreadCount(this)
                 refresh()
             }
             .setNegativeButton("Keep history") { _, _ ->
                 prefs().edit().putBoolean(KEY_HISTORY_ENABLED, false).apply()
+                DictationHistoryStore.clearUnreadCount(this)
                 refresh()
             }
             .setOnCancelListener { refresh() }

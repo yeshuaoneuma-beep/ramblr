@@ -4,7 +4,6 @@ import android.app.Application
 import android.content.Intent
 import androidx.work.WorkInfo
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -18,9 +17,11 @@ import java.io.File
 import java.util.UUID
 
 /**
- * #345: choosing Local before the cleanup model is installed parks the choice as pending and tells
- * the user the switch finishes after the download. A successful download used to select the model
- * but never finish the switch, so cleanup kept going to the cloud step.
+ * Verifies [CleanupActivity] (dedicated Local AI cleanup screen):
+ * - A completed download selects the local cleanup model and updates the local floor entry
+ *   without unexpectedly toggling [CloudFeatureToggle.cleanupEnabled] (which now belongs to
+ *   [DictationModeActivity]).
+ * - A stale SUCCEEDED replay never seen in flight is ignored by the completion gate.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -33,9 +34,9 @@ class CleanupLocalSwitchTest {
         if (!androidx.work.WorkManager.isInitialized()) {
             androidx.work.WorkManager.initialize(app, androidx.work.Configuration.Builder().build())
         }
-        // Start from a Cloud cleanup user with the model not installed.
         CloudFeatureToggle.setCleanupEnabled(app, true)
         ModelDownloader.modelDir(app, model).deleteRecursively()
+        app.getSharedPreferences("ramblr", 0).edit().remove("local_cleanup_model_name").apply()
     }
 
     private fun launch(): CleanupActivity =
@@ -59,57 +60,25 @@ class CleanupLocalSwitchTest {
         onCleanupModelWorkInfos(model, listOf(info(id, WorkInfo.State.SUCCEEDED)))
     }
 
-    @Test fun `Local chosen before the model exists finishes switching when the download succeeds`() {
+    @Test fun `completed download selects the local cleanup model without flipping cloud mode`() {
         val activity = launch()
-        activity.onSelectSimpleCleanup(SimpleCleanupChoice.LOCAL)
-        assertTrue(activity.pendingLocalCleanupSelection)
-        assertTrue("still cloud until the model exists", CloudFeatureToggle.cleanupEnabled(app))
 
         activity.completeDownload()
 
-        assertFalse(activity.pendingLocalCleanupSelection)
-        assertFalse("cleanup must now route to the on-device model", CloudFeatureToggle.cleanupEnabled(app))
+        assertTrue("must not silently flip cloud cleanup mode", CloudFeatureToggle.cleanupEnabled(app))
         val local = ProviderChainStore.load(app).entries.single { it.kind == ProviderKind.LOCAL }
         assertEquals(model.archive, local.model)
-        assertEquals("${model.name} ready — now used for cleanup", ShadowToast.getTextOfLatestToast())
-    }
-
-    @Test fun `download with no Local choice pending only selects the model and keeps the tap-Local toast`() {
-        val activity = launch()
-
-        activity.completeDownload()
-
-        assertTrue("must not switch on its own", CloudFeatureToggle.cleanupEnabled(app))
-        assertEquals(
-            "${model.name} ready — tap Local above to use it for cleanup",
-            ShadowToast.getTextOfLatestToast(),
-        )
         assertEquals(model.archive, app.getSharedPreferences("ramblr", 0).getString("local_cleanup_model_name", null))
+        assertEquals("${model.name} ready", ShadowToast.getTextOfLatestToast())
     }
 
-    @Test fun `tapping Cloud after Local cancels the pending switch so a later download does not flip it`() {
+    @Test fun `a SUCCEEDED state never seen in flight (stale replay) does not re-select the model`() {
         val activity = launch()
-        activity.onSelectSimpleCleanup(SimpleCleanupChoice.LOCAL)
-        activity.onSelectSimpleCleanup(SimpleCleanupChoice.CLOUD)
-        assertFalse(activity.pendingLocalCleanupSelection)
-
-        activity.completeDownload()
-
-        assertTrue(CloudFeatureToggle.cleanupEnabled(app))
-        assertEquals(
-            "${model.name} ready — tap Local above to use it for cleanup",
-            ShadowToast.getTextOfLatestToast(),
-        )
-    }
-
-    @Test fun `a SUCCEEDED state never seen in flight (stale replay) does not finish the switch`() {
-        val activity = launch()
-        activity.onSelectSimpleCleanup(SimpleCleanupChoice.LOCAL)
         installModel()
 
         activity.onCleanupModelWorkInfos(model, listOf(info(UUID.randomUUID(), WorkInfo.State.SUCCEEDED)))
 
-        assertTrue(activity.pendingLocalCleanupSelection)
+        assertEquals(null, app.getSharedPreferences("ramblr", 0).getString("local_cleanup_model_name", null))
         assertTrue(CloudFeatureToggle.cleanupEnabled(app))
     }
 }

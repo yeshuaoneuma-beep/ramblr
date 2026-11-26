@@ -85,9 +85,9 @@ class Phase3A1UiTest {
         val activity = Robolectric.buildActivity(CloudProviderActivity::class.java).setup().get()
         val texts = activity.window.decorView.allTexts()
         assertTrue(texts.any { it == "Cloud providers" })
-        assertTrue(texts.any { it == "API keys vault" })
-        assertTrue(texts.any { it == "Execution Order" })
-        assertTrue(texts.any { it == "Add provider" })
+        assertTrue(texts.any { it == "API keys" })
+        assertTrue(texts.any { it == "Execution order" })
+        assertTrue(texts.any { it == "+ Add provider" })
         assertFalse(texts.any { "retries" in it.lowercase() })
     }
 

@@ -119,7 +119,7 @@ class RamblrImeStylePickerAndKeysTest {
             assertTrue("picker must list $persona, saw $rows", persona in rows)
         }
         assertTrue("Cleanup toggle row", rows.any { it.startsWith("Cleanup: ") })
-        assertEquals(View.GONE, root.byDescription("Start Ramblr dictation").parentChainVisibility())
+        assertEquals(View.GONE, root.byDescription("Start Rhema Cadence dictation").parentChainVisibility())
     }
 
     private fun View.parentChainVisibility(): Int {
@@ -138,7 +138,7 @@ class RamblrImeStylePickerAndKeysTest {
         assertEquals("formal", prefs().getString("cleanup_style", null))
         assertTrue(PostProcessingToggle.isEnabled(app))
         assertEquals("harness.example".let { PerAppPersonaStore.personaKeyFor(app, it) }, "formal")
-        assertEquals(View.VISIBLE, root.byDescription("Start Ramblr dictation").parentChainVisibility())
+        assertEquals(View.VISIBLE, root.byDescription("Start Rhema Cadence dictation").parentChainVisibility())
         assertEquals("Formal", root.chip().text.toString())
     }
 
@@ -157,7 +157,7 @@ class RamblrImeStylePickerAndKeysTest {
         root.chip().performClick()
         root.all().filterIsInstance<TextView>().first { it.text.toString() == "Cleanup: Off" }.performClick()
         assertFalse(PostProcessingToggle.isEnabled(app))
-        assertTrue(root.all().filterIsInstance<TextView>().any { it.text.toString() == "Enable cleanup once in Ramblr settings first" })
+        assertTrue(root.all().filterIsInstance<TextView>().any { it.text.toString() == "Enable cleanup once in Rhema Cadence settings first" })
     }
 
     @Test fun `chip follows a style or cleanup change made elsewhere while the keyboard is open`() {

@@ -61,7 +61,7 @@ object IconVisibilityNotifications {
      */
     private fun build(ctx: Context): Notification = NotificationCompat.Builder(ctx, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_mic)
-        .setContentTitle("Ramblr icon hidden")
+        .setContentTitle("Rhema Cadence icon hidden")
         .setContentText("Tap to show it again")
         .setOngoing(true)
         .setContentIntent(restoreIntent(ctx))

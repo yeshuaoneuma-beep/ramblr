@@ -1,57 +1,42 @@
 package com.trevornk.ramblr
 
-import android.os.Bundle
 import android.content.Intent
+import android.os.Bundle
+import android.view.Gravity
 import android.view.View
+import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
-import com.google.android.material.radiobutton.MaterialRadioButton
-import android.content.res.ColorStateList
 
 /**
- * "Transcription" category screen (#93 restructure, updated #95 Phase 3): local/cloud switch and
- * local model catalog. Cloud provider/credential management (which providers, keys, models) now
- * lives entirely on the unified CloudProviderActivity -- this screen just links to it when Cloud
- * is selected.
+ * Dedicated "Local speech recognition" screen (Phase 3A.3 hairline overhaul).
+ *
+ * Strictly manages on-device STT models (with [OneUiComponents.selectionDot], download/delete/
+ * progress), Dictation language, Local transcription threads, Canary language, and Live preview.
+ * Cloud mode switching and audio upload compression now live in [DictationModeActivity] and
+ * [CloudProviderActivity].
  */
 class TranscriptionActivity : BaseSettingsActivity() {
 
-    private lateinit var cloudSwitch: MaterialSwitch
-    private lateinit var modelContainer: View
-    private lateinit var localModelsHeader: TextView
-    private lateinit var cloudLinkGroup: View
-    private lateinit var cloudSectionHeader: TextView
-    private lateinit var cloudLinkRowSub: TextView
-    private lateinit var routingSummaryRowSub: TextView
     private lateinit var dictationLanguageRowSub: TextView
     private lateinit var localThreadsRowSub: TextView
     private lateinit var canaryLanguageRowSub: TextView
-    private lateinit var compressedUploadSwitch: MaterialSwitch
-    private lateinit var cloudLiveSwitch: MaterialSwitch
-    private lateinit var cloudLiveRowSub: TextView
-    private lateinit var liveConfigRowSub: TextView
     private lateinit var livePreviewRowSub: TextView
 
     private data class ModelRowViews(
-        val radio: MaterialRadioButton,
+        val selectionDot: FrameLayout,
         val progress: LinearProgressIndicator,
         val subtitle: TextView,
         val dlBtn: MaterialButton,
-        val deleteBtn: MaterialButton
+        val deleteBtn: MaterialButton,
     )
 
     private val modelRows = mutableMapOf<String, ModelRowViews>()
     private val modelDownloadState = mutableMapOf<String, WorkInfo.State>()
-    // Gates the one-time completion side effects (auto-select + toast) behind having witnessed
-    // the download live in THIS Activity instance -- WorkManager re-delivers retained SUCCEEDED
-    // WorkInfo to every fresh observer, and rotation/fold recreates this Activity, so a plain
-    // per-instance acked set re-selected stale downloads on every recreation (#76).
     private val modelDownloadGate = DownloadCompletionGate()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,132 +45,48 @@ class TranscriptionActivity : BaseSettingsActivity() {
         val root = vertical(0, 0)
 
         root.addView(explainer(
-            "Required: choose how your speech becomes text. On-device (default): fastest, " +
-                "private and works offline. Cloud: uses the providers you set up under Cloud providers."
+            "Download and select an on-device speech recognition model. Runs privately on this phone without internet."
         ))
 
-        val isCloud = !prefs().getBoolean("use_local", true)
+        root.addView(sectionHeader("Local models"))
+        for (m in MODEL_CATALOG) root.addView(buildModelRow(m))
 
-        val engineCard = oneUiCard()
-        cloudSwitch = MaterialSwitch(this).apply {
-            isChecked = isCloud
-            isClickable = false
-        }
-        val cloudRow = settingsRow("Use cloud transcription", "Uses the Cloud provider chain", cloudSwitch) {
-            val newCloud = !cloudSwitch.isChecked
-            val usePostProcessing = prefs().getBoolean("use_post_processing", false)
-            applyLocalCleanupChange(useLocal = !newCloud, usePostProcessing = usePostProcessing)
-        }
-        engineCard.addView(cloudRow)
-
-        val localModelsGroup = nestedGroup()
-        localModelsHeader = subsectionHeader("Local models", indent = 0)
-        localModelsGroup.content.addView(localModelsHeader)
-        for (m in MODEL_CATALOG) localModelsGroup.content.addView(buildModelRow(m))
-        modelContainer = localModelsGroup.outer
-        engineCard.addView(modelContainer)
-
-        val cloudLinkGroupNested = nestedGroup()
-        cloudSectionHeader = subsectionHeader("Fallback: cloud providers", indent = 0).apply {
-            visibility = View.GONE
-        }
-        cloudLinkGroupNested.content.addView(cloudSectionHeader)
-        val cloudLinkRow = settingsRow("Cloud provider chain", CloudProviderActivity.subtitle(this), indent = 0) {
-            startActivity(Intent(this, CloudProviderActivity::class.java))
-        }
-        cloudLinkRowSub = cloudLinkRow.findViewWithTag("subtitle")
-        cloudLinkGroupNested.content.addView(cloudLinkRow)
-        cloudLinkGroup = cloudLinkGroupNested.outer
-        engineCard.addView(cloudLinkGroup)
-        root.addView(engineCard)
-
-        val languageCard = oneUiCard()
-        languageCard.addView(sectionHeader("Language"))
-        val languageRow = settingsRow("Dictation language", dictationLanguageSummary(), indent = 0) {
+        root.addView(sectionHeader("Language"))
+        val languageRow = settingsRow("Dictation language", dictationLanguageSummary()) {
             promptDictationLanguage()
         }
         dictationLanguageRowSub = languageRow.findViewWithTag("subtitle")
-        languageCard.addView(languageRow)
-        root.addView(languageCard)
+        root.addView(languageRow)
 
-        val tuningCard = oneUiCard()
-        tuningCard.addView(sectionHeader("On-device tuning"))
+        root.addView(sectionHeader("On-device tuning"))
 
         val localThreadsRow = settingsRow(
-            "Local transcription threads", localThreadsSummary(),
+            "Local transcription threads",
+            localThreadsSummary(),
             details = "On-device transcription only, runs on the CPU. Compare speeds with the benchmark log in Diagnostics",
         ) { promptLocalTranscriptionThreads() }
         localThreadsRowSub = localThreadsRow.findViewWithTag("subtitle")
-        tuningCard.addView(localThreadsRow)
+        root.addView(localThreadsRow)
 
         val canaryLanguageRow = settingsRow(
-            "Canary language", canaryLanguageSummary(),
+            "Canary language",
+            canaryLanguageSummary(),
             details = "The language you speak when dictating with the Canary local model. Only affects Canary; other models ignore this",
         ) { promptCanaryLanguage() }
         canaryLanguageRowSub = canaryLanguageRow.findViewWithTag("subtitle")
-        tuningCard.addView(canaryLanguageRow)
-        root.addView(tuningCard)
+        root.addView(canaryLanguageRow)
 
-        val cloudOptionsCard = oneUiCard()
-        cloudOptionsCard.addView(sectionHeader("Cloud transcription options"))
-
-        compressedUploadSwitch = MaterialSwitch(this).apply {
-            isChecked = CompressedUploadToggle.isEnabled(this@TranscriptionActivity)
-            isClickable = false
-        }
-        cloudOptionsCard.addView(settingsRow(
-            "Compress audio before cloud upload",
-            "Smaller uploads for mobile data or slow internet. Accuracy with compressed audio isn't proven yet",
-            compressedUploadSwitch,
-            details = "Encodes to AAC/M4A before sending to OpenAI or Gemini. Leave it off where accuracy really matters until you've tried it",
-        ) {
-            val newVal = !compressedUploadSwitch.isChecked
-            CompressedUploadToggle.setEnabled(this, newVal)
-            compressedUploadSwitch.isChecked = newVal
-        })
-
-        cloudLiveSwitch = MaterialSwitch(this).apply { isClickable = false }
-        val cloudLiveRow = settingsRow(
-            "Live cloud transcription", cloudLiveSubtitle(), cloudLiveSwitch,
-            details = "Experimental. Streams audio to Gemini while you speak, so text appears as you talk " +
-                "instead of after you stop.\n" +
-                "\u2022 Ramblr keyboard only. Needs cloud transcription and a Gemini key.\n" +
-                "\u2022 Doesn't change which provider transcribes you, or the order of your Cloud providers.\n" +
-                "\u2022 Unproven on real devices and roughly 1.8x the cost of the normal upload, so it is off until you turn it on.\n" +
-                "\u2022 If a stream fails, the recording still finishes over the normal path.",
-        ) { onToggleCloudLive(!cloudLiveSwitch.isChecked) }
-        cloudLiveRowSub = cloudLiveRow.findViewWithTag("subtitle")
-        cloudOptionsCard.addView(cloudLiveRow)
-
-        val liveConfigRow = settingsRow(
-            "Live transcription settings",
-            liveConfigSummary(),
-        ) {
-            startActivity(Intent(this, LiveTranscriptionActivity::class.java))
-        }
-        liveConfigRowSub = liveConfigRow.findViewWithTag("subtitle")
-        cloudOptionsCard.addView(liveConfigRow)
-        root.addView(cloudOptionsCard)
-
-        val livePreviewCard = oneUiCard()
-        livePreviewCard.addView(sectionHeader("Live preview"))
+        root.addView(sectionHeader("Live preview"))
         val livePreviewRow = settingsRow("Live preview", LivePreviewActivity.subtitle(this)) {
             startActivity(Intent(this, LivePreviewActivity::class.java))
         }
         livePreviewRowSub = livePreviewRow.findViewWithTag("subtitle")
-        livePreviewCard.addView(livePreviewRow)
-        root.addView(livePreviewCard)
-
-        val routingCard = oneUiCard()
-        routingCard.addView(sectionHeader("Effective routing"))
-        val routingSummaryRow = settingsRow("Transcription", effectiveTranscriptionRouting(), indent = 0)
-        routingSummaryRowSub = routingSummaryRow.findViewWithTag("subtitle")
-        routingCard.addView(routingSummaryRow)
-        root.addView(routingCard)
+        root.addView(livePreviewRow)
 
         setOneUiScreenContent(
-            title = "Speech recognition",
+            title = "Local speech recognition",
             showBack = true,
+            icon = R.drawable.ic_settings_mic,
             content = root,
         )
 
@@ -200,32 +101,10 @@ class TranscriptionActivity : BaseSettingsActivity() {
     private fun refresh() {
         val useLocal = prefs().getBoolean("use_local", true)
         prefetchVadModel(useLocal)
-        cloudSwitch.isChecked = !useLocal
 
-        // #276: don't hide the inactive side outright -- a fallback toggle can still route to it
-        // at runtime, so keep it visible (labeled "Fallback") whenever that toggle is on.
-        val localState = fallbackSectionState(
-            isActiveSide = useLocal,
-            fallbackAllowed = DictationModeToggle.allowLocalFallback(this),
-        )
-        modelContainer.visibility = if (localState == FallbackSectionState.HIDDEN) View.GONE else View.VISIBLE
-        localModelsHeader.text = if (localState == FallbackSectionState.FALLBACK) "Fallback: on-device model" else "Local models"
-
-        val allowCloudFallback = DictationModeToggle.allowCloudFallback(this)
-        cloudLinkRowSub.text = CloudProviderActivity.subtitle(this)
-        val showCloud = shouldShowOpenAiKeyRowForTranscription(useLocal, allowCloudFallback)
-        cloudLinkGroup.visibility = if (showCloud) View.VISIBLE else View.GONE
-        val cloudState = fallbackSectionState(isActiveSide = !useLocal, fallbackAllowed = allowCloudFallback)
-        cloudSectionHeader.visibility = if (cloudState == FallbackSectionState.FALLBACK) View.VISIBLE else View.GONE
-
-        routingSummaryRowSub.text = effectiveTranscriptionRouting()
         dictationLanguageRowSub.text = dictationLanguageSummary()
         localThreadsRowSub.text = localThreadsSummary()
         canaryLanguageRowSub.text = canaryLanguageSummary()
-        compressedUploadSwitch.isChecked = CompressedUploadToggle.isEnabled(this)
-        cloudLiveSwitch.isChecked = CloudLiveToggle.isEnabled(this)
-        cloudLiveRowSub.text = cloudLiveSubtitle()
-        liveConfigRowSub.text = liveConfigSummary()
         livePreviewRowSub.text = LivePreviewActivity.subtitle(this)
 
         val cur = prefs().getString("model_name", "") ?: ""
@@ -237,8 +116,6 @@ class TranscriptionActivity : BaseSettingsActivity() {
         refreshAllCards()
     }
 
-    // --- Dictation language (#290) ---
-
     private fun dictationLanguageSummary(): String {
         val lang = DictationLanguage.languageOrNull(this)
         return if (lang == null) {
@@ -248,94 +125,48 @@ class TranscriptionActivity : BaseSettingsActivity() {
         }
     }
 
-    /** Fixed-list picker, Auto-detect first. Same custom-title pattern as
-     *  BehaviorActivity.promptCanaryLanguage: setMessage() and setSingleChoiceItems() share the
-     *  content area, so the explanation has to ride in the title view or the list never shows. */
     private fun promptDictationLanguage() {
         val codes: List<String?> = listOf<String?>(null) + DictationLanguage.pickerOrder()
-        val labels = codes.map { DictationLanguage.label(it) }.toTypedArray()
+        val labels = codes.map { DictationLanguage.label(it) }
         val checkedIndex = codes.indexOf(DictationLanguage.languageOrNull(this)).coerceAtLeast(0)
-        val titleView = vertical(dp(20), dp(20)).apply {
-            addView(TextView(this@TranscriptionActivity).apply {
-                text = "Dictation language"
-                textSize = 20f
-                setTextColor(attrColor(android.R.attr.textColorPrimary))
-            })
-            addView(TextView(this@TranscriptionActivity).apply {
-                text = "The language you speak. Cloud transcription normally guesses it from the " +
-                    "audio and can guess English, which makes your speech come back in English. " +
-                    "Choosing your language stops the guessing. The Canary on-device model also " +
-                    "uses it when it is English, Spanish, German or French (you can override " +
-                    "that below, under On-device tuning). Other on-device models aren't affected."
-                textSize = 14f
-                setTextColor(attrColor(android.R.attr.textColorSecondary))
-                setPadding(0, dp(8), 0, 0)
-            })
+        OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = "Dictation language",
+            message = "The language you speak. Cloud transcription normally guesses it from the " +
+                "audio and can guess English, which makes your speech come back in English. " +
+                "Choosing your language stops the guessing. The Canary on-device model also " +
+                "uses it when it is English, Spanish, German or French.",
+            items = labels,
+            checkedIndex = checkedIndex,
+        ) { which ->
+            DictationLanguage.setLanguage(this, codes[which])
+            LocalModelReload.reloadIfCanaryActive(this)
+            refresh()
         }
-        android.app.AlertDialog.Builder(this)
-            .setCustomTitle(titleView)
-            .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
-                DictationLanguage.setLanguage(this, codes[which])
-                // Canary follows this language by default and bakes it in at load time (#294).
-                LocalModelReload.reloadIfCanaryActive(this)
-                refresh()
-                dialog.dismiss()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
     }
-
-    // --- Local transcription thread count (#107), moved from the former Fine-tuning screen ---
 
     private fun localThreadsSummary(): String {
         val threads = LocalTranscriptionThreads.threadsOrDefault(this)
         return "$threads threads. More can be faster but uses more battery"
     }
 
-    /** Presets-only picker (#107): the issue's whole point is letting Trevor A/B 2/4/6 himself
-     *  using his own real-usage [BenchmarkLogger] data, not offering a free-form "Custom…" input
-     *  the way the silence threshold does for a user-experience threshold -- there's no
-     *  forgiving range to fall back to here, just three concrete values to compare. */
     private fun promptLocalTranscriptionThreads() {
-        // AlertDialog.Builder's message and single-choice-item list share the same content area
-        // and are mutually exclusive -- calling both silently drops the list with no error, which
-        // is exactly what happened here: the dialog rendered title+message+Cancel but never the
-        // three thread presets, making the setting effectively unreachable (GH bug report,
-        // 2026-07-17). Fixed using the documented workaround: a custom title view carrying both
-        // the heading and the explanatory copy (in place of setTitle()+setMessage()), leaving the
-        // content area free for setSingleChoiceItems() to actually render.
         val presets = LocalTranscriptionThreads.PRESET_THREADS
-        val labels = presets.map { "$it threads" }.toTypedArray()
+        val labels = presets.map { "$it threads" }
         val current = LocalTranscriptionThreads.threadsOrDefault(this)
         val checkedIndex = presets.indexOf(current).let { if (it < 0) 0 else it }
-        val titleView = vertical(dp(20), dp(20)).apply {
-            addView(TextView(this@TranscriptionActivity).apply {
-                text = "Local transcription threads"
-                textSize = 20f
-                setTextColor(attrColor(android.R.attr.textColorPrimary))
-            })
-            addView(TextView(this@TranscriptionActivity).apply {
-                text = "How many CPU threads on-device transcription uses to decode. The " +
-                    "default (2) is unchanged from before this setting existed -- try 4 or 6 " +
-                    "and compare against the benchmark log (Diagnostics > Share benchmark log) " +
-                    "to see what's actually faster on your device."
-                textSize = 14f
-                setTextColor(attrColor(android.R.attr.textColorSecondary))
-                setPadding(0, dp(8), 0, 0)
-            })
+        OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = "Local transcription threads",
+            message = "How many CPU threads on-device transcription uses to decode. The default (2) " +
+                "works well on most phones; try 4 or 6 and compare against the benchmark log in Diagnostics.",
+            items = labels,
+            checkedIndex = checkedIndex,
+        ) { which ->
+            LocalTranscriptionThreads.setThreads(this, presets[which])
+            refresh()
         }
-        android.app.AlertDialog.Builder(this)
-            .setCustomTitle(titleView)
-            .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
-                LocalTranscriptionThreads.setThreads(this, presets[which])
-                refresh()
-                dialog.dismiss()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
     }
-
-    // --- Canary source language (#177), moved from the former Fine-tuning screen ---
 
     private val canaryLanguageLabels = mapOf(
         "en" to "English (en)",
@@ -351,99 +182,30 @@ class TranscriptionActivity : BaseSettingsActivity() {
         return "$label, $source"
     }
 
-    /** Fixed-list picker modeled on [promptLocalTranscriptionThreads]: "Follow Dictation language"
-     *  first (the default, #294), then exactly the four languages the shipped canary-180m-flash
-     *  model supports, no free-form entry. Applies immediately by reloading the running
-     *  recognizer: the language is baked in when it is created. */
     private fun promptCanaryLanguage() {
-        // Same AlertDialog gotcha as promptLocalTranscriptionThreads: setMessage() and
-        // setSingleChoiceItems() share the content area, so the explanatory copy must ride in a
-        // custom title view or the language list silently never renders.
         val languages = CanaryLanguage.SUPPORTED
         val dictation = DictationLanguage.languageOrNull(this)
         val followLabel = "Follow Dictation language (" +
             (if (dictation != null && dictation in languages) canaryLanguageLabels[dictation] ?: dictation
             else "English unless Dictation language is one of Canary's four") + ")"
-        val labels = (listOf(followLabel) + languages.map { canaryLanguageLabels[it] ?: it }).toTypedArray()
+        val labels = listOf(followLabel) + languages.map { canaryLanguageLabels[it] ?: it }
         val explicit = CanaryLanguage.explicitOrNull(this)
         val checkedIndex = if (explicit == null) 0 else languages.indexOf(explicit) + 1
-        val titleView = vertical(dp(20), dp(20)).apply {
-            addView(TextView(this@TranscriptionActivity).apply {
-                text = "Canary language"
-                textSize = 20f
-                setTextColor(attrColor(android.R.attr.textColorPrimary))
-            })
-            addView(TextView(this@TranscriptionActivity).apply {
-                text = "The language you speak when dictating with the Canary local model. " +
-                    "Canary needs to be told the source language -- with the wrong one it " +
-                    "answers in English or produces garbage instead of your words. By default " +
-                    "it follows Dictation language (above). Only affects the Canary " +
-                    "model; other local models detect or fix their language on their own."
-                textSize = 14f
-                setTextColor(attrColor(android.R.attr.textColorSecondary))
-                setPadding(0, dp(8), 0, 0)
-            })
+        OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = "Canary language",
+            message = "The language you speak when dictating with the Canary local model. " +
+                "By default it follows Dictation language above. Only affects the Canary model.",
+            items = labels,
+            checkedIndex = checkedIndex,
+        ) { which ->
+            if (which == 0) CanaryLanguage.followDictationLanguage(this)
+            else CanaryLanguage.setLanguage(this, languages[which - 1])
+            LocalModelReload.reloadIfCanaryActive(this)
+            refresh()
         }
-        android.app.AlertDialog.Builder(this)
-            .setCustomTitle(titleView)
-            .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
-                if (which == 0) CanaryLanguage.followDictationLanguage(this)
-                else CanaryLanguage.setLanguage(this, languages[which - 1])
-                LocalModelReload.reloadIfCanaryActive(this)
-                refresh()
-                dialog.dismiss()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
     }
 
-    // --- Experimental: live cloud transcription (#233 Phase 1), moved from Cloud providers ---
-
-    /** Delegates to the pure [cloudLiveSubtitleText], reading the same three inputs
-     *  [CloudLiveWiring.factoryOrNull] gates on so the row and the wiring cannot disagree. */
-    private fun cloudLiveSubtitle(): String = cloudLiveSubtitleText(
-        enabled = CloudLiveToggle.isEnabled(this),
-        useLocalTranscription = prefs().getBoolean("use_local", true),
-        hasGeminiKey = CloudLiveWiring.resolveEligibleGeminiEntry(this, ProviderChainStore.load(this)) != null,
-    )
-
-    /** Persists intent only. The switch never edits `use_local`, the chain, or any credential --
-     *  turning it on while transcription is on-device leaves the row honestly saying so instead
-     *  of silently reconfiguring the user's providers behind the toggle. */
-    private fun liveConfigSummary(): String {
-        val cfg = LiveTranscriptionConfigStore.load(this)
-        val post = if (cfg.postCleanupEnabled) "Post-Cleanup on" else "Post-Cleanup off"
-        return "${cfg.modelId} \u2022 $post \u2022 9:00 cutoff guard"
-    }
-
-    private fun onToggleCloudLive(enabled: Boolean) {
-        val updated = LiveTranscriptionConfigStore.load(this).copy(enabled = enabled)
-        LiveTranscriptionConfigStore.save(this, updated)
-        refresh()
-    }
-
-    /** "Transcription: ..." routing summary (#276), delegating to the pure [EffectiveRouting]
-     *  formatter so this row can never disagree with what [WhisperAccessibilityService] would
-     *  actually do. */
-    private fun effectiveTranscriptionRouting(): String = "Transcription: " + EffectiveRouting.transcription(
-        chain = ProviderChainStore.load(this),
-        useLocalTranscription = prefs().getBoolean("use_local", true),
-        allowLocalFallback = DictationModeToggle.allowLocalFallback(this),
-        allowCloudFallback = DictationModeToggle.allowCloudFallback(this),
-        isConfigured = { ProviderCredentialStore.isConfiguredOrLegacy(this, it) },
-        localAvailable = LocalTranscriber.availableModels(this).isNotEmpty(),
-    )
-
-    /**
-     * Provisions the Silero VAD model whenever this screen shows on-device transcription as the
-     * active mode (#169), covering the user who switches to local here rather than in onboarding.
-     *
-     * Called from [refresh] so it also catches the pre-existing local user who upgraded from a
-     * build without this prefetch: their first visit to this screen provisions the model instead
-     * of leaving it to a dictation that would decode unsegmented. Cheap to call repeatedly — the
-     * predicate short-circuits once the model is on disk, and `ExistingWorkPolicy.KEEP` collapses
-     * a duplicate enqueue during the download window.
-     */
     private fun prefetchVadModel(useLocal: Boolean) {
         if (!VadModelProvisioning.shouldPrefetchForLocalMode(
                 localTranscriptionSelected = useLocal,
@@ -456,69 +218,16 @@ class TranscriptionActivity : BaseSettingsActivity() {
         ModelDownloadWorker.enqueue(this, SILERO_VAD_MODEL)
     }
 
-    /**
-     * Applies a change to the local/cleanup toggles, inserting the one-time consent dialog from
-     * #23 when the change would first combine local transcription with cleanup. Mirrors
-     * MainActivity's original applyLocalCleanupChange verbatim -- Transcription's own switch can
-     * flip Cleanup's underlying use_post_processing pref indirectly (turning cloud transcription
-     * off never touches cleanup, but turning it back to local re-triggers the same consent check
-     * cleanup's own switch uses), so this logic has to live wherever that switch lives.
-     */
-    private fun applyLocalCleanupChange(useLocal: Boolean, usePostProcessing: Boolean) {
-        val hasConsented = prefs().getBoolean(KEY_LOCAL_CLEANUP_CONSENT, false)
-        val cleanupIsLocalOnly = !CloudFeatureToggle.cleanupEnabled(this)
-        if (!LocalCleanupConsent.shouldPrompt(useLocal, usePostProcessing, hasConsented, cleanupIsLocalOnly)) {
-            prefs().edit()
-                .putBoolean("use_local", useLocal)
-                .putBoolean("use_post_processing", usePostProcessing)
-                .apply()
-            refresh()
-            return
-        }
-
-        // Declining consent here is declining a *transcription* mode change, not a cleanup change:
-        // revert the transcription toggle and leave cleanup untouched, rather than silently turning
-        // cleanup off (which was surprising and unannounced) (M11).
-        val declineChange = {
-            toast("Kept your current transcription mode — cleanup unchanged")
-            refresh() // no pref written, so the switch snaps back to its persisted state
-        }
-
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Cleanup sends text off-device")
-            .setMessage(
-                "Local transcription keeps audio on your phone, but cleanup sends the " +
-                    "transcribed text to ${CleanupDestination.consentHost(ProviderChainStore.load(this))} to fix " +
-                    "grammar and punctuation. Switch to local transcription anyway?"
-            )
-            .setPositiveButton("Switch anyway") { _, _ ->
-                prefs().edit()
-                    .putBoolean("use_local", useLocal)
-                    .putBoolean("use_post_processing", true)
-                    .putBoolean(KEY_LOCAL_CLEANUP_CONSENT, true)
-                    .apply()
-                refresh()
-            }
-            .setNegativeButton("Cancel") { _, _ -> declineChange() }
-            .setOnCancelListener { declineChange() }
-            .show()
-    }
-
-    // --- Model Rows (verbatim from MainActivity, #93) ---
-
     private fun buildModelRow(model: Model): View {
-        val radio = MaterialRadioButton(this).apply {
-            isClickable = false
-            buttonTintList = ColorStateList.valueOf(attrColor(com.google.android.material.R.attr.colorPrimary))
-        }
+        val dot = OneUiComponents.selectionDot(this, selected = false, contentDescription = model.name)
         val dlBtn = MaterialButton(this, null, com.google.android.material.R.attr.materialIconButtonStyle).apply {
-            text = "↓"
+            text = "\u2193"
             textSize = 18f
             setTextColor(attrColor(com.google.android.material.R.attr.colorPrimary))
             setOnClickListener { onModelAction(model) }
         }
         val deleteBtn = MaterialButton(this, null, com.google.android.material.R.attr.materialIconButtonStyle).apply {
-            text = "🗑"
+            text = "\uD83D\uDDD1"
             textSize = 16f
             setOnClickListener { confirmDeleteModel(model) }
         }
@@ -532,13 +241,13 @@ class TranscriptionActivity : BaseSettingsActivity() {
 
         val rightContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
             addView(dlBtn)
             addView(deleteBtn)
-            addView(radio)
+            addView(dot)
         }
 
-        val row = settingsRow(model.name, "${model.quality} · ${model.sizeMb} MB", rightContainer) {
+        val row = settingsRow(model.name, "${model.quality} \u00b7 ${model.sizeMb} MB", rightContainer) {
             onModelAction(model)
         }
 
@@ -546,7 +255,7 @@ class TranscriptionActivity : BaseSettingsActivity() {
         textContainer.addView(progress)
 
         modelRows[model.archive] = ModelRowViews(
-            radio, progress, textContainer.findViewWithTag("subtitle"), dlBtn, deleteBtn
+            dot, progress, textContainer.findViewWithTag("subtitle"), dlBtn, deleteBtn
         )
         refreshCard(model)
         observeDownload(model)
@@ -560,11 +269,6 @@ class TranscriptionActivity : BaseSettingsActivity() {
             return
         }
         if (ModelDownloadWorker.isInFlight(modelDownloadState[model.archive])) return
-        // Routed through the consent prompt (not enqueue directly) since #197 put the first
-        // non-free entry in MODEL_CATALOG: enqueue's own consent chokepoint would correctly
-        // refuse Parakeet Unified 0.6B without recorded consent, but silently -- a dead tap.
-        // For every freely-licensed entry this is byte-for-byte the old enqueue behavior
-        // (canDownload short-circuits true, no dialog).
         downloadModelWithLicenseConsent(model)
     }
 
@@ -627,11 +331,9 @@ class TranscriptionActivity : BaseSettingsActivity() {
     private fun selectModel(archive: String) {
         prefs().edit().putString("model_name", archive).apply()
         WhisperAccessibilityService.instance?.reloadModel()
-        refreshAllCards(); refresh()
+        refreshAllCards()
     }
 
-    /** Confirms before uninstalling [model] (#51) -- names the currently-selected model
-     *  explicitly so deleting it isn't a surprise. */
     private fun confirmDeleteModel(model: Model) {
         val isActive = prefs().getString("model_name", "") == model.archive
         val activeNote = if (isActive) " This is your currently selected model." else ""
@@ -654,7 +356,7 @@ class TranscriptionActivity : BaseSettingsActivity() {
         prefs().edit().putString("model_name", newSelection).apply()
         WhisperAccessibilityService.instance?.reloadModel()
         toast("${model.name} deleted")
-        refreshAllCards(); refresh()
+        refreshAllCards()
     }
 
     private fun refreshCard(model: Model) {
@@ -662,13 +364,13 @@ class TranscriptionActivity : BaseSettingsActivity() {
         val active = prefs().getString("model_name", "") == model.archive
         val installed = ModelDownloader.isInstalled(this, model)
 
-        views.radio.isChecked = active
-        views.radio.visibility = if (installed) View.VISIBLE else View.GONE
+        OneUiComponents.setSelectionDotChecked(views.selectionDot, active)
+        views.selectionDot.visibility = if (installed) View.VISIBLE else View.GONE
         views.dlBtn.visibility = if (installed) View.GONE else View.VISIBLE
         views.deleteBtn.visibility = if (installed) View.VISIBLE else View.GONE
 
         if (views.progress.visibility == View.GONE) {
-            views.subtitle.text = "${model.quality} · ${model.sizeMb} MB"
+            views.subtitle.text = "${model.quality} \u00b7 ${model.sizeMb} MB"
         }
     }
 
@@ -677,14 +379,7 @@ class TranscriptionActivity : BaseSettingsActivity() {
     companion object {
         private const val TAG = "TranscriptionActivity"
         private const val LP_MATCH = LinearLayout.LayoutParams.MATCH_PARENT
-        private const val KEY_LOCAL_CLEANUP_CONSENT = "local_cleanup_consent_seen"
 
-        /** Category subtitle for MainActivity's Transcription row (#93), e.g. "Local · Parakeet
-         *  0.6B" or "Cloud · OpenAI · gpt-4o-transcribe" (#101: previously showed only "Cloud ·
-         *  OpenAI" with no model, unlike the matching Cleanup row -- now uses
-         *  [CleanupDestination.cloudTranscriptionSubtitleDetail] for the same "provider · model"
-         *  detail at a glance). Pure/static so MainActivity can compute it without touching
-         *  any view state owned by this Activity. */
         internal fun resolveInstalledTranscriptionModel(
             context: android.content.Context,
             persistIfBlank: Boolean = false,
@@ -702,15 +397,8 @@ class TranscriptionActivity : BaseSettingsActivity() {
         }
 
         fun subtitle(context: android.content.Context): String {
-            val prefs = context.getSharedPreferences("ramblr", android.content.Context.MODE_PRIVATE)
-            val useLocal = prefs.getBoolean("use_local", true)
-            if (!useLocal) {
-                val chain = ProviderChainStore.load(context)
-                val entry = CleanupDestination.firstCloudTranscription(chain)
-                return if (entry != null) "Cloud · ${CleanupDestination.cloudTranscriptionSubtitleDetail(chain)}" else "Cloud · set up a provider"
-            }
             val model = resolveInstalledTranscriptionModel(context, persistIfBlank = false)
-            return if (model != null) "Local · ${model.name}" else "Local · no model installed yet"
+            return if (model != null) "Local \u00b7 ${model.name}" else "Local \u00b7 no model installed yet"
         }
     }
 }

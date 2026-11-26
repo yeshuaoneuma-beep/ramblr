@@ -43,12 +43,12 @@ class ExclusionListActivity : BaseSettingsActivity() {
         // behavioral opt-out, not a way to detach the accessibility service, and getting that
         // distinction wrong here would misrepresent a security property Ramblr doesn't provide.
         root.addView(TextView(this).apply {
-            text = "This suppresses Ramblr's behavior in the apps you list below — no new " +
+            text = "This suppresses Rhema Cadence's behavior in the apps you list below — no new " +
                 "recording starts, and no dictated text is inserted while one of these apps is " +
-                "in the foreground. It does not detach the accessibility service: Ramblr stays " +
+                "in the foreground. It does not detach the accessibility service: Rhema Cadence stays " +
                 "enabled and bound like normal, and this list does not bypass or weaken your " +
-                "bank's own security detections. If you want Ramblr fully off before opening a " +
-                "sensitive app, use Settings > Privacy > \"Turn Ramblr off\", or switch to " +
+                "bank's own security detections. If you want Rhema Cadence fully off before opening a " +
+                "sensitive app, use Settings > Privacy > \"Turn Rhema Cadence off\", or switch to " +
                 "Floating icon mode's off switch."
             textSize = 13f
             setTextColor(attrColor(android.R.attr.textColorSecondary))
@@ -60,7 +60,7 @@ class ExclusionListActivity : BaseSettingsActivity() {
         // rather than left implicit, since a user staring at a ring that's slow to disappear after
         // switching apps deserves to know why, not conclude the feature is broken.
         root.addView(TextView(this).apply {
-            text = "The floating ring hides for an excluded app the next time Ramblr checks " +
+            text = "The floating ring hides for an excluded app the next time Rhema Cadence checks " +
                 "(switching apps, screen on/off, or unlocking) — not necessarily the instant you " +
                 "switch. Starting a new recording and inserting the finished text are always " +
                 "blocked immediately, with no such delay."
@@ -137,7 +137,7 @@ class ExclusionListActivity : BaseSettingsActivity() {
                 refresh()
             }
         }
-        return settingsRow(pkg, "Ramblr stays out of the way in this app", removeBtn)
+        return settingsRow(pkg, "Rhema Cadence stays out of the way in this app", removeBtn)
     }
 
     /** Loose sanity check, not a real validator: catches an obviously-wrong entry (an app label

@@ -269,7 +269,7 @@ fun automationReEnableVerifyGuidance(): String =
         "2 seconds, send the diagnostic broadcast, and read active_component_enabled from the " +
         "result data. If it is false, run the enable action again. Android can discard a write " +
         "to the accessibility list shortly after it lands, and re-checking is the only reliable " +
-        "way to tell -- Ramblr isn't running at that moment, so it cannot retry for you."
+        "way to tell -- Rhema Cadence isn't running at that moment, so it cannot retry for you."
 
 /**
  * The privileged counterpart shown alongside [automationOffHookCommand] in the same help

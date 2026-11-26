@@ -28,7 +28,7 @@ internal fun isPasswordField(flaggedPassword: Boolean, inputType: Int): Boolean 
 internal fun AccessibilityNodeInfo.isPasswordField(): Boolean = isPasswordField(isPassword, inputType)
 
 /** Shown whenever the floating icon refuses (or discards) a dictation because of a password field. */
-internal const val PASSWORD_FIELD_REFUSAL_MESSAGE = "Ramblr doesn't dictate into password fields"
+internal const val PASSWORD_FIELD_REFUSAL_MESSAGE = "Rhema Cadence doesn't dictate into password fields"
 
 /** What the floating icon does with a finished dictation. */
 internal enum class DictationResultRoute { DELIVER, DISCARD_PASSWORD_FIELD }

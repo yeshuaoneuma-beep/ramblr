@@ -72,6 +72,14 @@ object DownloadNotifications {
     }
 
     fun postFailure(ctx: Context, archive: String, modelName: String, error: String) {
+        runCatching {
+            AppNotificationStore.record(
+                context = ctx,
+                category = AppNotificationCategory.DICTATION_ALERT,
+                title = "$modelName download failed",
+                body = error,
+            )
+        }
         post(
             ctx, resultNotificationId(archive),
             builder(ctx, "$modelName download failed")

@@ -30,27 +30,30 @@ object EffectiveRouting {
         isConfigured: (ProviderChainEntry) -> Boolean,
         localAvailable: Boolean = true,
     ): String {
-        val cloudEntry = CleanupDestination.firstCloudTranscription(chain)
-        val cloudConfigured = hasConfiguredCloudTranscription(chain, isConfigured)
-        val cloudLabel = cloudEntry?.let { CleanupDestination.label(it.kind) }
+        val cloudEntries = chain.capableEntriesFor(needsTranscription = true).filter { it.kind != ProviderKind.LOCAL }
+        val configuredEntry = cloudEntries.firstOrNull { isConfigured(it) }
+        val cloudConfigured = configuredEntry != null
+        val cloudLabel = configuredEntry?.let { ProviderCapabilityRegistry.displayNameFor(it) }
         val cloudDescription = if (cloudConfigured && cloudLabel != null) "Cloud ($cloudLabel)" else "Cloud (not configured)"
 
         return if (useLocalTranscription) {
+            val localHead = if (localAvailable) "On-device" else "On-device (not installed)"
             if (allowCloudFallback) {
-                "On-device \u2192 cloud fallback (${if (cloudConfigured && cloudLabel != null) cloudLabel else "not configured"})"
+                "$localHead \u2192 cloud fallback (${if (cloudConfigured && cloudLabel != null) cloudLabel else "not configured"})"
             } else {
-                "On-device only"
+                if (localAvailable) "On-device only" else "On-device (not installed)"
             }
         } else {
-            if (allowLocalFallback && localAvailable) "$cloudDescription \u2192 on-device fallback" else "$cloudDescription only"
+            when {
+                allowLocalFallback && localAvailable -> "$cloudDescription \u2192 on-device fallback"
+                allowLocalFallback && !localAvailable -> "$cloudDescription \u2192 on-device not installed"
+                else -> "$cloudDescription only"
+            }
         }
     }
 
     /**
-     * "Cleanup: ..." body (caller prefixes the label). Cleanup has only one fallback direction
-     * today ([ProviderChainRuntime.effectiveChainForCleanup]'s [allowLocalFallback] gate) -- a
-     * local-only cleanup config never automatically retries in the cloud, so unlike
-     * [transcription] there is no "on-device \u2192 cloud fallback" case here.
+     * "Cleanup: ..." body (caller prefixes the label).
      */
     fun cleanup(
         chain: ProviderChain,
@@ -61,47 +64,58 @@ object EffectiveRouting {
         localAvailable: Boolean = true,
     ): String {
         if (!postProcessingEnabled) return "Off"
-        if (!cloudCleanupEnabled) return "On-device only"
+        if (!cloudCleanupEnabled) return if (localAvailable) "On-device only" else "On-device (not installed)"
 
         val cloudEntries = chain.capableEntriesFor(needsTranscription = false).filter { it.kind != ProviderKind.LOCAL }
-        val cloudConfigured = cloudEntries.any { isConfigured(it) }
-        val cloudLabel = cloudEntries.firstOrNull()?.let { CleanupDestination.label(it.kind) }
+        val configuredEntry = cloudEntries.firstOrNull { isConfigured(it) }
+        val cloudConfigured = configuredEntry != null
+        val cloudLabel = configuredEntry?.let { ProviderCapabilityRegistry.displayNameFor(it) }
         val cloudDescription = if (cloudConfigured && cloudLabel != null) "Cloud ($cloudLabel)" else "Cloud (not configured)"
 
-        return if (allowLocalFallback && localAvailable) "$cloudDescription \u2192 on-device fallback" else "$cloudDescription only"
+        return when {
+            allowLocalFallback && localAvailable -> "$cloudDescription \u2192 on-device fallback"
+            allowLocalFallback && !localAvailable -> "$cloudDescription \u2192 on-device not installed"
+            else -> "$cloudDescription only"
+        }
     }
 
     /**
-     * Phase 3A.1 execution-order strip for Batch STT using [AttemptBudgetCalculator], e.g.
-     * `"Gemini (1x) \u2192 Groq (2x) \u2192 On-device"`.
+     * Phase 3A.1/3A.3 execution-order strip for Batch STT using [AttemptBudgetCalculator].
+     * Keyless entries never appear when [isConfigured] returns false.
      */
     fun batchSttExecutionOrder(
         chain: ProviderChain,
         allowLocalFallback: Boolean,
         localAvailable: Boolean,
         useLocalTranscription: Boolean = false,
+        isConfigured: (ProviderChainEntry) -> Boolean = { true },
     ): String {
-        if (useLocalTranscription) return "On-device"
+        if (useLocalTranscription) return if (localAvailable) "On-device" else "On-device (not installed)"
         val slots = chain.entries
             .filter { it.kind != ProviderKind.LOCAL }
             .mapIndexed { idx, entry ->
                 AttemptBudgetCalculator.BudgetSlot(
                     id = entry.id.ifBlank { "stt_$idx" },
                     label = ProviderCapabilityRegistry.displayNameFor(entry),
-                    locked = entry.isBatchSttActive(),
+                    locked = entry.isBatchSttActive() && isConfigured(entry),
                     attempts = entry.sttAttempts,
                 )
             }
-        val tail = if (allowLocalFallback && localAvailable) "On-device" else null
+        val tail = when {
+            !allowLocalFallback -> null
+            localAvailable -> "On-device"
+            else -> "On-device (not installed)"
+        }
         return AttemptBudgetCalculator.formatExecutionOrderStrip(
             slots = slots,
             fallbackTail = tail,
-            emptyLabel = if (localAvailable) "On-device" else "No cloud STT locked",
+            emptyLabel = if (localAvailable) "On-device" else "No cloud STT active",
         )
     }
 
     /**
-     * Phase 3A.1 execution-order strip for Batch Cleanup using [AttemptBudgetCalculator].
+     * Phase 3A.1/3A.3 execution-order strip for Batch Cleanup using [AttemptBudgetCalculator].
+     * Keyless entries never appear when [isConfigured] returns false.
      */
     fun batchCleanupExecutionOrder(
         chain: ProviderChain,
@@ -109,6 +123,7 @@ object EffectiveRouting {
         cloudCleanupEnabled: Boolean,
         allowLocalFallback: Boolean,
         localAvailable: Boolean,
+        isConfigured: (ProviderChainEntry) -> Boolean = { true },
     ): String {
         if (!postProcessingEnabled) return "Off"
         if (!cloudCleanupEnabled) return if (localAvailable) "On-device" else "On-device (not installed)"
@@ -118,22 +133,30 @@ object EffectiveRouting {
                 AttemptBudgetCalculator.BudgetSlot(
                     id = entry.id.ifBlank { "cleanup_$idx" },
                     label = ProviderCapabilityRegistry.displayNameFor(entry),
-                    locked = entry.isBatchCleanupActive(),
+                    locked = entry.isBatchCleanupActive() && isConfigured(entry),
                     attempts = entry.cleanupAttempts,
                 )
             }
-        val tail = if (allowLocalFallback && localAvailable) "On-device" else null
+        val tail = when {
+            !allowLocalFallback -> null
+            localAvailable -> "On-device"
+            else -> "On-device (not installed)"
+        }
         return AttemptBudgetCalculator.formatExecutionOrderStrip(
             slots = slots,
             fallbackTail = tail,
-            emptyLabel = if (localAvailable) "On-device" else "No cloud cleanup locked",
+            emptyLabel = if (localAvailable) "On-device" else "No cloud cleanup active",
         )
     }
 
     /**
-     * Phase 3A.1 execution-order strip for Live Post-Cleanup using [AttemptBudgetCalculator].
+     * Phase 3A.1/3A.3 execution-order strip for Live Post-Cleanup using [AttemptBudgetCalculator].
+     * Keyless slots never appear when [isSlotConfigured] returns false.
      */
-    fun livePostCleanupExecutionOrder(config: LiveTranscriptionConfig): String {
+    fun livePostCleanupExecutionOrder(
+        config: LiveTranscriptionConfig,
+        isSlotConfigured: (LivePostCleanupSlot) -> Boolean = { true },
+    ): String {
         if (!config.postCleanupEnabled) return "Direct live text (Post-Cleanup off)"
         val slots = config.postCleanupSlots
             .take(LiveTranscriptionConfig.MAX_LIVE_POST_CLEANUP_SLOTS)
@@ -142,7 +165,10 @@ object EffectiveRouting {
                 AttemptBudgetCalculator.BudgetSlot(
                     id = slot.id,
                     label = label,
-                    locked = slot.locked && slot.modelId.isNotBlank() && slot.modelId != ProviderChainEntry.SKIP_MODEL_ID,
+                    locked = slot.locked &&
+                        slot.modelId.isNotBlank() &&
+                        slot.modelId != ProviderChainEntry.SKIP_MODEL_ID &&
+                        isSlotConfigured(slot),
                     attempts = slot.attempts,
                 )
             }

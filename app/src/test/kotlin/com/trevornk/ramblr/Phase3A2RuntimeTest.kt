@@ -157,6 +157,9 @@ class Phase3A2RuntimeTest {
         idleMain()
         server.close()
         app.getSharedPreferences("ramblr", Context.MODE_PRIVATE).edit().clear().commit()
+        ProviderKind.entries.forEach { ProviderCredentialStore.clearLegacyByKind(app, it) }
+        listOf("vault_gemini", "vault_openai", "vault_groq", "vault_openrouter", "vault_anthropic")
+            .forEach { ProviderCredentialStore.clearVaultSecret(app, it) }
         File(app.filesDir, "models").deleteRecursively()
     }
 

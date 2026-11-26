@@ -95,9 +95,9 @@ class SetupActivity : BaseSettingsActivity() {
         android.app.AlertDialog.Builder(this)
             .setTitle("Microphone access needed")
             .setMessage(
-                "Microphone access is turned off for Ramblr, and Android won't ask again from " +
-                    "here. Ramblr can't record without it.\n\n" +
-                    "Open Ramblr's App info, then choose Permissions → Microphone → Allow."
+                "Microphone access is turned off for Rhema Cadence, and Android won't ask again from " +
+                    "here. Rhema Cadence can't record without it.\n\n" +
+                    "Open Rhema Cadence's App info, then choose Permissions → Microphone → Allow."
             )
             .setPositiveButton("Open App info") { _, _ ->
                 startActivity(
@@ -157,9 +157,9 @@ class SetupActivity : BaseSettingsActivity() {
             android.app.AlertDialog.Builder(this)
                 .setTitle("One extra step needed")
                 .setMessage(
-                    "Because Ramblr was installed outside the Play Store, Android blocks its " +
+                    "Because Rhema Cadence was installed outside the Play Store, Android blocks its " +
                         "Accessibility toggle by default (a security feature, not a bug).\n\n" +
-                        "Tap below to open Ramblr's App info, then:\n" +
+                        "Tap below to open Rhema Cadence's App info, then:\n" +
                         "1. Tap the \u22ee menu in the top-right corner\n" +
                         "2. Choose \"Allow restricted settings\"\n" +
                         "3. Come back here and enable Accessibility as normal\n\n" +

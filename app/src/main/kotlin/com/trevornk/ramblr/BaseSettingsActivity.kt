@@ -102,20 +102,21 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
     }
 
     /**
-     * Samsung One UI AMOLED screen frame (Phase 3A.1): sticky top AppBar with back navigation
-     * receiving top inset, over a scrolling body on `@color/oneui_canvas` receiving left/right/
-     * bottom insets. Calls `super.setContentView(...)` directly so untouched Settings screens keep
-     * their existing `setContentView(ScrollView)` behavior unchanged.
+     * Samsung One UI AMOLED hairline screen frame (Phase 3A.3): sticky top AppBar with back
+     * navigation, optional 24dp cobalt icon, optional trailing action, and 1px hairline divider,
+     * over a scrolling body on `@color/oneui_canvas`.
      */
     protected fun setOneUiScreenContent(
         title: String,
         showBack: Boolean = true,
         subtitle: String? = null,
+        @androidx.annotation.DrawableRes icon: Int? = null,
+        trailingAction: View? = null,
         content: View,
         onBack: (() -> Unit)? = null,
     ) {
         val canvasColor = ContextCompat.getColor(this, R.color.oneui_canvas)
-        val borderColor = ContextCompat.getColor(this, R.color.oneui_card_border)
+        val hairlineColor = withAlpha(attrColor(android.R.attr.textColorPrimary), 0x40)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -155,9 +156,25 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
             barRow.addView(backBtn)
         }
 
+        if (icon != null) {
+            barRow.addView(android.widget.ImageView(this).apply {
+                setImageResource(icon)
+                imageTintList = android.content.res.ColorStateList.valueOf(attrColor(com.google.android.material.R.attr.colorPrimary))
+                layoutParams = LinearLayout.LayoutParams(dp(ICON_DP), dp(ICON_DP)).apply {
+                    marginStart = if (showBack) dp(4) else dp(12)
+                    marginEnd = dp(10)
+                }
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+        }
+
         val titleCol = vertical(0).apply {
             layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f).apply {
-                marginStart = if (showBack) dp(4) else dp(12)
+                marginStart = when {
+                    icon != null -> 0
+                    showBack -> dp(4)
+                    else -> dp(12)
+                }
             }
         }
         titleCol.addView(TextView(this).apply {
@@ -175,10 +192,13 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
             })
         }
         barRow.addView(titleCol)
+        if (trailingAction != null) {
+            barRow.addView(trailingAction)
+        }
         appBar.addView(barRow)
         appBar.addView(View(this).apply {
             layoutParams = LinearLayout.LayoutParams(LP_MATCH, 1)
-            setBackgroundColor(borderColor)
+            setBackgroundColor(hairlineColor)
         })
 
         val scrollView = ScrollView(this).apply {
@@ -207,12 +227,16 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
                 imeBottom = ime.bottom,
             )
             appBar.setPadding(p.left, p.top, p.right, 0)
-            scrollView.setPadding(p.left, dp(12), p.right, p.bottom + dp(BOTTOM_SPACE_DP))
+            scrollView.setPadding(p.left, dp(4), p.right, p.bottom + dp(BOTTOM_SPACE_DP))
             insets
         }
         ViewCompat.requestApplyInsets(root)
         root.viewTreeObserver.addOnGlobalLayoutListener { updateRowDividers(root) }
     }
+
+    /** Crisp 1px hairline divider matching the Home screen inset-divider formula. */
+    protected fun hairlineDivider(insetStartDp: Int = 24, insetEndDp: Int = 24): View =
+        OneUiComponents.hairlineDivider(this, insetStartDp, insetEndDp)
 
     /** Rounded 24dp Samsung One UI surface card with 1dp border and consistent screen margins. */
     protected fun oneUiCard(padH: Int = 0, padV: Int = 0): LinearLayout = LinearLayout(this).apply {

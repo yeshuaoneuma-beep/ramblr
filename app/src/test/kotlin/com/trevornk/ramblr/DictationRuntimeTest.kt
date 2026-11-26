@@ -196,7 +196,7 @@ class DictationRuntimeTest {
         assertTrue(secondListener.events.isEmpty())
         assertTrue(secondEngines.isEmpty())
         assertEquals(
-            "Ramblr is already dictating from another input surface",
+            DictationRuntime.BUSY_MESSAGE,
             ShadowToast.getTextOfLatestToast(),
         )
     }

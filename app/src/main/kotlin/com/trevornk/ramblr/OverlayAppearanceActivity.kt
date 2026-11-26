@@ -173,15 +173,15 @@ class OverlayAppearanceActivity : BaseSettingsActivity() {
     private fun promptOverlaySize() {
         val current = OverlayAppearancePrefs.load(this).ringSizeDp
         val checked = overlaySizePresets.indexOfFirst { it.second == current }.let { if (it < 0) 1 else it }
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Icon size")
-            .setSingleChoiceItems(overlaySizePresets.map { it.first }.toTypedArray(), checked) { dialog, which ->
-                OverlayAppearancePrefs.setRingSizeDp(this, overlaySizePresets[which].second)
-                onOverlayAppearanceChanged()
-                dialog.dismiss()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = "Icon size",
+            items = overlaySizePresets.map { it.first },
+            checkedIndex = checked,
+        ) { which ->
+            OverlayAppearancePrefs.setRingSizeDp(this, overlaySizePresets[which].second)
+            onOverlayAppearanceChanged()
+        }
     }
 
     private fun pickOverlayColor(title: String, current: Int?, onPick: (Int?) -> Unit) {

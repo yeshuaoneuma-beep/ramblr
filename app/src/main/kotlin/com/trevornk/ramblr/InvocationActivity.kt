@@ -101,7 +101,7 @@ class InvocationActivity : BaseSettingsActivity() {
         voiceKeyboardSectionSub = explainer("Checking...")
         keyboard.addView(voiceKeyboardSectionSub)
 
-        val voiceKeyboardRow = settingsRow("Ramblr keyboard", "Checking...") {
+        val voiceKeyboardRow = settingsRow("Rhema Cadence keyboard", "Checking...") {
             onVoiceKeyboardRowTapped()
         }
         voiceKeyboardRowSub = voiceKeyboardRow.findViewWithTag("subtitle")
@@ -126,11 +126,11 @@ class InvocationActivity : BaseSettingsActivity() {
                 key = InvocationSecureSettings.KEY_BUTTON_TARGETS,
                 currentlyBound = InvocationSecureSettings.isButtonTargetBound(this),
                 methodName = "system accessibility button",
-                deepLinkHowTo = "On the next screen, tap the \u201cRamblr shortcut\u201d switch to " +
+                deepLinkHowTo = "On the next screen, tap the \u201cRhema Cadence shortcut\u201d switch to " +
                     "turn the button on or off.\n\n" +
                     "Heads up: the system's floating button has its own long-press/drag menu and " +
                     "a bright \u201cselected\u201d look \u2014 that brightness is a system affordance, " +
-                    "NOT Ramblr recording.",
+                    "NOT Rhema Cadence recording.",
             )
         }
         systemButtonRowSub = systemButtonRow.findViewWithTag("subtitle")
@@ -151,7 +151,7 @@ class InvocationActivity : BaseSettingsActivity() {
                 key = InvocationSecureSettings.KEY_SHORTCUT_TARGET_SERVICE,
                 currentlyBound = InvocationSecureSettings.isVolumeKeysBound(this),
                 methodName = "volume-keys shortcut",
-                deepLinkHowTo = "On the next screen, tap \u201cRamblr shortcut\u201d, then tick " +
+                deepLinkHowTo = "On the next screen, tap \u201cRhema Cadence shortcut\u201d, then tick " +
                     "\u201cHold volume keys\u201d.\n\n" +
                     "The first time you use the shortcut, Android shows a one-time confirmation " +
                     "dialog \u2014 choose \u201cTurn on\u201d there. Holding both volume keys then " +
@@ -228,15 +228,16 @@ class InvocationActivity : BaseSettingsActivity() {
      *  change up the next time it opens. */
     private fun promptKeyboardTheme() {
         val themes = KeyboardTheme.entries
-        android.app.AlertDialog.Builder(this)
-            .setTitle(R.string.keyboard_theme_title)
-            .setSingleChoiceItems(themes.map { getString(it.titleRes) }.toTypedArray(), themes.indexOf(KeyboardTheme.current(this))) { dialog, which ->
-                KeyboardTheme.set(this, themes[which])
-                refresh()
-                dialog.dismiss()
-            }
-            .setNegativeButton(R.string.keyboard_cancel, null)
-            .show()
+        OneUiComponents.flatSingleChoiceDialog(
+            context = this,
+            title = getString(R.string.keyboard_theme_title),
+            items = themes.map { getString(it.titleRes) },
+            checkedIndex = themes.indexOf(KeyboardTheme.current(this)),
+            negativeLabel = getString(R.string.keyboard_cancel),
+        ) { which ->
+            KeyboardTheme.set(this, themes[which])
+            refresh()
+        }
     }
 
     // --- #238 voice keyboard --------------------------------------------------------------
@@ -267,9 +268,9 @@ class InvocationActivity : BaseSettingsActivity() {
     private fun onVoiceKeyboardRowTapped() {
         val (title, message, positive) = when (voiceKeyboardStatus()) {
             VoiceKeyboardStatus.DISABLED -> Triple(
-                "Turn on the Ramblr keyboard?",
+                "Turn on the Rhema Cadence keyboard?",
                 "Android needs you to enable it yourself.\n\n" +
-                    "On the next screen, find \u201cRamblr Voice\u201d in the on-screen keyboard " +
+                    "On the next screen, find \u201cRhema Cadence Voice\u201d in the on-screen keyboard " +
                     "list and turn it on. Keep your usual keyboard enabled too \u2014 you can " +
                     "switch between them any time.\n\n" +
                     "The keyboard works alongside the floating icon or system controls; turning it " +
@@ -277,15 +278,15 @@ class InvocationActivity : BaseSettingsActivity() {
                 "Open keyboard settings",
             )
             VoiceKeyboardStatus.ENABLED_NOT_DEFAULT -> Triple(
-                "Switch to the Ramblr keyboard?",
-                "The Ramblr keyboard is on, but another keyboard is still your default, " +
+                "Switch to the Rhema Cadence keyboard?",
+                "The Rhema Cadence keyboard is on, but another keyboard is still your default, " +
                     "so it won't open on its own.\n\n" +
-                    "Pick \u201cRamblr Voice\u201d in the switcher to use it now. Your other " +
+                    "Pick \u201cRhema Cadence Voice\u201d in the switcher to use it now. Your other " +
                     "keyboard stays enabled.",
                 "Show keyboard switcher",
             )
             VoiceKeyboardStatus.DEFAULT -> Triple(
-                "Ramblr keyboard is your default",
+                "Rhema Cadence keyboard is your default",
                 "It opens automatically in text fields.\n\n" +
                     "To go back to another keyboard, use the keyboard switcher or Android's " +
                     "on-screen keyboard settings.",
@@ -323,23 +324,23 @@ class InvocationActivity : BaseSettingsActivity() {
         val (title, message) = when (target) {
             InvocationMode.SYSTEM_CONTROLS ->
                 "Switch to System controls?" to (
-                    "Ramblr will switch to a service variant that supports the system " +
+                    "Rhema Cadence will switch to a service variant that supports the system " +
                         "accessibility button, gesture, and volume-keys hold.\n\n" +
                         (if (direct)
                             "The switch is automatic \u2014 dictation keeps working throughout."
                         else
                             "Dictation will STOP for a moment: Android needs you to re-enable " +
-                            "Ramblr with one tap on the next screen (there will be exactly one " +
-                            "Ramblr entry \u2014 just turn it on).") +
+                            "Rhema Cadence with one tap on the next screen (there will be exactly one " +
+                            "Rhema Cadence entry \u2014 just turn it on).") +
                         "\n\nThe floating ring will be hidden to avoid two on-screen buttons; " +
                         "you can turn it back on under Floating icon.\n\n" +
-                        "\u26a0\ufe0f In this mode, the system couples Ramblr to its shortcuts: " +
-                        "turning off the LAST \u201cRamblr shortcut\u201d in system Settings also " +
-                        "turns Ramblr off. If that happens, Ramblr shows a recovery banner."
+                        "\u26a0\ufe0f In this mode, the system couples Rhema Cadence to its shortcuts: " +
+                        "turning off the LAST \u201cRhema Cadence shortcut\u201d in system Settings also " +
+                        "turns Rhema Cadence off. If that happens, Rhema Cadence shows a recovery banner."
                 )
             InvocationMode.FLOATING_ICON ->
                 "Switch to Floating icon?" to (
-                    "Ramblr will switch back to the default service variant: the floating ring " +
+                    "Rhema Cadence will switch back to the default service variant: the floating ring " +
                         "starts dictation, the system button/gesture and volume-keys shortcuts " +
                         "go away, and the system Settings switch becomes a simple independent " +
                         "on/off again.\n\n" +
@@ -347,8 +348,8 @@ class InvocationActivity : BaseSettingsActivity() {
                             "The switch is automatic \u2014 dictation keeps working throughout."
                         else
                             "Dictation will STOP for a moment: Android needs you to re-enable " +
-                            "Ramblr with one tap on the next screen (there will be exactly one " +
-                            "Ramblr entry \u2014 just turn it on).")
+                            "Rhema Cadence with one tap on the next screen (there will be exactly one " +
+                            "Rhema Cadence entry \u2014 just turn it on).")
                 )
         }
         android.app.AlertDialog.Builder(this)
@@ -416,10 +417,10 @@ class InvocationActivity : BaseSettingsActivity() {
         android.app.AlertDialog.Builder(this)
             .setTitle("Before you go: how this switch behaves")
             .setMessage(
-                "The $methodName is managed on Ramblr's system Accessibility page.\n\n$howTo\n\n" +
-                    "\u26a0\ufe0f Important: the \u201cRamblr shortcut\u201d switch controls where the " +
+                "The $methodName is managed on Rhema Cadence's system Accessibility page.\n\n$howTo\n\n" +
+                    "\u26a0\ufe0f Important: the \u201cRhema Cadence shortcut\u201d switch controls where the " +
                     "shortcut appears \u2014 but turning off the LAST shortcut also turns off " +
-                    "Ramblr itself (system behavior for always-on accessibility tools). To keep " +
+                    "Rhema Cadence itself (system behavior for always-on accessibility tools). To keep " +
                     "dictation available without any system shortcut, switch back to Floating " +
                     "icon mode on this screen instead."
             )
@@ -458,8 +459,8 @@ class InvocationActivity : BaseSettingsActivity() {
      *  nothing, which used to make this row a silent dead tap. */
     private fun onQsTileAddResult(result: Int) {
         when (qsTileAddOutcome(result)) {
-            QsTileAddOutcome.ADDED -> toast("Ramblr tile added to Quick Settings")
-            QsTileAddOutcome.ALREADY_ADDED -> toast("The Ramblr tile is already in Quick Settings")
+            QsTileAddOutcome.ADDED -> toast("Rhema Cadence tile added to Quick Settings")
+            QsTileAddOutcome.ALREADY_ADDED -> toast("The Rhema Cadence tile is already in Quick Settings")
             QsTileAddOutcome.DECLINED -> Unit
             QsTileAddOutcome.UNSUPPORTED -> showManualQsTileSteps()
         }
@@ -467,10 +468,10 @@ class InvocationActivity : BaseSettingsActivity() {
 
     private fun showManualQsTileSteps() {
         android.app.AlertDialog.Builder(this)
-            .setTitle("Add the Ramblr tile")
+            .setTitle("Add the Rhema Cadence tile")
             .setMessage(
                 "Swipe down twice to open Quick Settings, tap the edit (pencil) button, then " +
-                    "drag the Ramblr tile into your panel. Tapping the tile starts or stops dictation."
+                    "drag the Rhema Cadence tile into your panel. Tapping the tile starts or stops dictation."
             )
             .setPositiveButton("OK", null)
             .show()
@@ -491,7 +492,7 @@ class InvocationActivity : BaseSettingsActivity() {
                 "$command\n\n" +
                 "With it granted, mode switches complete in-app without the system Settings " +
                 "round-trip, the shortcut rows switch instantly, and if the service ever gets " +
-                "turned off by the system switch, Ramblr can turn itself back on with one tap."
+                "turned off by the system switch, Rhema Cadence can turn itself back on with one tap."
             setTextIsSelectable(true)
             textSize = 14f
             setPadding(dp(24), dp(16), dp(24), 0)

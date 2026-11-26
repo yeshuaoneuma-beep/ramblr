@@ -152,10 +152,10 @@ class AutomationOffHookTest {
 
     @Test
     fun `command targets the given numeric user explicitly`() {
-        val command = automationOffHookCommand("com.trevornk.ramblr", userId = 10)
+        val command = automationOffHookCommand("com.yeshua.rhemacadence", userId = 10)
         assertEquals(
-            "am broadcast -a com.trevornk.ramblr.action.TURN_OFF " +
-                "-n com.trevornk.ramblr/.AutomationOffReceiver --user 10",
+            "am broadcast -a ${AutomationOffReceiver.ACTION_TURN_OFF} " +
+                "-n com.yeshua.rhemacadence/.AutomationOffReceiver --user 10",
             command,
         )
     }
@@ -193,10 +193,10 @@ class AutomationOffHookTest {
 
     @Test
     fun `diagnostic command targets the receiver and the given numeric user explicitly`() {
-        val command = automationDiagnosticCommand("com.trevornk.ramblr", userId = 0)
+        val command = automationDiagnosticCommand("com.yeshua.rhemacadence", userId = 0)
         assertEquals(
-            "am broadcast -a com.trevornk.ramblr.action.DIAGNOSTIC " +
-                "-n com.trevornk.ramblr/.AutomationOffReceiver --user 0",
+            "am broadcast -a ${AutomationOffReceiver.ACTION_DIAGNOSTIC} " +
+                "-n com.yeshua.rhemacadence/.AutomationOffReceiver --user 0",
             command,
         )
     }

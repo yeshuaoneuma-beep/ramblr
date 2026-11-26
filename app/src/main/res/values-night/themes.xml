@@ -1,19 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.PhoneWhisper" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- One UI AMOLED Accent & Surface Tokens (Phase 3A.1) -->
+        <!-- One UI AMOLED Accent & Surface Tokens (Phase 3A.1 / 3A.3) -->
         <item name="colorPrimary">@color/oneui_accent_cobalt</item>
         <item name="colorPrimaryContainer">@color/oneui_accent_cobalt_container</item>
         <item name="colorOnPrimaryContainer">@color/on_primary_container</item>
         <item name="android:colorBackground">@color/oneui_canvas</item>
         <item name="colorSurface">@color/oneui_card_surface</item>
-        
-        <!-- Status / Navigation Bars. See values/themes.xml for why these are transparent rather
-             than omitted. Dark theme flips the icon tint to light, since the content showing
-             through the bars is now dark. -->
+
+        <!-- Unified #141418 pop-up & bottom-sheet theming (Phase 3A.3) -->
+        <item name="android:alertDialogTheme">@style/Theme.PhoneWhisper.AlertDialog</item>
+        <item name="alertDialogTheme">@style/Theme.PhoneWhisper.AlertDialog.AppCompat</item>
+        <item name="materialAlertDialogTheme">@style/Theme.PhoneWhisper.AlertDialog.Material</item>
+        <item name="bottomSheetDialogTheme">@style/Theme.PhoneWhisper.BottomSheetDialog</item>
+
+        <!-- Status / Navigation Bars -->
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
+    <style name="Theme.PhoneWhisper.AlertDialog" parent="android:Theme.DeviceDefault.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/bg_popup_surface</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.6</item>
+        <item name="android:colorAccent">@color/oneui_accent_cobalt</item>
+        <item name="android:colorPrimary">@color/oneui_accent_cobalt</item>
+    </style>
+
+    <style name="Theme.PhoneWhisper.AlertDialog.AppCompat" parent="Theme.AppCompat.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/bg_popup_surface</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.6</item>
+        <item name="colorAccent">@color/oneui_accent_cobalt</item>
+        <item name="colorPrimary">@color/oneui_accent_cobalt</item>
+    </style>
+
+    <style name="Theme.PhoneWhisper.AlertDialog.Material" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="android:windowBackground">@drawable/bg_popup_surface</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.6</item>
+        <item name="colorSurface">@color/popup_surface</item>
+        <item name="colorAccent">@color/oneui_accent_cobalt</item>
+        <item name="colorPrimary">@color/oneui_accent_cobalt</item>
+    </style>
+
+    <style name="Theme.PhoneWhisper.BottomSheetDialog" parent="Theme.Design.BottomSheetDialog">
+        <item name="bottomSheetStyle">@style/Theme.PhoneWhisper.BottomSheetModal</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.6</item>
+        <item name="android:navigationBarColor">@color/popup_surface</item>
+        <item name="colorPrimary">@color/oneui_accent_cobalt</item>
+        <item name="colorAccent">@color/oneui_accent_cobalt</item>
     </style>
 </resources>

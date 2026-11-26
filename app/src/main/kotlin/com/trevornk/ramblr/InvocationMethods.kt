@@ -244,12 +244,12 @@ fun resolveServiceOffShortcutRisk(
 /** The "Turn Ramblr off" row subtitle. In system mode it says WHY the row exists, because the
  *  user's instinct is to look in system Settings -- where the switch has been hidden by the OS. */
 fun serviceOffRowSubtitleText(serviceEnabled: Boolean, mode: InvocationMode): String = when {
-    !serviceEnabled -> "Ramblr's accessibility service is off — turn it back on from the setup screen"
+    !serviceEnabled -> "Rhema Cadence's accessibility service is off — turn it back on from the setup screen"
     mode == InvocationMode.SYSTEM_CONTROLS ->
         "Stops dictation everywhere and releases the accessibility service. In this mode " +
-            "Android hides the off switch on Ramblr's system Accessibility page, so this is it."
+            "Android hides the off switch on Rhema Cadence's system Accessibility page, so this is it."
     else -> "Stops dictation everywhere and releases the accessibility service. Same as the " +
-        "switch on Ramblr's system Accessibility page."
+        "switch on Rhema Cadence's system Accessibility page."
 }
 
 /**
@@ -258,24 +258,24 @@ fun serviceOffRowSubtitleText(serviceEnabled: Boolean, mode: InvocationMode): St
  * Ramblr off before a banking app needs to know whether it actually stayed off.
  */
 fun serviceOffConfirmMessage(risk: ServiceOffShortcutRisk): String {
-    val base = "Dictation stops everywhere and Ramblr releases the accessibility service — it " +
-        "can no longer read or type into any app.\n\nTurn it back on from Ramblr's home screen " +
+    val base = "Dictation stops everywhere and Rhema Cadence releases the accessibility service — it " +
+        "can no longer read or type into any app.\n\nTurn it back on from Rhema Cadence's home screen " +
         "whenever you want it again.\n\n"
     return base + when (risk) {
         ServiceOffShortcutRisk.NONE ->
             "Nothing will turn it back on by itself."
         ServiceOffShortcutRisk.SWEEPABLE ->
-            "Ramblr's system button and volume-keys shortcuts will be removed first, so nothing " +
+            "Rhema Cadence's system button and volume-keys shortcuts will be removed first, so nothing " +
                 "can turn the service back on by itself."
         ServiceOffShortcutRisk.VOLUME_KEYS ->
-            "\u26a0\ufe0f Heads up: the volume-keys shortcut is still bound to Ramblr, and Android " +
+            "\u26a0\ufe0f Heads up: the volume-keys shortcut is still bound to Rhema Cadence, and Android " +
                 "turns an accessibility service back ON when that shortcut is used. To make the " +
                 "off stick, switch to Floating icon mode first, or remove the volume-keys " +
-                "shortcut on Ramblr's system Accessibility page."
+                "shortcut on Rhema Cadence's system Accessibility page."
         ServiceOffShortcutRisk.STALE_BUTTON ->
-            "The system accessibility button is still bound to Ramblr. It won't turn the service " +
+            "The system accessibility button is still bound to Rhema Cadence. It won't turn the service " +
                 "back on, but it will stay on screen doing nothing until you remove it on " +
-                "Ramblr's system Accessibility page."
+                "Rhema Cadence's system Accessibility page."
     }
 }
 
@@ -357,16 +357,16 @@ fun resolveStaleComponentAction(
  *  way to guess it and will otherwise keep re-enabling Ramblr by hand forever. */
 fun staleComponentBannerText(mode: InvocationMode): String {
     val other = when (mode) {
-        InvocationMode.FLOATING_ICON -> "Ramblr (System controls)"
-        InvocationMode.SYSTEM_CONTROLS -> "Ramblr (Floating icon)"
+        InvocationMode.FLOATING_ICON -> "Rhema Cadence (System controls)"
+        InvocationMode.SYSTEM_CONTROLS -> "Rhema Cadence (Floating icon)"
     }
     val active = when (mode) {
-        InvocationMode.FLOATING_ICON -> "Ramblr (Floating icon)"
-        InvocationMode.SYSTEM_CONTROLS -> "Ramblr (System controls)"
+        InvocationMode.FLOATING_ICON -> "Rhema Cadence (Floating icon)"
+        InvocationMode.SYSTEM_CONTROLS -> "Rhema Cadence (System controls)"
     }
-    return "Ramblr's accessibility service was switched off by something other than Ramblr. " +
+    return "Rhema Cadence's accessibility service was switched off by something other than Rhema Cadence. " +
         "If you use an automation app (MacroDroid, Tasker), check which service it targets — " +
-        "picking \u201c$other\u201d while you're in the other mode turns Ramblr off without " +
+        "picking \u201c$other\u201d while you're in the other mode turns Rhema Cadence off without " +
         "turning it back on. Select \u201c$active\u201d instead."
 }
 
@@ -463,9 +463,9 @@ fun invocationMainRowSubtitleText(
 
 /** The mode chooser's "Floating icon" card subtitle. */
 fun invocationFloatingModeSubtitleText(active: Boolean): String =
-    if (active) "Active — Ramblr's own floating ring starts dictation; the service has a " +
+    if (active) "Active — Rhema Cadence's own floating ring starts dictation; the service has a " +
         "simple independent on/off switch in system Settings"
-    else "Ramblr's floating ring only — no system button, and the system Settings switch " +
+    else "Rhema Cadence's floating ring only — no system button, and the system Settings switch " +
         "can't be tripped by shortcut changes"
 
 /**
@@ -509,7 +509,7 @@ fun invocationSystemButtonSubtitleText(modeActive: Boolean, bound: Boolean, dire
  */
 fun invocationVolumeKeysSubtitleText(modeActive: Boolean, bound: Boolean, directControl: Boolean): String {
     if (!modeActive) return "Requires System controls mode — in Floating icon mode this " +
-        "shortcut would turn Ramblr itself off and on"
+        "shortcut would turn Rhema Cadence itself off and on"
     val state = if (bound) "On — hold both volume keys to start dictation" else "Off"
     val how = if (directControl) "tap to switch in-app" else "tap to open system settings"
     return "$state · $how"
@@ -581,7 +581,7 @@ fun resolveVoiceKeyboardStatus(isEnabled: Boolean, isDefault: Boolean): VoiceKey
  */
 fun invocationVoiceKeyboardSubtitleText(status: VoiceKeyboardStatus): String = when (status) {
     VoiceKeyboardStatus.DISABLED ->
-        "Off — tap to turn the Ramblr keyboard on in system settings"
+        "Off — tap to turn the Rhema Cadence keyboard on in system settings"
     VoiceKeyboardStatus.ENABLED_NOT_DEFAULT ->
         "On, but not your default keyboard — switch to it from the keyboard switcher, " +
             "or tap to make it the default"
@@ -603,7 +603,7 @@ fun invocationVoiceKeyboardSectionSubtitleText(status: VoiceKeyboardStatus): Str
 /** The advanced tier's row subtitle: granted state is feature-detected, never assumed. */
 fun invocationAdvancedTierSubtitleText(granted: Boolean): String =
     if (granted) "Active — shortcut changes apply in-app, without the system Settings round-trip"
-    else "Lets Ramblr manage system shortcuts directly — requires a one-time adb grant, tap for the command"
+    else "Lets Rhema Cadence manage system shortcuts directly — requires a one-time adb grant, tap for the command"
 
 /** The exact adb command the advanced tier needs, shown in its dialog for copy/paste. */
 fun wssAdbCommand(packageName: String): String =

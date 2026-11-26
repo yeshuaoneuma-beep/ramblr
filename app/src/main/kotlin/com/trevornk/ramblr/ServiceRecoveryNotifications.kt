@@ -90,12 +90,12 @@ object ServiceRecoveryNotifications {
      */
     private fun build(ctx: Context): Notification = NotificationCompat.Builder(ctx, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_mic)
-        .setContentTitle("Ramblr was turned off")
+        .setContentTitle("Rhema Cadence was turned off")
         .setContentText("Its accessibility service is off. Tap to turn it back on.")
         .setStyle(
             NotificationCompat.BigTextStyle().bigText(
-                "Ramblr's accessibility service was switched off by something other than Ramblr, " +
-                    "so dictation won't work until it's back on. If an automation app turns Ramblr " +
+                "Rhema Cadence's accessibility service was switched off by something other than Rhema Cadence, " +
+                    "so dictation won't work until it's back on. If an automation app turns Rhema Cadence " +
                     "off for banking apps, its re-enable step may not have taken effect."
             )
         )
@@ -119,6 +119,14 @@ object ServiceRecoveryNotifications {
     /** Never allowed to fail the caller: a missing POST_NOTIFICATIONS grant must not crash a
      *  background worker tick. */
     fun post(ctx: Context) {
+        runCatching {
+            AppNotificationStore.record(
+                context = ctx,
+                category = AppNotificationCategory.SETUP_REMINDER,
+                title = "Rhema Cadence was turned off",
+                body = "Accessibility service was turned off. Open Setup or Android Accessibility settings to turn it back on.",
+            )
+        }
         ensureChannel(ctx)
         try {
             NotificationManagerCompat.from(ctx).notify(NOTIFICATION_ID, build(ctx))

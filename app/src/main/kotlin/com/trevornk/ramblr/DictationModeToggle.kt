@@ -133,7 +133,7 @@ object DictationModePresets {
                 DictationMode.CLOUD -> "Cloud: speech goes to your cloud providers"
                 DictationMode.LOCAL -> "Local: speech stays on this phone, works offline"
                 DictationMode.FASTEST -> "Fastest: speech on this phone"
-                DictationMode.CUSTOM -> "Custom mix (Cloud providers › Mix and match)"
+                DictationMode.CUSTOM -> "Custom mix (Dictation mode › Mix and match)"
             }
             return "$speech · AI cleanup is off"
         }
@@ -141,7 +141,7 @@ object DictationModePresets {
             DictationMode.CLOUD -> "Cloud: speech and cleanup both go to your cloud providers"
             DictationMode.LOCAL -> "Local: everything stays on this phone, works offline"
             DictationMode.FASTEST -> "Fastest: speech on this phone, cleanup in the cloud"
-            DictationMode.CUSTOM -> "Custom mix: set under Cloud providers › Mix and match"
+            DictationMode.CUSTOM -> "Custom mix: set under Dictation mode › Mix and match"
         }
     }
 

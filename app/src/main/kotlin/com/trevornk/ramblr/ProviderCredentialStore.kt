@@ -87,12 +87,10 @@ object ProviderCredentialStore {
 
     fun get(context: Context, entryId: String): String {
         if (entryId.isBlank()) return ""
-        val linkedVaultId = ProviderChainStore.load(context).entries
-            .firstOrNull { it.id == entryId }
-            ?.vaultKeyId
-        if (!linkedVaultId.isNullOrBlank()) {
-            val vaultSecret = getVaultSecret(context, linkedVaultId)
-            if (vaultSecret.isNotBlank()) return vaultSecret
+        val entry = ProviderChainStore.load(context).entries.firstOrNull { it.id == entryId }
+        if (entry != null) {
+            val resolved = get(context, entry)
+            if (resolved.isNotBlank()) return resolved
         }
         return getDirectEntrySecret(context, entryId)
     }
@@ -102,7 +100,16 @@ object ProviderCredentialStore {
             val vaultSecret = getVaultSecret(context, entry.vaultKeyId)
             if (vaultSecret.isNotBlank()) return vaultSecret
         }
-        return getDirectEntrySecret(context, entry.id)
+        val direct = getDirectEntrySecret(context, entry.id)
+        if (direct.isNotBlank()) return direct
+        if (entry.kind != ProviderKind.LOCAL) {
+            val providerId = ProviderCapabilityRegistry.providerIdFor(entry)
+            if (providerId != ProviderCapabilityRegistry.ID_CUSTOM_OPENAI) {
+                val sharedVault = ApiKeyVaultStore.resolveSecret(context, null, providerId)
+                if (sharedVault.isNotBlank()) return sharedVault
+            }
+        }
+        return ""
     }
 
     fun set(context: Context, entryId: String, value: String) {
@@ -133,18 +140,10 @@ object ProviderCredentialStore {
         getOrLegacy(context, entry).isNotBlank()
 
     fun getOrLegacy(context: Context, entry: ProviderChainEntry): String {
-        if (!entry.vaultKeyId.isNullOrBlank()) {
-            val vaultSecret = getVaultSecret(context, entry.vaultKeyId)
-            if (vaultSecret.isNotBlank()) return vaultSecret
-        }
-        if (entry.id.isNotBlank()) return get(context, entry)
-        val providerId = ProviderCapabilityRegistry.providerIdFor(entry)
-        val vaultFallback = if (entry.kind != ProviderKind.LOCAL && providerId != ProviderCapabilityRegistry.ID_CUSTOM_OPENAI) {
-            ApiKeyVaultStore.resolveSecret(context, null, providerId)
-        } else {
-            ""
-        }
-        return vaultFallback.ifBlank { getLegacyByKind(context, entry.kind) }
+        val resolved = get(context, entry)
+        if (resolved.isNotBlank()) return resolved
+        if (entry.id.isNotBlank()) return ""
+        return getLegacyByKind(context, entry.kind)
     }
 
     /** Searches [chain] for the first entry of [kind] with a configured credential (vault or

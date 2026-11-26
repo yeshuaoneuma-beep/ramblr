@@ -2894,7 +2894,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     )
                 }
                 StyleMenuRow.OpenSettings -> container.addView(
-                    styleMenuRow(icon = null, title = "Open Ramblr Settings", subtitle = "Full settings, models, history") {
+                    styleMenuRow(icon = null, title = "Open Rhema Cadence Settings", subtitle = "Full settings, models, history") {
                         onStyleMenuOpenSettingsTapped()
                     }
                 )
@@ -3038,7 +3038,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
 
     private fun onStyleMenuOpenCleanupSettingsTapped() {
         dismissStyleMenu()
-        startActivity(Intent(this, CleanupActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        startActivity(Intent(this, CleanupStylesActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
     /**
@@ -3161,7 +3161,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         val result = CleanupStyleMenu.toggleCleanup(this)
         dismissStyleMenu()
         when (result) {
-            CleanupStyleMenu.ToggleResult.NEEDS_SETTINGS -> toast("Enable cleanup once in Ramblr settings first")
+            CleanupStyleMenu.ToggleResult.NEEDS_SETTINGS -> toast("Enable cleanup once in Rhema Cadence settings first")
             CleanupStyleMenu.ToggleResult.TURNED_ON -> showFeedback("Cleanup on", durationMs = 1200)
             CleanupStyleMenu.ToggleResult.TURNED_OFF -> showFeedback("Cleanup off", durationMs = 1200)
         }
@@ -3197,7 +3197,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         val enabling = !isLivePreviewOn(prefs().getBoolean("streaming_preview_enabled", false), modelInstalled, cloudLive)
         if (enabling && !canEnableLivePreview(modelInstalled, cloudLive)) {
             dismissStyleMenu()
-            toast("Download the streaming model or turn on Cloud Live in Ramblr settings first")
+            toast("Download the streaming model or turn on Cloud Live in Rhema Cadence settings first")
             return
         }
         prefs().edit().putBoolean("streaming_preview_enabled", enabling).apply()
@@ -3299,7 +3299,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 PerAppExclusionStore.isExcluded(this, currentForegroundPackageName()),
             )
         ) {
-            toast("Ramblr is excluded in this app — see Settings > Privacy")
+            toast("Rhema Cadence is excluded in this app — see Settings > Privacy")
             return
         }
         // Every start path (ring tap, QS tile, accessibility button/shortcut) ends here. Like the
@@ -3922,7 +3922,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
             updatePendingInjection(InjectMethod.NONE, text, rawText ?: text, null, null, null, historyTimestamp)
             fallbackClipboardText = null
             showFeedback(
-                "Ramblr is excluded in this app — nothing inserted or copied",
+                "Rhema Cadence is excluded in this app — nothing inserted or copied",
                 FALLBACK_FEEDBACK_DURATION_MS,
                 touchable = false,
                 isFallback = true,

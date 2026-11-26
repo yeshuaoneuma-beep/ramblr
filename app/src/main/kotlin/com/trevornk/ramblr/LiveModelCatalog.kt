@@ -276,8 +276,10 @@ object LiveModelCatalogStore {
         lane: CapabilityLane,
     ): List<ModelDescriptor> {
         val curated = ModelCapabilityClassifier.curatedModelsFor(providerId, lane)
-        val curatedById = curated.associateBy { ModelCapabilityClassifier.normalizeId(it.id) }
-        val liveFiltered = liveOrCached.filter { it.supports(lane) }
+        val liveFiltered = liveOrCached.filter { descriptor ->
+            descriptor.supports(lane) &&
+                (lane == CapabilityLane.LIVE_STT || !ModelCapabilityClassifier.isLiveStreamingModel(descriptor.id))
+        }
         val liveById = liveFiltered.associateBy { ModelCapabilityClassifier.normalizeId(it.id) }
 
         val merged = mutableListOf<ModelDescriptor>()

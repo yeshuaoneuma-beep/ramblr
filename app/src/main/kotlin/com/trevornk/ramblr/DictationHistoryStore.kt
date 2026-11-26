@@ -33,18 +33,20 @@ fun shouldShowPaidFallbackBadge(debugVisibilityEnabled: Boolean, entry: Dictatio
  * data_extraction_rules.xml use include-only semantics (only ramblr.xml + overlay_icon.png), so
  * dictation_history.jsonl is never backed up (security audit L-6).
  */
-class DictationHistoryStore(private val file: File, private val maxEntries: Int = DEFAULT_MAX_ENTRIES) {
+class DictationHistoryStore(
+    private val file: File,
+    private val maxEntries: Int = DEFAULT_MAX_ENTRIES,
+    private val appContext: Context? = null,
+) {
 
     companion object {
         const val DEFAULT_MAX_ENTRIES = 50
+        private const val PREFS_NAME = "ramblr"
+        private const val KEY_HISTORY_ENABLED = "dictation_history_enabled"
+        const val KEY_UNREAD_COUNT = "history_unread_count"
         private const val FILE_NAME = "dictation_history.jsonl"
 
-        // One store instance per backing file (#71): add/all/clear/delete are @Synchronized,
-        // i.e. locked on the instance — the service's background history writes and
-        // MainActivity's history dialog previously each held their *own* instance, so their
-        // read-modify-write cycles didn't exclude each other and a race could drop or
-        // resurrect entries. First caller's maxEntries wins for a given path; every production
-        // caller uses the default.
+        // One store instance per backing file (#71)
         private val instances = mutableMapOf<String, DictationHistoryStore>()
 
         /** The shared store for [file], creating it on first use. */
@@ -53,8 +55,42 @@ class DictationHistoryStore(private val file: File, private val maxEntries: Int 
                 instances.getOrPut(file.absolutePath) { DictationHistoryStore(file, maxEntries) }
             }
 
-        fun forContext(context: Context, maxEntries: Int = DEFAULT_MAX_ENTRIES) =
-            forFile(File(context.filesDir, FILE_NAME), maxEntries)
+        fun forContext(context: Context, maxEntries: Int = DEFAULT_MAX_ENTRIES): DictationHistoryStore {
+            val appCtx = context.applicationContext ?: context
+            val targetFile = File(appCtx.filesDir, FILE_NAME)
+            return synchronized(instances) {
+                val existing = instances[targetFile.absolutePath]
+                if (existing != null && existing.appContext != null) {
+                    existing
+                } else {
+                    DictationHistoryStore(targetFile, maxEntries, appCtx).also {
+                        instances[targetFile.absolutePath] = it
+                    }
+                }
+            }
+        }
+
+        fun unreadCount(context: Context): Int {
+            val appCtx = context.applicationContext ?: context
+            val p = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (!p.getBoolean(KEY_HISTORY_ENABLED, true)) return 0
+            return p.getInt(KEY_UNREAD_COUNT, 0).coerceAtLeast(0)
+        }
+
+        fun incrementUnreadCount(context: Context) {
+            val appCtx = context.applicationContext ?: context
+            val p = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (!p.getBoolean(KEY_HISTORY_ENABLED, true)) return
+            p.edit().putInt(KEY_UNREAD_COUNT, p.getInt(KEY_UNREAD_COUNT, 0) + 1).apply()
+        }
+
+        fun clearUnreadCount(context: Context) {
+            val appCtx = context.applicationContext ?: context
+            appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putInt(KEY_UNREAD_COUNT, 0)
+                .apply()
+        }
     }
 
     /** Appends [entry], evicting the oldest entries beyond [maxEntries]. */
@@ -62,27 +98,24 @@ class DictationHistoryStore(private val file: File, private val maxEntries: Int 
     fun add(entry: DictationHistoryEntry) {
         val entries = (readAll() + entry).takeLast(maxEntries)
         writeAll(entries)
+        appContext?.let { runCatching { incrementUnreadCount(it) } }
     }
 
     /** Inserts [entry], or replaces the existing entry with the same [DictationHistoryEntry.timestamp]
-     *  in place if one exists (#73): lets a caller record a dictation as soon as its transcript+
-     *  cleanup result exist, then update that same row later (e.g. once injection actually
-     *  happens, or the user picks raw text over the cleaned candidate) without creating a second,
-     *  duplicate entry for one dictation. Falls back to [add]'s ordering when no existing entry
-     *  matches -- an update-in-place preserves the original entry's position rather than moving
-     *  it to the end, since [timestamp] (the true dictation time) is unchanged either way. */
+     *  in place if one exists (#73). */
     @Synchronized
     fun upsert(entry: DictationHistoryEntry) {
         val existing = readAll()
-        // Match on identity (timestamp), not on "the list changed": re-upserting an entry that is
-        // byte-identical to the stored one (a preview committed unedited) must stay a no-op
-        // update, not fall through to add() and duplicate the row.
-        val entries = if (existing.any { it.timestamp == entry.timestamp }) {
+        val isNew = existing.none { it.timestamp == entry.timestamp }
+        val entries = if (!isNew) {
             existing.map { if (it.timestamp == entry.timestamp) entry else it }
         } else {
             (existing + entry).takeLast(maxEntries)
         }
         writeAll(entries)
+        if (isNew) {
+            appContext?.let { runCatching { incrementUnreadCount(it) } }
+        }
     }
 
     /** All entries, newest first. */
@@ -92,6 +125,7 @@ class DictationHistoryStore(private val file: File, private val maxEntries: Int 
     @Synchronized
     fun clear() {
         if (file.exists()) file.writeText("")
+        appContext?.let { runCatching { clearUnreadCount(it) } }
     }
 
     /** Removes every entry with the given [timestamp], which is unique per dictation and doubles

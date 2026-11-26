@@ -17,6 +17,8 @@ import java.util.TimeZone
  */
 object DiagnosticErrorLog {
     private const val TAG = "DiagnosticErrorLog"
+    private const val PREFS_NAME = "ramblr"
+    const val KEY_UNREAD_COUNT = "diagnostics_unread_count"
     private const val FILE_NAME = "diagnostic_errors.log"
     internal const val MAX_ENTRIES = 100
     internal const val MAX_DETAIL_CHARS = 500
@@ -64,8 +66,11 @@ object DiagnosticErrorLog {
             scrubbedDetail = scrubbed,
             nowMs = nowMs,
         )
+        val appCtx = context.applicationContext ?: context
         runCatching {
-            recordToFile(logFile(context.applicationContext ?: context), formatted)
+            recordToFile(logFile(appCtx), formatted)
+            val p = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            p.edit().putInt(KEY_UNREAD_COUNT, p.getInt(KEY_UNREAD_COUNT, 0) + 1).apply()
         }.onFailure {
             runCatching { Log.w(TAG, "Failed to write diagnostic error log", it) }
         }
@@ -73,9 +78,25 @@ object DiagnosticErrorLog {
 
     fun readRecent(context: Context): List<String> = readFromFile(logFile(context.applicationContext ?: context))
 
+    fun unreadCount(context: Context): Int =
+        (context.applicationContext ?: context)
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt(KEY_UNREAD_COUNT, 0)
+            .coerceAtLeast(0)
+
+    fun clearUnreadCount(context: Context) {
+        (context.applicationContext ?: context)
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putInt(KEY_UNREAD_COUNT, 0)
+            .apply()
+    }
+
     fun clear(context: Context) {
+        val appCtx = context.applicationContext ?: context
         synchronized(lock) {
-            runCatching { logFile(context.applicationContext ?: context).delete() }
+            runCatching { logFile(appCtx).delete() }
+            runCatching { clearUnreadCount(appCtx) }
         }
     }
 

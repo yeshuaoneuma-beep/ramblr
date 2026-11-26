@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material Symbols "podcasts" / live stream (outlined, 24px), Apache License 2.0, google/material-design-icons. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="960" android:viewportHeight="960">
+    <group android:translateY="960">
+        <path android:fillColor="#FF000000" android:pathData="M480-400q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400ZM280-280q-42-42-61-95.5T200-480q0-117 81.5-198.5T480-760q117 0 198.5 81.5T760-480q0 51-19 104.5T680-280l-56-56q28-30 42-67t14-77q0-83-58.5-141.5T480-680q-83 0-141.5 58.5T280-480q0 40 14 77t42 67l-56 56ZM166-166q-62-63-94-142.5T40-480q0-91 34.5-171.5T169-791q60-60 140.5-94.5T480-920q91 0 171.5 34.5T791-791q60 60 94.5 140.5T920-480q0 92-32 171.5T794-166l-56-56q50-51 76-116t26-142q0-150-105-255T480-840q-150 0-255 105T120-480q0 77 26 142t76 116l-56 56ZM440-120v-200h80v200h-80Z" />
+    </group>
+</vector>

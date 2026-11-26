@@ -50,7 +50,12 @@ internal fun backgroundDeliveryFor(
 internal fun shouldNotifyBackgroundFailure(targetCurrent: Boolean): Boolean = !targetCurrent
 
 /** What the user is told. [opensHistory] picks the tap target (history viewer vs main screen). */
-internal data class BackgroundNotice(val title: String, val text: String, val opensHistory: Boolean)
+internal data class BackgroundNotice(
+    val title: String,
+    val text: String,
+    val opensHistory: Boolean,
+    val isFailure: Boolean = false,
+)
 
 /**
  * Notice for a finished dictation whose target is gone. [historySaved] must reflect what actually
@@ -69,14 +74,14 @@ internal fun deliveredNoticeFor(
         BackgroundDelivery.INSERT -> null
         BackgroundDelivery.CLIPBOARD_AND_NOTIFY -> BackgroundNotice(
             title = "Dictation finished",
-            text = (if (historySaved) "The field you dictated into is gone. Your text is on the clipboard and in Ramblr history."
+            text = (if (historySaved) "The field you dictated into is gone. Your text is on the clipboard and in Rhema Cadence history."
             else "The field you dictated into is gone. Your text is on the clipboard.") + cleanup,
             opensHistory = historySaved,
         )
         BackgroundDelivery.NOTIFY_ONLY_EXCLUDED -> BackgroundNotice(
             title = "Dictation finished",
-            text = (if (historySaved) "Ramblr is excluded in the app involved, so nothing was inserted or copied. Your text is in Ramblr history."
-            else "Ramblr is excluded in the app involved, so nothing was inserted, copied or saved.") + cleanup,
+            text = (if (historySaved) "Rhema Cadence is excluded in the app involved, so nothing was inserted or copied. Your text is in Rhema Cadence history."
+            else "Rhema Cadence is excluded in the app involved, so nothing was inserted, copied or saved.") + cleanup,
             opensHistory = historySaved,
         )
         BackgroundDelivery.NOTIFY_ONLY_NOT_RETAINED -> BackgroundNotice(
@@ -94,18 +99,21 @@ enum class BackgroundFailure { NO_SPEECH, TIMED_OUT, FAILED }
 internal fun failureNoticeFor(failure: BackgroundFailure): BackgroundNotice = when (failure) {
     BackgroundFailure.NO_SPEECH -> BackgroundNotice(
         title = "Dictation heard no speech",
-        text = "Ramblr finished in the background but didn't detect any speech.",
+        text = "Rhema Cadence finished in the background but didn't detect any speech.",
         opensHistory = false,
+        isFailure = true,
     )
     BackgroundFailure.TIMED_OUT -> BackgroundNotice(
         title = "Dictation timed out",
-        text = "Transcription didn't finish in time and was stopped. Open Ramblr and try again.",
+        text = "Transcription didn't finish in time and was stopped. Open Rhema Cadence and try again.",
         opensHistory = false,
+        isFailure = true,
     )
     BackgroundFailure.FAILED -> BackgroundNotice(
         title = "Dictation failed",
-        text = "Ramblr couldn't transcribe your recording in the background. The audio isn't kept; open Ramblr and dictate again.",
+        text = "Rhema Cadence couldn't transcribe your recording in the background. The audio isn't kept; open Rhema Cadence and dictate again.",
         opensHistory = false,
+        isFailure = true,
     )
 }
 

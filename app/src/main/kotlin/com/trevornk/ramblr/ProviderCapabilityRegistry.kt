@@ -68,12 +68,12 @@ data class ModelDescriptor(
     }
 
     fun contextSummary(): String? {
+        if (ModelCapabilityClassifier.isAsrOnlyModel(id)) return null
         val ctx = contextLength ?: return null
-        if (ctx <= 0) return null
+        if (ctx < 1_000) return null
         return when {
             ctx >= 1_000_000 -> "${ctx / 1_000_000}M ctx"
-            ctx >= 1_000 -> "${ctx / 1_000}K ctx"
-            else -> "$ctx ctx"
+            else -> "${ctx / 1_000}K ctx"
         }
     }
 }
@@ -634,11 +634,18 @@ object ModelCapabilityClassifier {
         return NON_TEXT_NON_ASR_MARKERS.any { it in id }
     }
 
-    private fun isLiveStreamingModel(modelId: String): Boolean {
+    private val LIVE_TOKEN_REGEX = Regex("(^|[-_/.])live($|[-_/.])")
+
+    fun isLiveStreamingModel(modelId: String): Boolean {
         val id = normalizeId(modelId)
+        val leaf = id.substringAfterLast('/')
         if (id == GEMINI_LIVE_DEFAULT_ID || id == GEMINI_LIVE_SECONDARY_ID) return true
-        if (isBlockedTranslateModel(id)) return false
-        return id.startsWith("gemini-") && (id.endsWith("-live") || "-live-" in id || "native-audio" in id)
+        if (leaf == GEMINI_LIVE_DEFAULT_ID || leaf == GEMINI_LIVE_SECONDARY_ID) return true
+        return LIVE_TOKEN_REGEX.containsMatchIn(id) ||
+            LIVE_TOKEN_REGEX.containsMatchIn(leaf) ||
+            "native-audio" in id || "native-audio" in leaf ||
+            "realtime" in id || "realtime" in leaf ||
+            "bidi" in id || "bidi" in leaf
     }
 
     /**

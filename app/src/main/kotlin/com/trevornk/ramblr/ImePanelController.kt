@@ -290,7 +290,7 @@ internal class ImePanelController(
                 if (ownsUi) latestUiTicket = null
                 if (ownsUi && active) {
                     renderState(ImeUiState.IDLE)
-                    notice("Ramblr is excluded in this app — nothing inserted")
+                    notice("Rhema Cadence is excluded in this app — nothing inserted")
                 }
                 // #284: when the user has since left that editor an in-panel message nobody sees
                 // isn't enough. Nothing is copied (excluded); the notice states what was saved.
@@ -399,7 +399,7 @@ internal class ImePanelController(
         if (result != ImeCommitResult.SUCCESS) {
             renderState(ImeUiState.ERROR)
             notice(
-                if (historySaved) "Text could not be inserted — dictated text was saved in Ramblr history"
+                if (historySaved) "Text could not be inserted — dictated text was saved in Rhema Cadence history"
                 else "Text could not be inserted"
             )
         } else if (cleanupError != null) {
@@ -442,7 +442,7 @@ internal class ImePanelController(
         }
         // #256: only blocks a NEW recording (not currently recording) -- stop stays reachable.
         if (!isRecording() && isPackageExcluded(cachedPackageName)) {
-            notice("Ramblr is excluded in this app — see Settings > Privacy")
+            notice("Rhema Cadence is excluded in this app — see Settings > Privacy")
             return
         }
         runtime.onTap()
