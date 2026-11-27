@@ -129,6 +129,9 @@ class SettingsRegroupInventoryTest {
             "Auto-hide delay", "Peeked sliver size", "Silence threshold", "Icon size",
             "Border color", "Fill color (idle only)", "Microphone icon color",
             "Custom icon image", "Remove custom icon",
+            "Auto-replace with Batch + swap chip",
+            "Ask me (Keep Live or Use Batch)",
+            "Keep Live text only",
         )
 
         val BEFORE = listOf(
@@ -138,6 +141,10 @@ class SettingsRegroupInventoryTest {
             "Cloud", "Local", "Fastest", "Transcription", "Cleanup",
             // Live transcription
             "Live cloud transcription",
+            "Live transcript window",
+            "Auto-replace with Batch + swap chip",
+            "Ask me (Keep Live or Use Batch)",
+            "Keep Live text only",
             // Local speech recognition
             "Dictation language", "Local transcription threads", "Canary language",
             // Cleanup styles

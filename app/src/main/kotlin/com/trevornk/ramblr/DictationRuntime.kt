@@ -87,8 +87,20 @@ interface RuntimeListener {
     /** Emitted once when Cloud Live starts/connects for the active recording. Main thread. */
     fun onCloudLiveConnected() {}
 
+    /** Emitted when a Cloud Live session enters the final 60s before its proactive 9:00 cutoff. Main thread. */
+    fun onCloudLiveCutoffWarning(remainingMs: Long) {}
+
     /** Emitted once when Cloud Live disconnects mid-recording while local capture continues for Batch handoff. Main thread. */
     fun onCloudLiveDisconnected(event: LiveDisconnectEvent) {}
+
+    /** Whether this host supports an interactive `ASK_ME` Live vs Batch prompt (e.g. Live Window). */
+    fun supportsInteractiveLiveReconciliation(): Boolean = false
+
+    /** Emitted when `ASK_ME` disconnect policy keeps Live text open on Stop while Batch prepares. Main thread. */
+    fun onLiveReconciliationReady(liveText: String, batchPending: Boolean) {}
+
+    /** Emitted once background Batch transcription (+ cleanup) completes for an active `ASK_ME` prompt. Main thread. */
+    fun onLiveReconciliationBatchReady(liveText: String, batchText: String) {}
 
     /**
      * A finished dictation result is ready to deliver. The host owns delivery: the a11y host
@@ -108,6 +120,18 @@ interface RuntimeListener {
         cleanupError: String?,
         feedbackDurationMs: Long,
     )
+
+    /** Phase 3B.2 overload carrying optional captured [liveText] so hosts can offer a `Use live` swap chip. */
+    fun deliverText(
+        text: String,
+        rawText: String?,
+        paidFallbackGroup: CleanupStepGroup?,
+        cleanupError: String?,
+        feedbackDurationMs: Long,
+        liveText: String?,
+    ) {
+        deliverText(text, rawText, paidFallbackGroup, cleanupError, feedbackDurationMs)
+    }
 
     /** Best-effort package name of the foreground app, for per-app persona resolution (#103).
      *  May be called from background threads. An IME host may return null. */
@@ -241,6 +265,8 @@ class DictationRuntime internal constructor(
     private val liveDisconnectListener: LiveDisconnectListener? = null,
     private val liveConfigProvider: () -> LiveTranscriptionConfig = { LiveTranscriptionConfigStore.load(context) },
     private val geminiInteractionsClient: GeminiInteractionsTranscriberClient = GeminiInteractionsTranscriberClient(),
+    private val reconciliationTimeoutMs: Long = RECONCILIATION_TIMEOUT_MS,
+    private val cloudLiveCutoffWarningMs: Long = CLOUD_LIVE_CUTOFF_WARNING_MS,
     /** Test seam: lets host-side unit tests substitute a fake engine at the capture boundary.
      *  The default is exactly the pre-extraction construction. */
     private val engineFactory: (File, RecordingStateMachine) -> RecordingEngine =
@@ -255,9 +281,13 @@ class DictationRuntime internal constructor(
 
         /** Backstop: 180s Cloud STT + 180s Local STT + 120s Cloud Cleanup + 300s Local Cleanup + 30s margin. */
         internal const val WATCHDOG_TIMEOUT_MS = 810_000L
+        /** Idle timeout for `ASK_ME` interactive Live vs Batch reconciliation so a lease never wedges. */
+        internal const val RECONCILIATION_TIMEOUT_MS = 30_000L
         private const val CLOUD_LIVE_FINAL_WAIT_MS = 2_500L
         /** Proactive 9:00 cutoff ahead of Gemini Live's 10-minute WebSocket limit. */
         internal const val CLOUD_LIVE_SESSION_CUTOFF_MS = GeminiCloudLiveTranscriptionClient.DEFAULT_MAX_SESSION_MS
+        /** Final 60s pre-cutoff tick starting at 8:00 (480s). */
+        internal const val CLOUD_LIVE_CUTOFF_WARNING_MS = 60_000L
         /** 7:00 mark into the 10:00 recording cap (3:00 remaining). */
         internal const val RECORDING_COUNTDOWN_START_MS = 420_000L
         internal const val RECORDING_CAP_MS = RecordingEngine.MAX_DURATION_MS
@@ -340,6 +370,7 @@ class DictationRuntime internal constructor(
         @Volatile var liveStreamEnded = false
         var finalWait: Runnable? = null
         var sessionCutoff: Runnable? = null
+        var sessionCutoffWarning: Runnable? = null
         /** Newest [CloudLiveTiming] seen from any callback (#233 item 10). Main-thread only, same
          *  as every other field here. Kept so a fallback that happens because NO terminal ever
          *  arrived can still report that setup landed and interims flowed -- otherwise the most
@@ -351,11 +382,28 @@ class DictationRuntime internal constructor(
         val interimText = CloudInterimNormalizer()
     }
 
+    private class PendingLiveReconciliation(
+        val token: Int,
+        val lease: DictationSessionLease,
+        val liveText: String,
+        var batchReady: Boolean = false,
+        var batchText: String? = null,
+        var batchRawText: String? = null,
+        var paidFallbackGroup: CleanupStepGroup? = null,
+        var cleanupError: String? = null,
+        var feedbackDurationMs: Long = 2000L,
+        var userQueuedUseBatch: Boolean = false,
+    )
+
     @Volatile private var cloudLiveAttempt: CloudLiveAttempt? = null
+    @Volatile private var pendingReconciliation: PendingLiveReconciliation? = null
+    private var reconciliationTimeoutRunnable: Runnable? = null
     /** Captured non-blank live text / raw STT text for the in-flight post-recording pipeline so
      *  a 3-second cancel hold during fallback or cleanup can preserve already-recognized text. */
     @Volatile private var inFlightLiveText: String? = null
     @Volatile private var inFlightRawSttText: String? = null
+
+    internal fun hasPendingReconciliation(): Boolean = pendingReconciliation != null
 
     /** Releases only the exact session captured by the caller; stale callbacks are harmless. */
     private fun releaseSessionLease(lease: DictationSessionLease?) {
@@ -794,6 +842,11 @@ class DictationRuntime internal constructor(
     // --- State machine ---
 
     fun onTap() {
+        if (pendingReconciliation != null) {
+            dismissReconciliation()
+            startRecording()
+            return
+        }
         when (stateMachine.current()) {
             RecordingStateMachine.State.IDLE -> startRecording()
             RecordingStateMachine.State.RECORDING -> stopAndTranscribe()
@@ -1002,6 +1055,8 @@ class DictationRuntime internal constructor(
                         if (cloudLiveAttempt !== attempt || sessionLease !== lease || attempt.claimed) return@post
                         attempt.sessionCutoff?.let(handler::removeCallbacks)
                         attempt.sessionCutoff = null
+                        attempt.sessionCutoffWarning?.let(handler::removeCallbacks)
+                        attempt.sessionCutoffWarning = null
                         if (attempt.terminal == null) {
                             attempt.terminal = result
                             attempt.lastTiming = result.timing
@@ -1034,6 +1089,32 @@ class DictationRuntime internal constructor(
             }
             attempt.sessionCutoff = cutoff
             handler.postDelayed(cutoff, cloudLiveSessionCutoffMs)
+            val warningDelayMs = cloudLiveSessionCutoffMs - cloudLiveCutoffWarningMs
+            if (warningDelayMs > 0L && cloudLiveCutoffWarningMs > 0L) {
+                val cutoffAtElapsedMs = elapsedRealtimeMs() + cloudLiveSessionCutoffMs
+                val tickMs = recordingCountdownTickMs.coerceAtLeast(1L)
+                val warningTick = object : Runnable {
+                    override fun run() {
+                        if (attempt.sessionCutoffWarning !== this) return
+                        if (shuttingDown || cloudLiveAttempt !== attempt || sessionLease !== lease ||
+                            stateMachine.current() != RecordingStateMachine.State.RECORDING ||
+                            attempt.liveStreamEnded || attempt.claimed
+                        ) {
+                            attempt.sessionCutoffWarning = null
+                            return
+                        }
+                        val remainingMs = (cutoffAtElapsedMs - elapsedRealtimeMs()).coerceAtLeast(0L)
+                        if (remainingMs <= 0L) {
+                            attempt.sessionCutoffWarning = null
+                            return
+                        }
+                        runCatching { listener.onCloudLiveCutoffWarning(remainingMs) }
+                        handler.postDelayed(this, minOf(tickMs, remainingMs))
+                    }
+                }
+                attempt.sessionCutoffWarning = warningTick
+                handler.postDelayed(warningTick, warningDelayMs)
+            }
             attempt
         } catch (e: Exception) {
             // Never fails the dictation -- cloud-live is an optional tee -- but a silent catch here
@@ -1043,6 +1124,8 @@ class DictationRuntime internal constructor(
             Log.w(TAG, "Cloud-live attempt could not start; continuing with the batch pipeline", e)
             attempt.sessionCutoff?.let(handler::removeCallbacks)
             attempt.sessionCutoff = null
+            attempt.sessionCutoffWarning?.let(handler::removeCallbacks)
+            attempt.sessionCutoffWarning = null
             attempt.liveStreamEnded = true
             if (cloudLiveAttempt === attempt) cloudLiveAttempt = null
             attempt.session?.let { session -> runCatching { session.cancel(); session.close() } }
@@ -1058,6 +1141,8 @@ class DictationRuntime internal constructor(
     private fun handleCloudLiveSessionCutoff(attempt: CloudLiveAttempt) {
         if (cloudLiveAttempt !== attempt || sessionLease !== attempt.lease || attempt.claimed) return
         if (attempt.terminal != null) return
+        attempt.sessionCutoffWarning?.let(handler::removeCallbacks)
+        attempt.sessionCutoffWarning = null
         attempt.liveStreamEnded = true
         val timing = attempt.lastTiming ?: CloudLiveTiming(connectStartedAtMs = nowMs())
         val failure = CloudLiveTerminal.Failure(
@@ -1291,6 +1376,237 @@ class DictationRuntime internal constructor(
         return true
     }
 
+    /** Explicit true discard action (e.g. Live Window `Discard` button): never keeps live text. */
+    fun forceDiscardRecording(): Boolean = cancelRecording()
+
+    /**
+     * Finishes immediately using already-captured Live text while RECORDING (e.g. after a mid-recording
+     * live cut via the Live Window's `Use live` action) or while TRANSCRIBING (cancelling in-flight Batch).
+     */
+    fun finishWithCapturedLiveText() {
+        when (stateMachine.current()) {
+            RecordingStateMachine.State.RECORDING -> {
+                val lease = sessionLease ?: return
+                val attempt = cloudLiveAttempt?.takeIf { it.lease === lease }
+                val liveText = attempt?.latestLiveText?.takeIf { it.isNotBlank() } ?: return
+                cancelRecordingCountdown()
+                cancelCloudLiveAttempt(attempt)
+                inFlightLiveText = null
+                inFlightRawSttText = null
+                haptics.onRecordingStopped()
+                listener.deliverText(
+                    finalizeForDelivery(liveText),
+                    rawText = null,
+                    paidFallbackGroup = null,
+                    cleanupError = null,
+                    feedbackDurationMs = 2000L,
+                    liveText = null,
+                )
+                resetToIdle(lease)
+            }
+            RecordingStateMachine.State.TRANSCRIBING -> {
+                if (pendingReconciliation != null) {
+                    chooseReconciliationKeepLive()
+                    return
+                }
+                val lease = sessionLease ?: return
+                val liveText = (cloudLiveAttempt?.takeIf { it.lease === lease }?.latestLiveText ?: inFlightLiveText)
+                    ?.takeIf { it.isNotBlank() } ?: return
+                inFlightCall.cancel()
+                cancelCloudLiveAttempt()
+                listener.deliverText(
+                    finalizeForDelivery(liveText),
+                    rawText = null,
+                    paidFallbackGroup = null,
+                    cleanupError = null,
+                    feedbackDurationMs = 2000L,
+                    liveText = null,
+                )
+                resetToIdle(lease)
+            }
+            RecordingStateMachine.State.IDLE -> Unit
+        }
+    }
+
+    /** `ASK_ME` reconciliation: keep captured Live text immediately, cancelling any in-flight Batch work. */
+    fun chooseReconciliationKeepLive() {
+        val rec = pendingReconciliation ?: return
+        pendingReconciliation = null
+        cancelReconciliationTimeout()
+        inFlightCall.cancel()
+        listener.deliverText(
+            finalizeForDelivery(rec.liveText),
+            rawText = null,
+            paidFallbackGroup = null,
+            cleanupError = null,
+            feedbackDurationMs = 2000L,
+            liveText = null,
+        )
+        resetToIdle(rec.lease)
+    }
+
+    /** `ASK_ME` reconciliation: commit Batch text (immediately if ready, or queue auto-commit once ready). */
+    fun chooseReconciliationUseBatch() {
+        val rec = pendingReconciliation ?: return
+        if (rec.batchReady && rec.batchText != null) {
+            pendingReconciliation = null
+            cancelReconciliationTimeout()
+            listener.deliverText(
+                rec.batchText!!,
+                rawText = rec.batchRawText,
+                paidFallbackGroup = rec.paidFallbackGroup,
+                cleanupError = rec.cleanupError,
+                feedbackDurationMs = rec.feedbackDurationMs,
+                liveText = rec.liveText,
+            )
+            resetToIdle(rec.lease)
+        } else {
+            rec.userQueuedUseBatch = true
+        }
+    }
+
+    /** `ASK_ME` reconciliation: dismiss card / release lease cleanly without leaving a dangling session. */
+    fun dismissReconciliation() {
+        val rec = pendingReconciliation ?: return
+        pendingReconciliation = null
+        cancelReconciliationTimeout()
+        inFlightCall.cancel()
+        pipelineTiming.abandon()
+        resetToIdle(rec.lease)
+    }
+
+    private fun armReconciliationTimeout(rec: PendingLiveReconciliation) {
+        cancelReconciliationTimeout()
+        if (shuttingDown) return
+        val runnable = Runnable {
+            reconciliationTimeoutRunnable = null
+            val active = pendingReconciliation
+            if (active !== rec || sessionLease !== rec.lease || !guard.isCurrent(rec.token)) return@Runnable
+            pendingReconciliation = null
+            inFlightCall.cancel()
+            val batchText = active.batchText
+            if (active.batchReady && batchText != null) {
+                listener.deliverText(
+                    batchText,
+                    rawText = active.batchRawText,
+                    paidFallbackGroup = active.paidFallbackGroup,
+                    cleanupError = active.cleanupError,
+                    feedbackDurationMs = active.feedbackDurationMs,
+                    liveText = active.liveText,
+                )
+            } else {
+                listener.deliverText(
+                    finalizeForDelivery(active.liveText),
+                    rawText = null,
+                    paidFallbackGroup = null,
+                    cleanupError = null,
+                    feedbackDurationMs = 2000L,
+                    liveText = null,
+                )
+            }
+            resetToIdle(active.lease)
+        }
+        reconciliationTimeoutRunnable = runnable
+        handler.postDelayed(runnable, reconciliationTimeoutMs.coerceAtLeast(1L))
+    }
+
+    private fun cancelReconciliationTimeout() {
+        reconciliationTimeoutRunnable?.let(handler::removeCallbacks)
+        reconciliationTimeoutRunnable = null
+    }
+
+    private fun deliverToListener(
+        text: String,
+        rawText: String?,
+        paidFallbackGroup: CleanupStepGroup?,
+        cleanupError: String?,
+        feedbackDurationMs: Long,
+        liveText: String?,
+    ) {
+        if (liveText != null) {
+            listener.deliverText(
+                text,
+                rawText = rawText,
+                paidFallbackGroup = paidFallbackGroup,
+                cleanupError = cleanupError,
+                feedbackDurationMs = feedbackDurationMs,
+                liveText = liveText,
+            )
+        } else {
+            listener.deliverText(
+                text,
+                rawText = rawText,
+                paidFallbackGroup = paidFallbackGroup,
+                cleanupError = cleanupError,
+                feedbackDurationMs = feedbackDurationMs,
+            )
+        }
+    }
+
+    private fun deliverBatchResultOrHoldForReconciliation(
+        token: Int,
+        lease: DictationSessionLease,
+        text: String,
+        rawText: String?,
+        paidFallbackGroup: CleanupStepGroup?,
+        cleanupError: String?,
+        feedbackDurationMs: Long,
+    ) {
+        val rec = pendingReconciliation?.takeIf { it.token == token && it.lease === lease }
+        if (rec != null) {
+            if (rec.userQueuedUseBatch) {
+                pendingReconciliation = null
+                cancelReconciliationTimeout()
+                deliverToListener(
+                    text,
+                    rawText = rawText,
+                    paidFallbackGroup = paidFallbackGroup,
+                    cleanupError = cleanupError,
+                    feedbackDurationMs = feedbackDurationMs,
+                    liveText = rec.liveText,
+                )
+                resetToIdle(lease)
+            } else {
+                rec.batchReady = true
+                rec.batchText = text
+                rec.batchRawText = rawText
+                rec.paidFallbackGroup = paidFallbackGroup
+                rec.cleanupError = cleanupError
+                rec.feedbackDurationMs = feedbackDurationMs
+                armReconciliationTimeout(rec)
+                listener.onLiveReconciliationBatchReady(rec.liveText, text)
+            }
+            return
+        }
+        val capturedLive = inFlightLiveText?.takeIf { it.isNotBlank() }
+        deliverToListener(
+            text,
+            rawText = rawText,
+            paidFallbackGroup = paidFallbackGroup,
+            cleanupError = cleanupError,
+            feedbackDurationMs = feedbackDurationMs,
+            liveText = capturedLive,
+        )
+        resetToIdle(lease)
+    }
+
+    /** Fallback for Batch STT failure/no-speech while an `ASK_ME` reconciliation holds captured Live text. */
+    private fun recoverReconciliationWithLiveText(token: Int, lease: DictationSessionLease): Boolean {
+        val rec = pendingReconciliation?.takeIf { it.token == token && it.lease === lease } ?: return false
+        pendingReconciliation = null
+        cancelReconciliationTimeout()
+        listener.deliverText(
+            finalizeForDelivery(rec.liveText),
+            rawText = null,
+            paidFallbackGroup = null,
+            cleanupError = null,
+            feedbackDurationMs = 2000L,
+            liveText = null,
+        )
+        resetToIdle(lease)
+        return true
+    }
+
     /** Unified 3-second hold while TRANSCRIBING/CLEANING: abort in-flight work, keeping captured
      *  Live text or raw STT text when available, or pure cancel otherwise. */
     fun cancelTranscription() {
@@ -1404,6 +1720,8 @@ class DictationRuntime internal constructor(
         if (sessionLease !== expectedLease) return
         try {
             cancelRecordingCountdown()
+            cancelReconciliationTimeout()
+            pendingReconciliation = null
             haptics.reset()
             cancelCloudLiveAttempt()
             inFlightLiveText = null
@@ -1650,6 +1968,8 @@ class DictationRuntime internal constructor(
                 attempt.finalWait = null
                 attempt.sessionCutoff?.let(handler::removeCallbacks)
                 attempt.sessionCutoff = null
+                attempt.sessionCutoffWarning?.let(handler::removeCallbacks)
+                attempt.sessionCutoffWarning = null
                 cloudLiveAttempt = null
                 runCatching { attempt.session?.close() }
                 result.pcmFile.delete()
@@ -1696,11 +2016,14 @@ class DictationRuntime internal constructor(
         if (attempt.claimed || cloudLiveAttempt !== attempt || sessionLease !== attempt.lease) return
         attempt.claimed = true
         attempt.liveStreamEnded = true
-        attempt.latestLiveText?.takeIf { it.isNotBlank() }?.let { inFlightLiveText = it }
+        val capturedLiveText = attempt.latestLiveText?.takeIf { it.isNotBlank() }
+        if (capturedLiveText != null) inFlightLiveText = capturedLiveText
         attempt.finalWait?.let(handler::removeCallbacks)
         attempt.finalWait = null
         attempt.sessionCutoff?.let(handler::removeCallbacks)
         attempt.sessionCutoff = null
+        attempt.sessionCutoffWarning?.let(handler::removeCallbacks)
+        attempt.sessionCutoffWarning = null
         cloudLiveAttempt = null
         runCatching { attempt.session?.close() }
         val failure = attempt.terminal as? CloudLiveTerminal.Failure
@@ -1713,6 +2036,31 @@ class DictationRuntime internal constructor(
                 httpCode = failure.errorCode,
                 detail = "${failure.reason.name}: ${failure.message}",
             )
+        }
+        val usableLiveText = capturedLiveText?.takeIf { !VocabularyEchoGuard.isEcho(it, vocabularyTerms()) }
+        when (attempt.config.disconnectPolicy) {
+            LiveDisconnectPolicy.KEEP_LIVE_ONLY -> {
+                if (usableLiveText != null) {
+                    result.pcmFile?.delete()
+                    result.compressedFile?.delete()
+                    logCloudLiveAttempt(attempt, CloudLiveOutcome.LIVE_DELIVERED)
+                    thread { handleLiveTranscriptionResult(usableLiveText, attempt.token, attempt.lease, attempt.config) }
+                    return
+                }
+            }
+            LiveDisconnectPolicy.ASK_ME -> {
+                if (usableLiveText != null && listener.supportsInteractiveLiveReconciliation()) {
+                    val rec = PendingLiveReconciliation(
+                        token = attempt.token,
+                        lease = attempt.lease,
+                        liveText = usableLiveText,
+                    )
+                    pendingReconciliation = rec
+                    armReconciliationTimeout(rec)
+                    listener.onLiveReconciliationReady(usableLiveText, batchPending = true)
+                }
+            }
+            LiveDisconnectPolicy.AUTO_REPLACE_WITH_BATCH -> Unit
         }
         logCloudLiveAttempt(attempt, outcome)
         onCloudLiveBatchFallback()
@@ -1729,6 +2077,8 @@ class DictationRuntime internal constructor(
         attempt.finalWait = null
         attempt.sessionCutoff?.let(handler::removeCallbacks)
         attempt.sessionCutoff = null
+        attempt.sessionCutoffWarning?.let(handler::removeCallbacks)
+        attempt.sessionCutoffWarning = null
         attempt.session?.let { session -> runCatching { session.cancel(); session.close() } }
     }
 
@@ -2056,6 +2406,10 @@ class DictationRuntime internal constructor(
                     file.delete()
                     handler.post {
                         if (!guard.isCurrent(token)) return@post // cancelled or watchdog already reset the UI
+                        if (recoverReconciliationWithLiveText(token, lease)) {
+                            toast("Batch failed \u2014 kept live text")
+                            return@post
+                        }
                         if (e is LocalTranscriptionTimeoutException) {
                             toast(e.message ?: "Local transcription timed out")
                             reportFailure(BackgroundFailure.TIMED_OUT)
@@ -2776,6 +3130,7 @@ class DictationRuntime internal constructor(
                         paidFallbackGroup = paidFallbackGroup,
                         cleanupError = null,
                         feedbackDurationMs = 2000,
+                        liveText = text,
                     )
                 } else {
                     val reason = result.error?.takeIf { it.isNotBlank() } ?: "unknown error"
@@ -2809,9 +3164,13 @@ class DictationRuntime internal constructor(
             // H2 (#192): a no-speech dictation never reaches finishInjection -- abandon its
             // timing so a later unrelated injection (e.g. feedback-bubble raw-text retry) can't
             // consume it and write a garbage benchmark line.
-            pipelineTiming.abandon()
             handler.post {
                 if (!guard.isCurrent(token)) return@post
+                if (recoverReconciliationWithLiveText(token, lease)) {
+                    toast("Batch found no speech \u2014 kept live text")
+                    return@post
+                }
+                pipelineTiming.abandon()
                 toast("No speech detected")
                 reportFailure(BackgroundFailure.NO_SPEECH)
                 resetToIdle(lease)
@@ -2827,8 +3186,15 @@ class DictationRuntime internal constructor(
             Log.i(TAG, "Transcript is content-free (len=${text.length}); skipping cleanup waterfall")
             handler.post {
                 if (!guard.isCurrent(token)) return@post
-                listener.deliverText(finalizeForDelivery(text), rawText = null, paidFallbackGroup = null, cleanupError = null, feedbackDurationMs = 2000)
-                resetToIdle(lease)
+                deliverBatchResultOrHoldForReconciliation(
+                    token = token,
+                    lease = lease,
+                    text = finalizeForDelivery(text),
+                    rawText = null,
+                    paidFallbackGroup = null,
+                    cleanupError = null,
+                    feedbackDurationMs = 2000,
+                )
             }
             return
         }
@@ -2892,8 +3258,15 @@ class DictationRuntime internal constructor(
             if (cleanupWaterfall.steps.isEmpty()) {
                 handler.post {
                     if (!guard.isCurrent(token)) return@post
-                    listener.deliverText(finalizeForDelivery(text), rawText = null, paidFallbackGroup = null, cleanupError = null, feedbackDurationMs = 2000)
-                    resetToIdle(lease)
+                    deliverBatchResultOrHoldForReconciliation(
+                        token = token,
+                        lease = lease,
+                        text = finalizeForDelivery(text),
+                        rawText = null,
+                        paidFallbackGroup = null,
+                        cleanupError = null,
+                        feedbackDurationMs = 2000,
+                    )
                 }
                 return
             }
@@ -2911,8 +3284,15 @@ class DictationRuntime internal constructor(
                 handler.post {
                     if (!guard.isCurrent(token)) return@post
                     toast("Post-processing needs API key. Using raw text.")
-                    listener.deliverText(finalizeForDelivery(text), rawText = null, paidFallbackGroup = null, cleanupError = null, feedbackDurationMs = 2000)
-                    resetToIdle(lease)
+                    deliverBatchResultOrHoldForReconciliation(
+                        token = token,
+                        lease = lease,
+                        text = finalizeForDelivery(text),
+                        rawText = null,
+                        paidFallbackGroup = null,
+                        cleanupError = null,
+                        feedbackDurationMs = 2000,
+                    )
                 }
                 return
             }
@@ -2986,7 +3366,15 @@ class DictationRuntime internal constructor(
                             // LOCAL step), on the text actually about to be delivered -- never on
                             // rawText, which exists only as the "tap to undo cleanup" raw transcript
                             // and must stay the literal, unexpanded ASR output.
-                            listener.deliverText(finalizeForDelivery(result.text), rawText = text, paidFallbackGroup = paidFallbackGroup, cleanupError = null, feedbackDurationMs = 2000)
+                            deliverBatchResultOrHoldForReconciliation(
+                                token = token,
+                                lease = lease,
+                                text = finalizeForDelivery(result.text),
+                                rawText = text,
+                                paidFallbackGroup = paidFallbackGroup,
+                                cleanupError = null,
+                                feedbackDurationMs = 2000,
+                            )
                         } else {
                             // Log + surface the real failure reason (bad/missing key, HTTP status,
                             // network error, etc.) instead of a generic "cleanup failed" that gives
@@ -3001,9 +3389,16 @@ class DictationRuntime internal constructor(
                             // known, so it can state the truth about the clipboard and keep executor
                             // diagnostics (nested prefixes, provider error bodies) out of a floating
                             // overlay.
-                            listener.deliverText(finalizeForDelivery(text), rawText = null, paidFallbackGroup = null, cleanupError = reason, feedbackDurationMs = 4000)
+                            deliverBatchResultOrHoldForReconciliation(
+                                token = token,
+                                lease = lease,
+                                text = finalizeForDelivery(text),
+                                rawText = null,
+                                paidFallbackGroup = null,
+                                cleanupError = reason,
+                                feedbackDurationMs = 4000,
+                            )
                         }
-                        resetToIdle(lease)
                     }
                 }
             }
@@ -3011,8 +3406,15 @@ class DictationRuntime internal constructor(
         } else {
             handler.post {
                 if (!guard.isCurrent(token)) return@post
-                listener.deliverText(finalizeForDelivery(text), rawText = null, paidFallbackGroup = null, cleanupError = null, feedbackDurationMs = 2000)
-                resetToIdle(lease)
+                deliverBatchResultOrHoldForReconciliation(
+                    token = token,
+                    lease = lease,
+                    text = finalizeForDelivery(text),
+                    rawText = null,
+                    paidFallbackGroup = null,
+                    cleanupError = null,
+                    feedbackDurationMs = 2000,
+                )
             }
         }
     }
@@ -3037,13 +3439,17 @@ class DictationRuntime internal constructor(
     /** Safe to call from any thread; both token and lease bind the reset to its originating session. */
     private fun reset(msg: String, token: Int, expectedLease: DictationSessionLease) {
         if (!guard.isCurrent(token) || sessionLease !== expectedLease) return
-        toast(msg)
-        // H2 (#192): every reset(msg) call site is a terminal error/give-up exit (no audio, chain
-        // exhausted, recording error, ...) after which no finishInjection will run for this
-        // dictation -- abandon its timing so it can't be misattributed to a later injection.
-        pipelineTiming.abandon()
         handler.post {
             if (!guard.isCurrent(token) || sessionLease !== expectedLease) return@post
+            if (recoverReconciliationWithLiveText(token, expectedLease)) {
+                toast("Batch failed \u2014 kept live text")
+                return@post
+            }
+            toast(msg)
+            // H2 (#192): every reset(msg) call site is a terminal error/give-up exit (no audio, chain
+            // exhausted, recording error, ...) after which no finishInjection will run for this
+            // dictation -- abandon its timing so it can't be misattributed to a later injection.
+            pipelineTiming.abandon()
             reportFailure(if (msg == NO_SPEECH_MESSAGE) BackgroundFailure.NO_SPEECH else BackgroundFailure.FAILED)
             resetToIdle(expectedLease)
         }
@@ -3094,6 +3500,8 @@ class DictationRuntime internal constructor(
         prefs().unregisterOnSharedPreferenceChangeListener(batchPolicyPrefsListener)
         cancelIdleUnload()
         cancelRecordingCountdown()
+        cancelReconciliationTimeout()
+        pendingReconciliation = null
         haptics.reset()
         val lease = sessionLease
         if (recordingEngine != null) shutdownLeaseAwaitingReader = lease

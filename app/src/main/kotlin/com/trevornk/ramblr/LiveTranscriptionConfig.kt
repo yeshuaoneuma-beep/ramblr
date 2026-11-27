@@ -10,6 +10,13 @@ enum class LiveTranscriptionMode {
     SMART,
 }
 
+/** Policy applied when a Cloud Live stream disconnects mid-dictation and capture stops. */
+enum class LiveDisconnectPolicy {
+    AUTO_REPLACE_WITH_BATCH,
+    ASK_ME,
+    KEEP_LIVE_ONLY,
+}
+
 /**
  * One post-cleanup cloud slot executed after a Live dictation stops (when Post-Cleanup is ON).
  * Shares the same 3-attempt pool rules ([AttemptBudgetCalculator]) as Batch Cleanup, with a hard
@@ -40,6 +47,8 @@ data class LiveTranscriptionConfig(
     val postCleanupSlots: List<LivePostCleanupSlot> = emptyList(),
     val smartDisconnectAlertEnabled: Boolean = true,
     val smartDisconnectHapticEnabled: Boolean = true,
+    val liveWindowEnabled: Boolean = true,
+    val disconnectPolicy: LiveDisconnectPolicy = LiveDisconnectPolicy.AUTO_REPLACE_WITH_BATCH,
 ) {
     fun effectiveVaultKeyId(): String =
         vaultKeyId?.takeIf { it.isNotBlank() } ?: ProviderCapabilityRegistry.canonicalVaultKeyId(providerId)
@@ -88,6 +97,8 @@ object LiveTranscriptionConfigStore {
         put("postCleanupEnabled", config.postCleanupEnabled)
         put("smartDisconnectAlertEnabled", config.smartDisconnectAlertEnabled)
         put("smartDisconnectHapticEnabled", config.smartDisconnectHapticEnabled)
+        put("liveWindowEnabled", config.liveWindowEnabled)
+        put("disconnectPolicy", config.disconnectPolicy.name)
         val slotsArray = JSONArray()
         config.postCleanupSlots.take(LiveTranscriptionConfig.MAX_LIVE_POST_CLEANUP_SLOTS).forEach { slot ->
             slotsArray.put(JSONObject().apply {
@@ -115,6 +126,13 @@ object LiveTranscriptionConfigStore {
                 LiveTranscriptionMode.valueOf(obj.optString("mode", LiveTranscriptionMode.VERBATIM.name))
             } catch (_: IllegalArgumentException) {
                 LiveTranscriptionMode.VERBATIM
+            }
+            val disconnectPolicy = try {
+                LiveDisconnectPolicy.valueOf(
+                    obj.optString("disconnectPolicy", LiveDisconnectPolicy.AUTO_REPLACE_WITH_BATCH.name)
+                )
+            } catch (_: IllegalArgumentException) {
+                LiveDisconnectPolicy.AUTO_REPLACE_WITH_BATCH
             }
             val rawSlots = mutableListOf<LivePostCleanupSlot>()
             val slotsArray = obj.optJSONArray("postCleanupSlots")
@@ -160,6 +178,8 @@ object LiveTranscriptionConfigStore {
                 postCleanupSlots = slots,
                 smartDisconnectAlertEnabled = obj.optBoolean("smartDisconnectAlertEnabled", true),
                 smartDisconnectHapticEnabled = obj.optBoolean("smartDisconnectHapticEnabled", true),
+                liveWindowEnabled = obj.optBoolean("liveWindowEnabled", true),
+                disconnectPolicy = disconnectPolicy,
             )
         } catch (_: Exception) {
             null

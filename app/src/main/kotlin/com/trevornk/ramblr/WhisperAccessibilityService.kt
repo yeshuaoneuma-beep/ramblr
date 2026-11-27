@@ -150,6 +150,7 @@ private data class PendingInjection(
     val priorNodeText: String?,
     val node: AccessibilityNodeInfo?,
     val historyTimestamp: Long,
+    val liveText: String? = null,
 )
 
 open class WhisperAccessibilityService : AccessibilityService() {
@@ -403,6 +404,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
             cancelInsertFlash()
             liveConnectedUi = false
             liveDisconnectedUi = false
+            resetLiveWindowUi()
             clearRecordingCountdownUi()
             clearStageStatusPill()
             // A still-pending preview (#40) from the previous dictation shouldn't linger silently
@@ -444,13 +446,25 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
 
         override fun onRecordingCountdown(remainingMs: Long) {
-            updateRecordingCountdownUi(remainingMs)
+            if (liveWindowState.sessionActive && isLiveWindowEnabledNow()) {
+                handleLiveWindowRecordingCountdown(remainingMs)
+            } else {
+                updateRecordingCountdownUi(remainingMs)
+            }
+        }
+
+        override fun onCloudLiveCutoffWarning(remainingMs: Long) {
+            handleLiveWindowCutoffWarning(remainingMs)
         }
 
         override fun onEnterTranscribingUi() {
             cancelPendingRingHoldRunnables()
             cancelInsertFlash()
             clearRecordingCountdownUi()
+            stopLiveWindowTimer()
+            if (!liveWindowState.isReconciliationActive()) {
+                hideLiveWindowTemporarily()
+            }
             // #284: remember where this dictation was started, now, while the user is still there.
             captureDictationTarget()
             handler.post {
@@ -478,13 +492,19 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
 
         override fun onStageStatus(statusText: String) {
-            showStageStatusPill(statusText)
+            val allowed = feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff())
+            if (liveWindowState.alertRoute(allowed) == LiveWindowAlertRoute.INLINE_LIVE_WINDOW) {
+                showLiveWindowInlineStatus(statusText)
+            } else {
+                showStageStatusPill(statusText)
+            }
         }
 
         override fun onIdleUi() {
             cancelPendingRingHoldRunnables()
             clearRecordingCountdownUi()
             clearStageStatusPill()
+            resetLiveWindowUi()
             clearDictationTarget()
             liveConnectedUi = false
             liveDisconnectedUi = false
@@ -518,6 +538,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         override fun onCloudLiveConnected() {
             liveConnectedUi = true
             liveDisconnectedUi = false
+            startLiveWindowSessionIfEnabled()
             handler.post {
                 refreshBubbleHaloMode()
                 updateRecordingCapsuleLiveBadge()
@@ -549,20 +570,24 @@ open class WhisperAccessibilityService : AccessibilityService() {
             maybeInjectPartial(text)
         }
 
-        // #245: route the Gemini Cloud Live interim through the exact same throttled,
-        // node-tracked direct-injection path local streaming preview already uses (#29),
-        // instead of leaving DictationRuntime's default no-op. This reuses -- rather than
-        // reimplements -- the field-verified safety properties that path already has: the
-        // recording-state guard, the shared streamingSession span tracking, and the
-        // onStreamingTeardown()/pendingStreamingHandoff reconciliation that resolves a
-        // dropped or superseded partial span cleanly instead of leaving stray text behind
-        // (the exact risk #245 flagged for naive interim injection). Preview-before-inject
-        // is honored because maybeInjectPartial() itself branches on that toggle first.
+        // #245 / Phase 3B.2: when the floating Live Transcript Window is enabled and attached,
+        // route Cloud Live interims exclusively into the Live Window (never writing partials into
+        // the target app's EditText, eliminating partial/Batch duplication and rich-text flicker).
+        // When liveWindowEnabled == false, preserve the legacy EditText/bubble partial path unchanged.
         override fun onCloudLiveInterim(text: String) {
             onCloudLiveInterim(text, bufferOnly = false)
         }
 
         override fun onCloudLiveInterim(text: String, bufferOnly: Boolean) {
+            if (isLiveWindowEnabledNow() && overlayView != null) {
+                if (!runtime.isRecording()) return
+                if (text.isBlank()) return
+                if (!PasswordFieldGuard.allowsPartialWrite(focusedInputIsPassword())) return
+                if (ensureLiveWindowAttached()) {
+                    onLiveWindowInterim(text)
+                    return
+                }
+            }
             // Gemini's interim is already cased and punctuated: display it as received. Only the
             // on-device model's raw ALL-CAPS partials go through smartCapitalize (which would
             // lowercase "I", names and acronyms here). When post-cleanup is active (bufferOnly=true),
@@ -580,10 +605,22 @@ open class WhisperAccessibilityService : AccessibilityService() {
             streamingSession = null
             liveConnectedUi = false
             liveDisconnectedUi = true
+            onLiveWindowDisconnected(event)
             handler.post {
                 refreshBubbleHaloMode()
                 updateRecordingCapsuleLiveBadge()
             }
+        }
+
+        override fun supportsInteractiveLiveReconciliation(): Boolean =
+            isLiveWindowEnabledNow() && (liveWindowView != null || ensureLiveWindowAttached()) && deliveryTargetIsCurrent()
+
+        override fun onLiveReconciliationReady(liveText: String, batchPending: Boolean) {
+            showLiveWindowReconciliation(liveText, batchPending)
+        }
+
+        override fun onLiveReconciliationBatchReady(liveText: String, batchText: String) {
+            updateLiveWindowReconciliationBatchReady(liveText, batchText)
         }
 
         override fun deliverText(
@@ -593,7 +630,19 @@ open class WhisperAccessibilityService : AccessibilityService() {
             cleanupError: String?,
             feedbackDurationMs: Long,
         ) {
+            deliverText(text, rawText, paidFallbackGroup, cleanupError, feedbackDurationMs, liveText = null)
+        }
+
+        override fun deliverText(
+            text: String,
+            rawText: String?,
+            paidFallbackGroup: CleanupStepGroup?,
+            cleanupError: String?,
+            feedbackDurationMs: Long,
+            liveText: String?,
+        ) {
             clearStageStatusPill()
+            resetLiveWindowUi()
             // A password field is never a destination, and nothing about the dictation is kept.
             if (resultTargetsPasswordField(dictationTarget)) {
                 discardPasswordFieldResult()
@@ -608,7 +657,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
             // rawText is non-null exactly when cleanup ran and succeeded -- the one branch that
             // routed through preview-before-inject (#40) before the extraction.
             if (rawText != null && PreviewBeforeInjectToggle.isEnabled(this@WhisperAccessibilityService)) {
-                beginPreview(rawText = rawText, candidateText = text, paidFallbackGroup = paidFallbackGroup)
+                beginPreview(
+                    rawText = rawText,
+                    candidateText = text,
+                    paidFallbackGroup = paidFallbackGroup,
+                    liveText = liveText,
+                )
             } else {
                 injectText(
                     text,
@@ -616,6 +670,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     feedbackDurationMs = feedbackDurationMs,
                     paidFallbackGroup = paidFallbackGroup,
                     cleanupError = cleanupError,
+                    liveText = liveText,
                 )
             }
         }
@@ -945,7 +1000,29 @@ open class WhisperAccessibilityService : AccessibilityService() {
     private var countdownNotificationPosted = false
     internal var feedbackContainer: LinearLayout? = null
     private var feedbackView: TextView? = null
+    internal var feedbackUseLiveButton: TextView? = null
+    internal var feedbackUseRawButton: TextView? = null
     internal var feedbackCloseButton: TextView? = null
+    internal val liveWindowState = LiveWindowStateMachine()
+    internal var liveWindowView: LinearLayout? = null
+    internal var liveWindowParams: WindowManager.LayoutParams? = null
+    private var liveWindowStatusDot: View? = null
+    internal var liveWindowHeaderText: TextView? = null
+    internal var liveWindowPeekReopenButton: TextView? = null
+    internal var liveWindowCloseButton: TextView? = null
+    internal var liveWindowBodyScroll: BoundedScrollView? = null
+    internal var liveTranscriptTextView: TextView? = null
+    internal var liveWindowFooter: LinearLayout? = null
+    internal var liveWindowInlineStatusText: TextView? = null
+    private var liveWindowActionsRow: LinearLayout? = null
+    internal var liveWindowPrimaryActionButton: TextView? = null
+    internal var liveWindowSecondaryActionButton: TextView? = null
+    internal var liveReopenChipView: TextView? = null
+    internal var liveReopenChipParams: WindowManager.LayoutParams? = null
+    private var liveWindowStartedAtMs: Long = 0L
+    private var liveWindowTimerRunnable: Runnable? = null
+    private var liveWindowScrollRunnable: Runnable? = null
+    private var liveWindowTemporarilyHidden: Boolean = false
     private var lastFeedbackIsFallback = false
     private var lastFeedbackDismissible = false
     private var lastUiModeNightMask: Int = 0
@@ -1003,6 +1080,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
         countdownPillShowing = false
         stageStatusPillShowing = false
         lastFeedbackDismissible = false
+        feedbackUseLiveButton?.visibility = View.GONE
+        feedbackUseRawButton?.visibility = View.GONE
         feedbackCloseButton?.visibility = View.GONE
         setFeedbackTouchable(false)
         // alpha only, never GONE (BLASTSyncEngine invariant: window root stays View.VISIBLE permanently).
@@ -1433,6 +1512,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         collapseRecordingCapsuleIfExpanded()
         clearRecordingCountdownUi()
         clearStageStatusPill()
+        resetLiveWindowUi()
         clearDiscardHoldFeedback(restoreRecordingUi = false)
         bubbleHaloRing?.cancelAnimations()
         bubbleSoundwave?.stop()
@@ -1675,6 +1755,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     wm.updateViewLayout(fc, lp)
                 }
             }
+            reanchorLiveWindowOverlays(params)
             // Persist the newly-settled drag position (#101) so it survives a later
             // service recreation instead of only living in this in-memory params
             // object. Deliberately NOT called from ACTION_MOVE (would fire on every
@@ -1776,6 +1857,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                                 wm.updateViewLayout(fc, lp)
                             }
                         }
+                        reanchorLiveWindowOverlays(params)
                     }
                     true
                 }
@@ -1851,11 +1933,39 @@ open class WhisperAccessibilityService : AccessibilityService() {
         val feedback = TextView(this).apply {
             textSize = 13f
             setTextColor(overlayPopupPrimaryText())
-            setPadding((12 * dp).toInt(), (8 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
+            setPadding((12 * dp).toInt(), (8 * dp).toInt(), (10 * dp).toInt(), (8 * dp).toInt())
             alpha = 0f
             isClickable = true
             setOnClickListener { onFeedbackTapped() }
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        val useLiveBtn = TextView(this).apply {
+            text = "Use live"
+            textSize = 12f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding((10 * dp).toInt(), (5 * dp).toInt(), (10 * dp).toInt(), (5 * dp).toInt())
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            setOnClickListener {
+                UiTapHaptics.tick(this)
+                onFeedbackUseLiveTapped()
+            }
+        }
+        val useRawBtn = TextView(this).apply {
+            text = "Use raw"
+            textSize = 12f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding((10 * dp).toInt(), (5 * dp).toInt(), (10 * dp).toInt(), (5 * dp).toInt())
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            setOnClickListener {
+                UiTapHaptics.tick(this)
+                onFeedbackUseRawTapped()
+            }
         }
         val closeBtn = TextView(this).apply {
             text = "\u2715"
@@ -1867,8 +1977,13 @@ open class WhisperAccessibilityService : AccessibilityService() {
             isClickable = true
             isFocusable = true
             visibility = View.GONE
-            setOnClickListener { onFeedbackDismissTapped() }
+            setOnClickListener {
+                UiTapHaptics.tick(this)
+                onFeedbackDismissTapped()
+            }
         }
+        styleSwapChipButton(useLiveBtn, primary = true)
+        styleSwapChipButton(useRawBtn, primary = false)
         val feedbackHost = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1879,6 +1994,18 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ))
+            addView(useLiveBtn, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                marginEnd = (6 * dp).toInt()
+            })
+            addView(useRawBtn, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                marginEnd = (4 * dp).toInt()
+            })
             addView(closeBtn, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1911,6 +2038,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
             wm.addView(feedbackHost, feedbackParams)
             feedbackContainer = feedbackHost
             feedbackView = feedback
+            feedbackUseLiveButton = useLiveBtn
+            feedbackUseRawButton = useRawBtn
             feedbackCloseButton = closeBtn
             feedbackLayoutParams = feedbackParams
         } catch (e: WindowManager.BadTokenException) {
@@ -2032,6 +2161,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     wm.updateViewLayout(fc, lp)
                 }
             }
+            reanchorLiveWindowOverlays(params)
         }
         // Persist the fold/unfold-settled position (#101) so a subsequent service recreation
         // restores here rather than the hardcoded default -- mirrors the drag-release persist
@@ -2122,9 +2252,13 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // "hidden" overlay is alpha=0 (invisible) + non-touchable (can't be interacted with),
         // preserving the exact same keyguard/hide-icon guarantees as the old GONE state.
         overlayView?.alpha = if (visible) 1f else 0f
+        if (liveWindowState.isReconciliationActive() && (keyguardLocked || !deliveryTargetIsCurrent())) {
+            runtimeInstance?.dismissReconciliation()
+        }
         val activeCountdown = recordingCountdownRemainingMs != null &&
             (runtimeInstance == null || runtimeInstance?.isRecording() == true)
         val keepCountdownPill = activeCountdown &&
+            !(liveWindowState.sessionActive && isLiveWindowEnabledNow()) &&
             RecordingCountdown.accessibilitySurface(keyguardLocked, screenOff) == RecordingCountdownSurface.OVERLAY_PILL
         val activeStageStatus = activeStageStatusText?.takeIf {
             runtimeInstance?.currentState() == RecordingStateMachine.State.TRANSCRIBING
@@ -2139,6 +2273,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
         } else if (!keepCountdownPill && !keepStageStatusPill && stageStatusPillShowing) {
             clearStageStatusPillNow(clearActiveText = false)
         }
+        syncFeedbackWindowAlpha(screenOff)
+        renderLiveWindowUi(keyguardLocked = keyguardLocked, screenOff = screenOff)
         reconcileRecordingCountdownSurface(keyguardLocked, screenOff)
         if (keepStageStatusPill && !stageStatusPillShowing && activeStageStatus != null) {
             showStageStatusPill(activeStageStatus)
@@ -2357,6 +2493,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     wm.updateViewLayout(fc, lp)
                 }
             }
+            reanchorLiveWindowOverlays(params)
             return
         }
 
@@ -2465,6 +2602,10 @@ open class WhisperAccessibilityService : AccessibilityService() {
         cancelPendingRingHoldRunnables()
         cancelInsertFlash()
         stopCapsuleTimer()
+        stopLiveWindowTimer()
+        cancelLiveWindowScroll()
+        liveWindowState.onReset()
+        liveWindowTemporarilyHidden = false
         capsuleExpanded = false
         discardHoldAnimator?.cancel()
         discardHoldAnimator = null
@@ -2494,8 +2635,39 @@ open class WhisperAccessibilityService : AccessibilityService() {
             }
             feedbackContainer = null
         }
+        liveWindowView?.let {
+            try {
+                wm.removeView(it)
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "Live window already detached", e)
+            }
+            liveWindowView = null
+        }
+        liveReopenChipView?.let {
+            try {
+                wm.removeView(it)
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "Live reopen chip already detached", e)
+            }
+            liveReopenChipView = null
+        }
         feedbackView = null
+        feedbackUseLiveButton = null
+        feedbackUseRawButton = null
         feedbackCloseButton = null
+        liveWindowParams = null
+        liveWindowStatusDot = null
+        liveWindowHeaderText = null
+        liveWindowPeekReopenButton = null
+        liveWindowCloseButton = null
+        liveWindowBodyScroll = null
+        liveTranscriptTextView = null
+        liveWindowFooter = null
+        liveWindowInlineStatusText = null
+        liveWindowActionsRow = null
+        liveWindowPrimaryActionButton = null
+        liveWindowSecondaryActionButton = null
+        liveReopenChipParams = null
         button = null
         spinner = null
         bubbleSoundwave = null
@@ -2613,10 +2785,780 @@ open class WhisperAccessibilityService : AccessibilityService() {
         feedbackContainer?.background = themedFeedbackPill(lastFeedbackIsFallback)
         feedbackView?.setTextColor(if (lastFeedbackIsFallback) 0xFFFFFFFF.toInt() else overlayPopupPrimaryText())
         feedbackCloseButton?.setTextColor(if (lastFeedbackIsFallback) 0xFFFFFFFF.toInt() else overlayPopupSecondaryText())
+        feedbackUseLiveButton?.let { styleSwapChipButton(it, primary = true) }
+        feedbackUseRawButton?.let { styleSwapChipButton(it, primary = false) }
+        styleLiveWindowChrome()
         styleRecordingCapsuleChrome()
         if (styleMenuView != null) {
             val builder = if (styleMenuIsHideConfirm) ::buildHideIconConfirmMenu else ::buildStyleMenuContent
             showStyleMenu(builder)
+        }
+    }
+
+    // --- Phase 3B.2: Floating Live Transcript Window, Countdown-Only Peek & Swap Chips ---
+
+    private fun isLiveWindowEnabledNow(): Boolean = LiveTranscriptionConfigStore.load(this).liveWindowEnabled
+
+    /**
+     * Lazily attaches the floating Live Transcript Window & reopen chip on first Cloud Live use so
+     * Batch-only users never carry two idle WindowManager surfaces, while preserving the permanent
+     * `View.VISIBLE` + `alpha = 0f` + `FLAG_NOT_TOUCHABLE` BLASTSyncEngine invariant once attached.
+     */
+    private fun ensureLiveWindowAttached(): Boolean {
+        if (liveWindowView != null && liveReopenChipView != null) return true
+        val bubbleParams = layoutParams ?: return false
+        if (overlayView == null) return false
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        val liveWindow = buildLiveWindow()
+        val liveWinWidth = liveWindowWidthPx()
+        val liveWinParams = WindowManager.LayoutParams(
+            liveWinWidth,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+        }
+        positionLiveWindow(liveWinParams, bubbleParams, liveWinWidth, liveWindowHeight = 0)
+
+        val reopenChip = buildLiveReopenChip()
+        val reopenParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+        }
+        positionLiveReopenChip(reopenParams, bubbleParams, chipWidth = 0, chipHeight = 0)
+
+        return try {
+            wm.addView(liveWindow, liveWinParams)
+            liveWindowView = liveWindow
+            liveWindowParams = liveWinParams
+            wm.addView(reopenChip, reopenParams)
+            liveReopenChipView = reopenChip
+            liveReopenChipParams = reopenParams
+            true
+        } catch (e: WindowManager.BadTokenException) {
+            Log.e(TAG, "Could not attach live transcript window", e)
+            detachLiveWindowOnly()
+            false
+        } catch (e: IllegalStateException) {
+            Log.e(TAG, "Could not attach live transcript window", e)
+            detachLiveWindowOnly()
+            false
+        }
+    }
+
+    private fun detachLiveWindowOnly() {
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        liveWindowView?.let {
+            try { wm.removeView(it) } catch (_: IllegalArgumentException) {}
+            liveWindowView = null
+        }
+        liveReopenChipView?.let {
+            try { wm.removeView(it) } catch (_: IllegalArgumentException) {}
+            liveReopenChipView = null
+        }
+        liveWindowParams = null
+        liveReopenChipParams = null
+    }
+
+    private fun liveWindowWidthPx(): Int {
+        val margin = (MARGIN_DP * dp).toInt()
+        val avail = (screenW - 2 * margin).coerceAtLeast((200 * dp).toInt())
+        return minOf((340 * dp).toInt(), avail)
+    }
+
+    private fun liveWindowBodyMaxHeightPx(): Int =
+        minOf((180 * dp).toInt(), (screenH * 0.28f).toInt().coerceAtLeast((80 * dp).toInt()))
+
+    private fun styleSwapChipButton(view: TextView, primary: Boolean) {
+        view.setTextColor(if (primary) 0xFFFFFFFF.toInt() else overlayPopupPrimaryText())
+        view.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 10 * dp
+            if (primary) {
+                setColor(COLOR_GLYPH_DEFAULT)
+            } else {
+                setColor(if (isDarkMode()) 0xFF22222A.toInt() else 0xFFF3F4F6.toInt())
+                setStroke((1 * dp).toInt().coerceAtLeast(1), overlayPopupBorder())
+            }
+        }
+    }
+
+    private fun buildLiveWindow(): LinearLayout {
+        val statusDot = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(BubbleHaloRingView.COLOR_EMERALD)
+            }
+            layoutParams = LinearLayout.LayoutParams((8 * dp).toInt(), (8 * dp).toInt()).apply {
+                marginEnd = (8 * dp).toInt()
+            }
+        }
+        val headerText = TextView(this).apply {
+            text = "LIVE \u00b7 0:00"
+            textSize = 12f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            fontFeatureSettings = "tnum"
+            setTextColor(overlayPopupPrimaryText())
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val peekReopenBtn = TextView(this).apply {
+            text = "Show live"
+            textSize = 12f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding((10 * dp).toInt(), (5 * dp).toInt(), (10 * dp).toInt(), (5 * dp).toInt())
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                marginEnd = (4 * dp).toInt()
+            }
+            setOnClickListener {
+                UiTapHaptics.tick(this)
+                onLiveWindowReopenTapped()
+            }
+        }
+        val closeBtn = TextView(this).apply {
+            text = "\u2715"
+            textSize = 14f
+            contentDescription = "Collapse live window"
+            gravity = Gravity.CENTER
+            setTextColor(overlayPopupSecondaryText())
+            isClickable = true
+            isFocusable = true
+            layoutParams = LinearLayout.LayoutParams((36 * dp).toInt(), (36 * dp).toInt())
+            setOnClickListener {
+                UiTapHaptics.tick(this)
+                onLiveWindowCloseTapped()
+            }
+        }
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((12 * dp).toInt(), (6 * dp).toInt(), (6 * dp).toInt(), (6 * dp).toInt())
+            addView(statusDot)
+            addView(headerText)
+            addView(peekReopenBtn)
+            addView(closeBtn)
+        }
+
+        val transcriptView = TextView(this).apply {
+            text = "Listening\u2026"
+            textSize = 14f
+            setLineSpacing(2 * dp, 1f)
+            setTextColor(overlayPopupSecondaryText())
+            setPadding((12 * dp).toInt(), (4 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
+        }
+        val bodyScroll = BoundedScrollView(
+            this,
+            maxWidthPx = liveWindowWidthPx(),
+            maxHeightPx = liveWindowBodyMaxHeightPx(),
+        ).apply {
+            isVerticalScrollBarEnabled = true
+            addView(
+                transcriptView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+
+        val inlineStatus = TextView(this).apply {
+            textSize = 12f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            setTextColor(BubbleHaloRingView.COLOR_AMBER)
+            setPadding((12 * dp).toInt(), (4 * dp).toInt(), (12 * dp).toInt(), (4 * dp).toInt())
+            visibility = View.GONE
+        }
+        val primaryAction = TextView(this).apply {
+            textSize = 12f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding((12 * dp).toInt(), (6 * dp).toInt(), (12 * dp).toInt(), (6 * dp).toInt())
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                marginEnd = (8 * dp).toInt()
+            }
+            setOnClickListener {
+                UiTapHaptics.tick(this)
+                onLiveWindowPrimaryActionTapped()
+            }
+        }
+        val secondaryAction = TextView(this).apply {
+            textSize = 12f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding((12 * dp).toInt(), (6 * dp).toInt(), (12 * dp).toInt(), (6 * dp).toInt())
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            setOnClickListener {
+                UiTapHaptics.tick(this)
+                onLiveWindowSecondaryActionTapped()
+            }
+        }
+        val actionsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding((12 * dp).toInt(), (4 * dp).toInt(), (12 * dp).toInt(), (10 * dp).toInt())
+            addView(primaryAction)
+            addView(secondaryAction)
+        }
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(inlineStatus)
+            addView(actionsRow)
+        }
+
+        liveWindowStatusDot = statusDot
+        liveWindowHeaderText = headerText
+        liveWindowPeekReopenButton = peekReopenBtn
+        liveWindowCloseButton = closeBtn
+        liveWindowBodyScroll = bodyScroll
+        liveTranscriptTextView = transcriptView
+        liveWindowFooter = footer
+        liveWindowInlineStatusText = inlineStatus
+        liveWindowActionsRow = actionsRow
+        liveWindowPrimaryActionButton = primaryAction
+        liveWindowSecondaryActionButton = secondaryAction
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            alpha = 0f
+            // Permanently VISIBLE (BLASTSyncEngine invariant; hidden via alpha=0f + FLAG_NOT_TOUCHABLE).
+            visibility = View.VISIBLE
+            addView(headerRow)
+            addView(bodyScroll)
+            addView(footer)
+        }.also {
+            liveWindowView = it
+            styleLiveWindowChrome()
+        }
+    }
+
+    private fun buildLiveReopenChip(): TextView = TextView(this).apply {
+        text = "Show live"
+        contentDescription = "Show live transcript window"
+        textSize = 12f
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+        gravity = Gravity.CENTER
+        setPadding((12 * dp).toInt(), (7 * dp).toInt(), (12 * dp).toInt(), (7 * dp).toInt())
+        alpha = 0f
+        // Permanently VISIBLE (BLASTSyncEngine invariant; hidden via alpha=0f + FLAG_NOT_TOUCHABLE).
+        visibility = View.VISIBLE
+        isClickable = true
+        isFocusable = true
+        setOnClickListener {
+            UiTapHaptics.tick(this)
+            onLiveWindowReopenTapped()
+        }
+    }.also {
+        liveReopenChipView = it
+        styleLiveWindowChrome()
+    }
+
+    private fun styleLiveWindowChrome() {
+        liveWindowView?.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 16 * dp
+            setColor(overlayPopupBg())
+            setStroke((1 * dp).toInt().coerceAtLeast(1), overlayPopupBorder())
+        }
+        liveWindowHeaderText?.setTextColor(overlayPopupPrimaryText())
+        liveWindowCloseButton?.setTextColor(overlayPopupSecondaryText())
+        liveWindowPeekReopenButton?.let { styleSwapChipButton(it, primary = true) }
+        liveTranscriptTextView?.setTextColor(
+            if (liveWindowState.transcript.isBlank()) overlayPopupSecondaryText() else overlayPopupPrimaryText()
+        )
+        liveReopenChipView?.apply {
+            setTextColor(overlayPopupPrimaryText())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 16 * dp
+                setColor(overlayPopupBg())
+                setStroke((1 * dp).toInt().coerceAtLeast(1), COLOR_GLYPH_DEFAULT)
+            }
+        }
+        styleLiveWindowActionButtons()
+    }
+
+    private fun styleLiveWindowActionButtons() {
+        val primaryBtn = liveWindowPrimaryActionButton ?: return
+        val secondaryBtn = liveWindowSecondaryActionButton ?: return
+        when (liveWindowState.phase) {
+            LiveWindowPhase.LIVE_STREAMING -> {
+                primaryBtn.visibility = View.GONE
+                secondaryBtn.visibility = View.VISIBLE
+                secondaryBtn.text = "Discard"
+                styleSwapChipButton(secondaryBtn, primary = false)
+            }
+            LiveWindowPhase.LIVE_DISCONNECTED_RECORDING -> {
+                if (liveWindowState.transcript.isNotBlank()) {
+                    primaryBtn.visibility = View.VISIBLE
+                    primaryBtn.text = "Use live"
+                    styleSwapChipButton(primaryBtn, primary = true)
+                } else {
+                    primaryBtn.visibility = View.GONE
+                }
+                secondaryBtn.visibility = View.VISIBLE
+                secondaryBtn.text = "Discard"
+                styleSwapChipButton(secondaryBtn, primary = false)
+            }
+            LiveWindowPhase.RECONCILIATION_WAITING_BATCH -> {
+                primaryBtn.visibility = View.VISIBLE
+                primaryBtn.text = "Keep Live"
+                styleSwapChipButton(primaryBtn, primary = false)
+                secondaryBtn.visibility = View.VISIBLE
+                secondaryBtn.text = if (liveWindowState.queuedUseBatch) "Queued Batch\u2026" else "Preparing Batch\u2026"
+                styleSwapChipButton(secondaryBtn, primary = false)
+            }
+            LiveWindowPhase.RECONCILIATION_BATCH_READY -> {
+                primaryBtn.visibility = View.VISIBLE
+                primaryBtn.text = "Keep Live"
+                styleSwapChipButton(primaryBtn, primary = false)
+                secondaryBtn.visibility = View.VISIBLE
+                secondaryBtn.text = "Use Batch"
+                styleSwapChipButton(secondaryBtn, primary = true)
+            }
+            LiveWindowPhase.INACTIVE -> {
+                primaryBtn.visibility = View.GONE
+                secondaryBtn.visibility = View.GONE
+            }
+        }
+    }
+
+    private fun liveWindowElapsedSec(): Int {
+        if (liveWindowStartedAtMs <= 0L) return 0
+        return ((android.os.SystemClock.elapsedRealtime() - liveWindowStartedAtMs) / 1000L).toInt().coerceAtLeast(0)
+    }
+
+    private fun startLiveWindowSessionIfEnabled() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { startLiveWindowSessionIfEnabled() }
+            return
+        }
+        val enabled = isLiveWindowEnabledNow() && ensureLiveWindowAttached()
+        liveWindowTemporarilyHidden = false
+        liveWindowStartedAtMs = android.os.SystemClock.elapsedRealtime()
+        liveWindowState.onLiveStarted(enabled, feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()))
+        if (enabled) {
+            startLiveWindowTimer()
+        } else {
+            stopLiveWindowTimer()
+        }
+        renderLiveWindowUi()
+    }
+
+    private fun onLiveWindowInterim(text: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { onLiveWindowInterim(text) }
+            return
+        }
+        if (!liveWindowState.sessionActive && isLiveWindowEnabledNow() && ensureLiveWindowAttached()) {
+            liveWindowTemporarilyHidden = false
+            liveWindowStartedAtMs = android.os.SystemClock.elapsedRealtime()
+            liveWindowState.onLiveStarted(true, feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()))
+            startLiveWindowTimer()
+        }
+        liveWindowState.onInterim(text)
+        renderLiveWindowUi()
+        if (liveWindowState.showsTranscriptBody(feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()))) {
+            scheduleLiveWindowScrollToBottom()
+        }
+    }
+
+    private fun onLiveWindowDisconnected(event: LiveDisconnectEvent) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { onLiveWindowDisconnected(event) }
+            return
+        }
+        if (!liveWindowState.sessionActive) return
+        val isLimit = event.reason == CloudLiveFailureReason.SESSION_LIMIT.name.lowercase()
+        val banner = if (isLimit) {
+            "Live limit reached (9:00) \u00b7 recording continues"
+        } else {
+            "Live paused \u00b7 recording continues"
+        }
+        liveWindowState.onLiveDisconnected(
+            isSessionLimit = isLimit,
+            inlineBanner = banner,
+            overlayAllowed = feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()),
+        )
+        renderLiveWindowUi()
+    }
+
+    private fun handleLiveWindowRecordingCountdown(remainingMs: Long) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { handleLiveWindowRecordingCountdown(remainingMs) }
+            return
+        }
+        if (runtimeInstance != null && runtimeInstance?.isRecording() != true) {
+            clearRecordingCountdownUi()
+            return
+        }
+        recordingCountdownRemainingMs = remainingMs
+        val keyguardLocked = isKeyguardLocked()
+        val screenOff = isScreenOff()
+        val allowed = feedbackBubbleAllowed(keyguardLocked, screenOff)
+        liveWindowState.onRecordingCountdown(remainingMs, allowed)
+        if (!allowed) {
+            renderRecordingCountdownUi(remainingMs, keyguardLocked, screenOff)
+        } else if (countdownNotificationPosted) {
+            countdownNotificationPosted = false
+            BackgroundDictationNotifications.cancelRecordingCountdown(this)
+        }
+        renderLiveWindowUi(keyguardLocked = keyguardLocked, screenOff = screenOff)
+    }
+
+    private fun handleLiveWindowCutoffWarning(remainingMs: Long) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { handleLiveWindowCutoffWarning(remainingMs) }
+            return
+        }
+        if (!liveWindowState.sessionActive) return
+        val sec = ((remainingMs.coerceAtLeast(0L) + 999L) / 1000L).toInt().coerceAtLeast(1)
+        val keyguardLocked = isKeyguardLocked()
+        val screenOff = isScreenOff()
+        liveWindowState.onCutoffApproachOrTrigger(sec, feedbackBubbleAllowed(keyguardLocked, screenOff))
+        renderLiveWindowUi(keyguardLocked = keyguardLocked, screenOff = screenOff)
+    }
+
+    private fun showLiveWindowInlineStatus(statusText: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { showLiveWindowInlineStatus(statusText) }
+            return
+        }
+        liveWindowState.onInlineStageStatus(statusText)
+        renderLiveWindowUi()
+    }
+
+    private fun showLiveWindowReconciliation(liveText: String, batchPending: Boolean) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { showLiveWindowReconciliation(liveText, batchPending) }
+            return
+        }
+        stopLiveWindowTimer()
+        liveWindowTemporarilyHidden = false
+        val enabled = isLiveWindowEnabledNow() && ensureLiveWindowAttached()
+        liveWindowState.onReconciliationReady(
+            liveText = liveText,
+            batchPending = batchPending,
+            windowEnabled = enabled,
+            overlayAllowed = feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()),
+        )
+        renderLiveWindowUi()
+    }
+
+    private fun updateLiveWindowReconciliationBatchReady(liveText: String, batchText: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { updateLiveWindowReconciliationBatchReady(liveText, batchText) }
+            return
+        }
+        liveWindowState.onReconciliationBatchReady(liveText, batchText)
+        renderLiveWindowUi()
+    }
+
+    private fun onLiveWindowCloseTapped() {
+        if (liveWindowState.isReconciliationActive()) {
+            runtime.dismissReconciliation()
+            return
+        }
+        liveWindowState.onCollapseTapped(feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()))
+        renderLiveWindowUi()
+    }
+
+    private fun onLiveWindowReopenTapped() {
+        liveWindowState.onReopenTapped(feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()))
+        renderLiveWindowUi()
+        scheduleLiveWindowScrollToBottom()
+    }
+
+    private fun onLiveWindowPrimaryActionTapped() {
+        when (liveWindowState.phase) {
+            LiveWindowPhase.LIVE_DISCONNECTED_RECORDING -> runtime.finishWithCapturedLiveText()
+            LiveWindowPhase.RECONCILIATION_WAITING_BATCH,
+            LiveWindowPhase.RECONCILIATION_BATCH_READY -> runtime.chooseReconciliationKeepLive()
+            else -> Unit
+        }
+    }
+
+    private fun onLiveWindowSecondaryActionTapped() {
+        when (liveWindowState.phase) {
+            LiveWindowPhase.LIVE_STREAMING,
+            LiveWindowPhase.LIVE_DISCONNECTED_RECORDING -> runtime.forceDiscardRecording()
+            LiveWindowPhase.RECONCILIATION_WAITING_BATCH -> {
+                liveWindowState.markQueuedUseBatch()
+                renderLiveWindowUi()
+                runtime.chooseReconciliationUseBatch()
+            }
+            LiveWindowPhase.RECONCILIATION_BATCH_READY -> runtime.chooseReconciliationUseBatch()
+            LiveWindowPhase.INACTIVE -> Unit
+        }
+    }
+
+    private fun hideLiveWindowTemporarily() {
+        liveWindowTemporarilyHidden = true
+        cancelLiveWindowScroll()
+        renderLiveWindowUi()
+    }
+
+    private fun resetLiveWindowUi() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { resetLiveWindowUi() }
+            return
+        }
+        stopLiveWindowTimer()
+        cancelLiveWindowScroll()
+        liveWindowTemporarilyHidden = false
+        liveWindowStartedAtMs = 0L
+        liveWindowState.onReset()
+        renderLiveWindowUi()
+    }
+
+    private fun startLiveWindowTimer() {
+        stopLiveWindowTimer()
+        if (isReducedMotionEnabled()) return
+        val tick = object : Runnable {
+            override fun run() {
+                if (!liveWindowState.sessionActive || liveWindowState.isReconciliationActive()) {
+                    liveWindowTimerRunnable = null
+                    return
+                }
+                liveWindowHeaderText?.text = liveWindowState.formatHeaderStatus(liveWindowElapsedSec())
+                handler.postDelayed(this, 1000L)
+            }
+        }
+        liveWindowTimerRunnable = tick
+        handler.postDelayed(tick, 1000L)
+    }
+
+    private fun stopLiveWindowTimer() {
+        liveWindowTimerRunnable?.let(handler::removeCallbacks)
+        liveWindowTimerRunnable = null
+    }
+
+    private fun scheduleLiveWindowScrollToBottom() {
+        val scroll = liveWindowBodyScroll ?: return
+        cancelLiveWindowScroll()
+        val runnable = Runnable {
+            liveWindowScrollRunnable = null
+            if (liveWindowBodyScroll === scroll && scroll.visibility == View.VISIBLE) {
+                scroll.fullScroll(View.FOCUS_DOWN)
+            }
+        }
+        liveWindowScrollRunnable = runnable
+        scroll.post(runnable)
+    }
+
+    private fun cancelLiveWindowScroll() {
+        liveWindowScrollRunnable?.let { liveWindowBodyScroll?.removeCallbacks(it) }
+        liveWindowScrollRunnable = null
+    }
+
+    private fun positionLiveWindow(
+        winParams: WindowManager.LayoutParams,
+        bubbleParams: WindowManager.LayoutParams,
+        windowWidth: Int,
+        liveWindowHeight: Int,
+    ) {
+        val margin = (MARGIN_DP * dp).toInt()
+        val gap = (RING_AVOID_MARGIN_DP * dp).toInt()
+        val (x, y) = liveWindowPosition(
+            bubbleX = bubbleParams.x,
+            bubbleY = bubbleParams.y,
+            bubbleWidth = bubbleParams.width,
+            bubbleHeight = bubbleParams.height,
+            windowWidth = windowWidth,
+            windowHeight = liveWindowHeight,
+            screenLeft = screenLeft,
+            screenW = screenW,
+            screenH = screenH,
+            margin = margin,
+            gap = gap,
+        )
+        winParams.width = windowWidth
+        winParams.x = x
+        winParams.y = y
+    }
+
+    private fun positionLiveReopenChip(
+        chipParams: WindowManager.LayoutParams,
+        bubbleParams: WindowManager.LayoutParams,
+        chipWidth: Int,
+        chipHeight: Int,
+    ) {
+        val margin = (MARGIN_DP * dp).toInt()
+        val gap = (10 * dp).toInt()
+        val effectiveW = if (chipWidth > 0) chipWidth else (86 * dp).toInt()
+        val effectiveH = if (chipHeight > 0) chipHeight else (34 * dp).toInt()
+        val (x, y) = liveWindowPosition(
+            bubbleX = bubbleParams.x,
+            bubbleY = bubbleParams.y,
+            bubbleWidth = bubbleParams.width,
+            bubbleHeight = bubbleParams.height,
+            windowWidth = effectiveW,
+            windowHeight = effectiveH,
+            screenLeft = screenLeft,
+            screenW = screenW,
+            screenH = screenH,
+            margin = margin,
+            gap = gap,
+        )
+        chipParams.x = x
+        chipParams.y = y
+    }
+
+    private fun reanchorLiveWindowOverlays(bubbleParams: WindowManager.LayoutParams) {
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        liveWindowView?.let { win ->
+            liveWindowParams?.let { lp ->
+                positionLiveWindow(lp, bubbleParams, liveWindowWidthPx(), win.height)
+                try {
+                    wm.updateViewLayout(win, lp)
+                } catch (_: IllegalArgumentException) {
+                }
+            }
+        }
+        liveReopenChipView?.let { chip ->
+            liveReopenChipParams?.let { lp ->
+                positionLiveReopenChip(lp, bubbleParams, chip.width, chip.height)
+                try {
+                    wm.updateViewLayout(chip, lp)
+                } catch (_: IllegalArgumentException) {
+                }
+            }
+        }
+    }
+
+    private fun syncFeedbackWindowAlpha(screenOff: Boolean) {
+        val container = feedbackContainer ?: return
+        val params = feedbackLayoutParams ?: return
+        val targetAlpha = if (screenOff) SCREEN_OFF_WINDOW_ALPHA else 1f
+        if (params.alpha == targetAlpha) return
+        params.alpha = targetAlpha
+        try {
+            (getSystemService(WINDOW_SERVICE) as WindowManager).updateViewLayout(container, params)
+        } catch (_: IllegalArgumentException) {
+        }
+    }
+
+    internal fun renderLiveWindowUi(
+        keyguardLocked: Boolean = isKeyguardLocked(),
+        screenOff: Boolean = isScreenOff(),
+    ) {
+        val win = liveWindowView ?: return
+        val winParams = liveWindowParams ?: return
+        val chip = liveReopenChipView
+        val chipParams = liveReopenChipParams
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        val allowed = feedbackBubbleAllowed(keyguardLocked, screenOff) && !liveWindowTemporarilyHidden
+        val mode = liveWindowState.effectiveMode(allowed)
+        val dotColor = when (liveWindowState.phase) {
+            LiveWindowPhase.LIVE_DISCONNECTED_RECORDING -> BubbleHaloRingView.COLOR_AMBER
+            else -> BubbleHaloRingView.COLOR_EMERALD
+        }
+        (liveWindowStatusDot?.background as? GradientDrawable)?.setColor(dotColor)
+        liveWindowHeaderText?.text = liveWindowState.formatHeaderStatus(liveWindowElapsedSec())
+
+        val showBody = mode == LiveWindowDisplayMode.EXPANDED
+        val showPeek = mode == LiveWindowDisplayMode.COUNTDOWN_PEEK
+        val showWindow = showBody || showPeek
+        val showChip = liveWindowState.showsReopenChip(allowed)
+
+        liveWindowPeekReopenButton?.visibility = if (showPeek) View.VISIBLE else View.GONE
+        liveWindowBodyScroll?.visibility = if (showBody) View.VISIBLE else View.GONE
+        liveWindowFooter?.visibility = if (showBody) View.VISIBLE else View.GONE
+        if (showBody) {
+            val transcript = liveWindowState.transcript
+            liveTranscriptTextView?.text = if (transcript.isBlank()) "Listening\u2026" else transcript
+            liveTranscriptTextView?.setTextColor(
+                if (transcript.isBlank()) overlayPopupSecondaryText() else overlayPopupPrimaryText()
+            )
+            val status = liveWindowState.inlineStatusText
+            if (!status.isNullOrBlank()) {
+                liveWindowInlineStatusText?.text = status
+                liveWindowInlineStatusText?.visibility = View.VISIBLE
+            } else {
+                liveWindowInlineStatusText?.visibility = View.GONE
+            }
+            styleLiveWindowActionButtons()
+        }
+
+        // BLASTSyncEngine invariant: roots stay View.VISIBLE permanently; hide via alpha + FLAG_NOT_TOUCHABLE.
+        win.visibility = View.VISIBLE
+        win.alpha = if (showWindow) 1f else 0f
+        val newWinFlags = if (showWindow) {
+            winParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        } else {
+            winParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
+        val newWinAlpha = if (!showWindow && screenOff) SCREEN_OFF_WINDOW_ALPHA else 1f
+        val bubbleParams = layoutParams
+        val winChanged = newWinFlags != winParams.flags || newWinAlpha != winParams.alpha || showWindow
+        winParams.flags = newWinFlags
+        winParams.alpha = newWinAlpha
+        if (bubbleParams != null && showWindow) {
+            positionLiveWindow(winParams, bubbleParams, liveWindowWidthPx(), win.height)
+        }
+        if (winChanged) {
+            try {
+                wm.updateViewLayout(win, winParams)
+            } catch (_: IllegalArgumentException) {
+            }
+        }
+        if (showWindow && bubbleParams != null) {
+            win.post {
+                if (liveWindowView === win && win.alpha > 0f) {
+                    positionLiveWindow(winParams, bubbleParams, liveWindowWidthPx(), win.height)
+                    try {
+                        wm.updateViewLayout(win, winParams)
+                    } catch (_: IllegalArgumentException) {
+                    }
+                }
+            }
+        }
+
+        if (chip != null && chipParams != null) {
+            chip.visibility = View.VISIBLE
+            chip.alpha = if (showChip) 1f else 0f
+            val newChipFlags = if (showChip) {
+                chipParams.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            } else {
+                chipParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            }
+            val newChipAlpha = if (!showChip && screenOff) SCREEN_OFF_WINDOW_ALPHA else 1f
+            val chipChanged = newChipFlags != chipParams.flags || newChipAlpha != chipParams.alpha || showChip
+            chipParams.flags = newChipFlags
+            chipParams.alpha = newChipAlpha
+            if (bubbleParams != null && showChip) {
+                positionLiveReopenChip(chipParams, bubbleParams, chip.width, chip.height)
+            }
+            if (chipChanged) {
+                try {
+                    wm.updateViewLayout(chip, chipParams)
+                } catch (_: IllegalArgumentException) {
+                }
+            }
         }
     }
 
@@ -2960,6 +3902,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     wm.updateViewLayout(fc, lp)
                 }
             }
+            reanchorLiveWindowOverlays(params)
 
             // #111: the exclusion rect reserved in showOverlay() is sized to the ring at the
             // time it was first shown. A live overlay-size settings change resizes params.width/
@@ -3051,6 +3994,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
         isFallback: Boolean = false,
         targetBounds: Rect? = null,
         dismissible: Boolean = false,
+        showUseLive: Boolean = false,
+        showUseRaw: Boolean = false,
     ) {
         handler.post {
             // #373: never draw (or make touchable) a bubble over the lock screen / AOD. Dropped,
@@ -3067,9 +4012,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
             view.text = text
             view.setTextColor(if (isFallback) 0xFFFFFFFF.toInt() else overlayPopupPrimaryText())
             feedbackCloseButton?.setTextColor(if (isFallback) 0xFFFFFFFF.toInt() else overlayPopupSecondaryText())
+            feedbackUseLiveButton?.visibility = if (showUseLive) View.VISIBLE else View.GONE
+            feedbackUseRawButton?.visibility = if (showUseRaw) View.VISIBLE else View.GONE
             feedbackCloseButton?.visibility = if (dismissible) View.VISIBLE else View.GONE
             container.background = themedFeedbackPill(isFallback)
-            setFeedbackTouchable(touchable || dismissible)
+            setFeedbackTouchable(touchable || dismissible || showUseLive || showUseRaw)
             positionFeedback(feedbackParams, bubbleParams, container.height, targetBounds)
             wm.updateViewLayout(container, feedbackParams)
             container.post {
@@ -3088,8 +4035,9 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 view.alpha = 1f
             } else {
                 container.alpha = 0f
-                view.alpha = 1f
+                view.alpha = 0f
                 container.animate().alpha(1f).setDuration(120).start()
+                view.animate().alpha(1f).setDuration(120).start()
             }
             handler.postDelayed(hideFeedback, durationMs)
             countdownPillShowing = false
@@ -3985,6 +4933,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
         lastFeedbackDismissible = false
         view.text = text
         view.setTextColor(0xFFFFFFFF.toInt())
+        feedbackUseLiveButton?.visibility = View.GONE
+        feedbackUseRawButton?.visibility = View.GONE
         feedbackCloseButton?.visibility = View.GONE
         container.background = themedFeedbackPill(isFallback = true)
         setFeedbackTouchable(false)
@@ -4114,6 +5064,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
         lastFeedbackDismissible = false
         view.text = text
         view.setTextColor(overlayPopupPrimaryText())
+        feedbackUseLiveButton?.visibility = View.GONE
+        feedbackUseRawButton?.visibility = View.GONE
         feedbackCloseButton?.visibility = View.GONE
         container.background = themedFeedbackPill(isFallback = false)
         setFeedbackTouchable(false)
@@ -4137,6 +5089,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
     private fun hideCountdownPillImmediately() {
         countdownPillShowing = false
         lastFeedbackDismissible = false
+        feedbackUseLiveButton?.visibility = View.GONE
+        feedbackUseRawButton?.visibility = View.GONE
         feedbackCloseButton?.visibility = View.GONE
         handler.removeCallbacks(hideFeedback)
         setFeedbackTouchable(false)
@@ -4177,6 +5131,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
         lastFeedbackDismissible = false
         view.text = text
         view.setTextColor(overlayPopupPrimaryText())
+        feedbackUseLiveButton?.visibility = View.GONE
+        feedbackUseRawButton?.visibility = View.GONE
         feedbackCloseButton?.visibility = View.GONE
         container.background = themedFeedbackPill(isFallback = false)
         setFeedbackTouchable(false)
@@ -4211,6 +5167,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
         if (!stageStatusPillShowing) return
         stageStatusPillShowing = false
         lastFeedbackDismissible = false
+        feedbackUseLiveButton?.visibility = View.GONE
+        feedbackUseRawButton?.visibility = View.GONE
         feedbackCloseButton?.visibility = View.GONE
         handler.removeCallbacks(hideFeedback)
         setFeedbackTouchable(false)
@@ -4246,7 +5204,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
      * to [rawText] (see [CleanupPreviewState]). Any earlier still-pending preview is resolved as a
      * timeout first, so a fast second dictation never silently drops the first one.
      */
-    private fun beginPreview(rawText: String, candidateText: String, paidFallbackGroup: CleanupStepGroup? = null) {
+    private fun beginPreview(
+        rawText: String,
+        candidateText: String,
+        paidFallbackGroup: CleanupStepGroup? = null,
+        liveText: String? = null,
+    ) {
         pendingPreview?.let { resolvePreview { p -> p.timeout() } }
 
         // #73: record history the moment a cleanup candidate exists, not only once injection
@@ -4254,7 +5217,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // window where a pending preview was lost with no trace at all. resolvePreview below
         // updates this exact row in place instead of adding a duplicate once the preview resolves.
         val historyTimestamp = recordHistory(rawText, cleanedText = candidateText, paidFallbackGroup = paidFallbackGroup)
-        pendingPreview = CleanupPreviewState(rawText, candidateText, paidFallbackGroup, historyTimestamp)
+        pendingPreview = CleanupPreviewState(rawText, candidateText, paidFallbackGroup, historyTimestamp, liveText)
         // #284: the runtime goes idle right after deliverText() returns and onIdleUi forgets the
         // shared dictationTarget, but this preview resolves up to PREVIEW_TIMEOUT_MS later. Move the
         // target (and ownership of its node) into the preview so the user-left check still has
@@ -4309,6 +5272,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 paidFallbackGroup = preview.paidFallbackGroup,
                 existingHistoryTimestamp = preview.historyTimestamp,
                 deliveryTargetPackage = previewTarget?.packageName,
+                liveText = preview.liveText,
             )
         } else {
             // Discard/timeout falls back to raw text (see CleanupPreviewState) -- update the
@@ -4323,6 +5287,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 feedback = "Cleanup skipped — inserted raw text",
                 existingHistoryTimestamp = preview.historyTimestamp,
                 deliveryTargetPackage = previewTarget?.packageName,
+                liveText = preview.liveText,
             )
         }
     }
@@ -4555,6 +5520,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // (by then onIdleUi has cleared the shared target). Defaults to the live target; null =
         // unknown = fail open. A user-initiated raw retry has no live target, so it is unguarded.
         deliveryTargetPackage: String? = dictationTarget?.packageName,
+        liveText: String? = null,
     ) {
         // Before the vocabulary collector, history, clipboard or any write: a dictation whose
         // field is a password field is dropped whole (see [discardPasswordFieldResult]).
@@ -4655,14 +5621,14 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     )
                     return@Runnable
                 }
-                finishInjection(findInjectionCandidates(), text, rawText, priorClipboard, feedback, feedbackDurationMs, streamingHandoff, historyTimestamp, cleanupError)
+                finishInjection(findInjectionCandidates(), text, rawText, priorClipboard, feedback, feedbackDurationMs, streamingHandoff, historyTimestamp, cleanupError, liveText)
             }
             pendingInjectionRetry = retry
             handler.postDelayed(retry, INJECTION_RETRY_DELAY_MS)
             return
         }
 
-        finishInjection(candidates, text, rawText, priorClipboard, feedback, feedbackDurationMs, streamingHandoff, historyTimestamp, cleanupError)
+        finishInjection(candidates, text, rawText, priorClipboard, feedback, feedbackDurationMs, streamingHandoff, historyTimestamp, cleanupError, liveText)
     }
 
     private fun finishInjection(
@@ -4677,6 +5643,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // #175: threaded through from injectText() rather than resolved there, because the notice
         // depends on the injection method -- which isn't decided until the write attempts below.
         cleanupError: String? = null,
+        liveText: String? = null,
     ) {
         Log.i(TAG, "Injecting text into ${candidates.size} candidate node(s)")
 
@@ -4778,10 +5745,23 @@ open class WhisperAccessibilityService : AccessibilityService() {
             )
         }
 
-        updatePendingInjection(method, injectedText = text, rawText = rawText ?: text, priorClipboard, priorNodeText, injectedNode, historyTimestamp)
+        updatePendingInjection(
+            method,
+            injectedText = text,
+            rawText = rawText ?: text,
+            priorClipboard = priorClipboard,
+            priorNodeText = priorNodeText,
+            node = injectedNode,
+            historyTimestamp = historyTimestamp,
+            liveText = liveText,
+        )
 
-        val retryRawOffered = method != InjectMethod.NONE && rawText != null && rawText != text &&
-            RawTextRetryToggle.isEnabled(this)
+        val useLiveOffered = method != InjectMethod.NONE && liveText != null && liveText != text
+        val rawToggleOn = RawTextRetryToggle.isEnabled(this)
+        val distinctRawOffered = method != InjectMethod.NONE && rawText != null && rawText != text &&
+            rawText != liveText && rawToggleOn
+        val legacyRawOnly = !useLiveOffered && distinctRawOffered
+        val swapOffered = useLiveOffered || distinctRawOffered
         val isFallback = method == InjectMethod.NONE
         fallbackClipboardText = if (isFallback) text else null
 
@@ -4790,29 +5770,21 @@ open class WhisperAccessibilityService : AccessibilityService() {
         val translationNotice = pendingTranslationNotice
         pendingTranslationNotice = null
         val duration = when {
-            retryRawOffered -> UNDO_RETRY_WINDOW_MS
+            swapOffered -> UNDO_RETRY_WINDOW_MS
             isFallback -> FALLBACK_FEEDBACK_DURATION_MS
             // Long enough to read the reason (it is a sentence, not a status word).
             translationNotice != null -> maxOf(feedbackDurationMs, TRANSLATION_NOTICE_DURATION_MS)
             else -> feedbackDurationMs
         }
-        // retryRawOffered replaces the base feedback text entirely rather than appending a suffix
-        // to it (e.g. "Copied to clipboard") -- the cleaned text is already injected at this point,
-        // so "Copied to clipboard" is stale/misleading noise; the only actionable thing left to
-        // tell the user is that tapping swaps in the raw transcript instead (Trevor's request).
-        // #118: only the untouched default clipboard message gets swapped for DIRECT injections;
-        // any explicit feedback the caller passed (raw-text-retry, cleanup-failed, etc.) is
-        // meaningful and must survive as-is.
+        // legacyRawOnly replaces the base feedback text with "Tap to use raw text". When a distinct
+        // `Use live` chip is on offer, keep the concise status text beside the explicit action chips.
         val resolvedFeedback = injectionFeedbackFor(method, feedback)
-        // #175: a cleanup-failure fall-through resolves its own message here, where `method` --
-        // and therefore what the clipboard actually holds -- is finally known.
-        // A translating dictation whose cloud call failed says so ("Translation failed"), not the
-        // generic cleanup wording; one that never ran (no key/consent) carries its own notice.
         val translationFailed = translationRequested && !translationUnavailable
         val baseFeedback = cleanupError?.let { CleanupFailureNotice.messageFor(method, it, translating = translationFailed) }
             ?: resolvedFeedback
         val displayFeedback = when {
-            retryRawOffered -> "Tap to use raw text"
+            legacyRawOnly -> "Tap to use raw text"
+            useLiveOffered -> translationNotice ?: baseFeedback ?: "Inserted"
             isFallback -> (translationNotice ?: baseFeedback)?.let { "$it · tap to copy again" }
             else -> translationNotice ?: baseFeedback
         }
@@ -4828,10 +5800,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
             showFeedback(
                 it,
                 duration,
-                touchable = retryRawOffered || isFallback,
+                touchable = swapOffered || isFallback,
                 isFallback = isFallback,
                 targetBounds = targetBounds,
-                dismissible = retryRawOffered || isFallback,
+                dismissible = swapOffered || isFallback,
+                showUseLive = useLiveOffered,
+                showUseRaw = useLiveOffered && distinctRawOffered,
             )
         }
 
@@ -4884,11 +5858,21 @@ open class WhisperAccessibilityService : AccessibilityService() {
         priorNodeText: String?,
         node: AccessibilityNodeInfo?,
         historyTimestamp: Long,
+        liveText: String? = null,
     ) {
         pendingInjection?.node?.recycle()
         handler.removeCallbacks(expirePendingInjection)
         pendingInjection = if (method != InjectMethod.NONE) {
-            PendingInjection(System.currentTimeMillis(), rawText, injectedText, priorClipboard, priorNodeText, node, historyTimestamp)
+            PendingInjection(
+                System.currentTimeMillis(),
+                rawText,
+                injectedText,
+                priorClipboard,
+                priorNodeText,
+                node,
+                historyTimestamp,
+                liveText,
+            )
         } else {
             node?.recycle()
             null
@@ -4972,6 +5956,28 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun onFeedbackUseLiveTapped() {
+        val pending = pendingInjection ?: return
+        val liveText = pending.liveText ?: return
+        val ageMs = System.currentTimeMillis() - pending.timestamp
+        if (canRetryRaw(ageMs, UNDO_RETRY_WINDOW_MS, liveText, pending.injectedText)) {
+            replaceInjectionWithAlternate(
+                pending = pending,
+                replacementText = liveText,
+                insertedFeedback = "Live text inserted",
+                copiedFeedback = "Live text copied",
+            )
+        }
+    }
+
+    private fun onFeedbackUseRawTapped() {
+        val pending = pendingInjection ?: return
+        val ageMs = System.currentTimeMillis() - pending.timestamp
+        if (canRetryRaw(ageMs, UNDO_RETRY_WINDOW_MS, pending.rawText, pending.injectedText)) {
+            replaceInjectionWithRaw(pending)
+        }
+    }
+
     /**
      * "Tap to use raw text" (#343): swaps the cleaned text out of the field for the raw transcript.
      * Re-injecting through [injectText] would insert at the caret *next to* the cleaned text, so a
@@ -4980,26 +5986,40 @@ open class WhisperAccessibilityService : AccessibilityService() {
      * can't be swapped safely, so the raw text goes to the clipboard instead of being appended.
      */
     private fun replaceInjectionWithRaw(pending: PendingInjection) {
+        replaceInjectionWithAlternate(
+            pending = pending,
+            replacementText = pending.rawText,
+            insertedFeedback = "Raw text inserted",
+            copiedFeedback = "Raw text copied",
+        )
+    }
+
+    private fun replaceInjectionWithAlternate(
+        pending: PendingInjection,
+        replacementText: String,
+        insertedFeedback: String,
+        copiedFeedback: String,
+    ) {
         val node = pending.node
         val prior = pending.priorNodeText
         var replaced = false
         if (node != null && prior != null && isNodeRestorable(node)) {
             val destination = AccessibilityTextDestination(node)
             val current = destination.readText()
-            val swap = swapInjectedForRaw(prior, current, pending.injectedText, pending.rawText)
+            val swap = swapInjectedForRaw(prior, current, pending.injectedText, replacementText)
             if (swap != null) {
                 replaced = DictationTextWriter.replaceConfirmed(destination, current, swap.text, swap.caret)
             }
         }
         if (replaced) {
             // #73: the dictation already has a history row; update it (same timestamp) so it
-            // records the raw text that actually ended up in the field, not a second entry.
-            recordHistory(pending.rawText, cleanedText = null, existingTimestamp = pending.historyTimestamp)
-            showFeedback("Raw text inserted", 2000)
+            // records the text that actually ended up in the field, not a second entry.
+            recordHistory(replacementText, cleanedText = null, existingTimestamp = pending.historyTimestamp)
+            showFeedback(insertedFeedback, 2000)
         } else {
-            // The field still holds the cleaned text, so history is left as it was.
-            ClipboardUtil.copy(this, pending.rawText)
-            showFeedback("Raw text copied", 2000)
+            // The field still holds the prior text, so history is left as it was.
+            ClipboardUtil.copy(this, replacementText)
+            showFeedback(copiedFeedback, 2000)
         }
         clearPendingInjection()
     }

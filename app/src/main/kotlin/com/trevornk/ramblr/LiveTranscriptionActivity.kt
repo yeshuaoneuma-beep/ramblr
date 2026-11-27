@@ -142,6 +142,41 @@ class LiveTranscriptionActivity : BaseSettingsActivity() {
             }
         )
 
+        bodyContainer.addView(subsectionHeader("On live disconnect", indent = 0))
+        val disconnectOptions = listOf(
+            Triple(
+                LiveDisconnectPolicy.AUTO_REPLACE_WITH_BATCH,
+                "Auto-replace with Batch + swap chip",
+                "Finishes with full-audio Batch on Stop and shows a Use live swap chip",
+            ),
+            Triple(
+                LiveDisconnectPolicy.ASK_ME,
+                "Ask me (Keep Live or Use Batch)",
+                "Keeps Live text in the window on Stop so you can choose Keep Live or Use Batch",
+            ),
+            Triple(
+                LiveDisconnectPolicy.KEEP_LIVE_ONLY,
+                "Keep Live text only",
+                "Inserts captured Live text without running Batch (uses Batch only if Live was empty)",
+            ),
+        )
+        disconnectOptions.forEach { (policy, title, subtitle) ->
+            val dot = OneUiComponents.selectionDot(
+                context = this,
+                selected = config.disconnectPolicy == policy,
+                contentDescription = title,
+            )
+            bodyContainer.addView(
+                settingsRow(
+                    title = title,
+                    subtitle = subtitle,
+                    widget = dot,
+                ) {
+                    saveConfig(config.copy(disconnectPolicy = policy))
+                }
+            )
+        }
+
         // 5. Post-Cleanup After Live section
         bodyContainer.addView(sectionHeader("Post-Cleanup After Live"))
         addPostCleanupSection(config)
@@ -297,6 +332,21 @@ class LiveTranscriptionActivity : BaseSettingsActivity() {
             })
             bodyContainer.addView(modeWrap)
         }
+
+        bodyContainer.addView(hairlineDivider(24, 24))
+        val liveWindowSwitch = MaterialSwitch(this).apply {
+            isChecked = config.liveWindowEnabled
+            isClickable = false
+        }
+        bodyContainer.addView(
+            settingsRow(
+                title = "Live transcript window",
+                subtitle = "Shows a floating live text window while speaking. Tap \u2715 to collapse anytime, or reopen from the bubble",
+                widget = liveWindowSwitch,
+            ) {
+                saveConfig(config.copy(liveWindowEnabled = !config.liveWindowEnabled))
+            }
+        )
     }
 
     private fun addPostCleanupSection(config: LiveTranscriptionConfig) {

@@ -199,13 +199,21 @@ class AccessibilityCloudLiveWiringTest {
 
     // --- callback wiring: onCloudLiveInterim must actually route to field/bubble injection ---
 
+    private fun setLiveWindowEnabled(enabled: Boolean) {
+        val current = LiveTranscriptionConfigStore.load(app)
+        LiveTranscriptionConfigStore.save(app, current.copy(liveWindowEnabled = enabled))
+    }
+
+    private fun liveTranscriptText(service: WhisperAccessibilityService): String =
+        service.liveTranscriptTextView?.text?.toString().orEmpty()
+
     /** Drives the real [WhisperAccessibilityService.onCloudLiveInterim] override through the
-     *  preview-before-inject bubble branch of [maybeInjectPartial] -- the one path that needs no
-     *  [AccessibilityNodeInfo] tree, so it can run entirely off-device under Robolectric while
-     *  still exercising production code, not a re-modelled copy of it. */
+     *  preview-before-inject bubble branch of [maybeInjectPartial] when `liveWindowEnabled = false`
+     *  (legacy EditText/bubble path). */
     @Test
     fun `onCloudLiveInterim actually surfaces text through the same path local streaming partials use`() {
         PreviewBeforeInjectToggle.setEnabled(app, true)
+        setLiveWindowEnabled(false)
         val service = build()
         // Attach the overlay windows so feedbackView exists to write into.
         val showOverlay = WhisperAccessibilityService::class.java.getDeclaredMethod("showOverlay")
@@ -259,15 +267,40 @@ class AccessibilityCloudLiveWiringTest {
             .apply { isAccessible = true }.get(service) as android.widget.TextView).text.toString()
 
     /**
-     * Live preview OFF must mean the field is untouched until the final text. Cloud Live interims
-     * used to be written into the focused field regardless of that setting (~95 writes during one
-     * dictation on a Fold, none of which the user asked for). With the setting off and
-     * preview-before-insert off they now surface in the feedback bubble only.
+     * Phase 3B.2: with `liveWindowEnabled = true` (default), Cloud Live interims route exclusively
+     * to the floating Live Transcript Window without duplicating into the feedback pill or EditText.
      */
     @Test
-    fun `with live preview off a cloud-live interim goes to the bubble, never the field`() {
+    fun `with liveWindowEnabled true cloud-live interims route to Live Window without EditText or bubble duplication`() {
+        PreviewBeforeInjectToggle.setEnabled(app, false)
+        prefs().edit().putBoolean("streaming_preview_enabled", true).apply()
+        setLiveWindowEnabled(true)
+        val (service, listener) = recordingServiceWithOverlay()
+
+        listener.onCloudLiveConnected()
+        listener.onCloudLiveInterim("Then I told Wyatt that Q3 is up 12%")
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("Then I told Wyatt that Q3 is up 12%", liveTranscriptText(service))
+        assertEquals(1f, service.liveWindowView!!.alpha, 0.001f)
+        assertFalse(
+            "feedback bubble must not duplicate Live Window text",
+            feedbackText(service).contains("Wyatt", ignoreCase = true),
+        )
+        val streamingSessionField = WhisperAccessibilityService::class.java.getDeclaredField("streamingSession")
+            .apply { isAccessible = true }
+        assertNull("EditText streamingSession must remain untouched when Live Window is active", streamingSessionField.get(service))
+    }
+
+    /**
+     * Live preview OFF with `liveWindowEnabled = false` must keep the field untouched until the
+     * final text and surface interims in the legacy feedback bubble only.
+     */
+    @Test
+    fun `with live preview off and liveWindowEnabled false a cloud-live interim goes to the bubble, never the field`() {
         PreviewBeforeInjectToggle.setEnabled(app, false)
         prefs().edit().putBoolean("streaming_preview_enabled", false).apply()
+        setLiveWindowEnabled(false)
         val (service, listener) = recordingServiceWithOverlay()
 
         listener.onCloudLiveInterim("Hello from cloud live")
@@ -282,6 +315,7 @@ class AccessibilityCloudLiveWiringTest {
     fun `a cloud-live interim keeps the casing Gemini gave it`() {
         PreviewBeforeInjectToggle.setEnabled(app, false)
         prefs().edit().putBoolean("streaming_preview_enabled", false).apply()
+        setLiveWindowEnabled(false)
         val (service, listener) = recordingServiceWithOverlay()
 
         listener.onCloudLiveInterim("Then I told Wyatt that Q3 is up 12%")
@@ -301,9 +335,10 @@ class AccessibilityCloudLiveWiringTest {
     }
 
     @Test
-    fun `with live preview on a cloud-live interim is written to the field, not the bubble`() {
+    fun `with live preview on and liveWindowEnabled false a cloud-live interim is written to the field, not the bubble`() {
         PreviewBeforeInjectToggle.setEnabled(app, false)
         prefs().edit().putBoolean("streaming_preview_enabled", true).apply()
+        setLiveWindowEnabled(false)
         val (service, listener) = recordingServiceWithOverlay()
 
         listener.onCloudLiveInterim("hello from cloud live")
@@ -315,9 +350,10 @@ class AccessibilityCloudLiveWiringTest {
     }
 
     @Test
-    fun `with live preview on a bufferOnly cloud-live interim routes strictly to the bubble`() {
+    fun `with live preview on and liveWindowEnabled false a bufferOnly cloud-live interim routes strictly to the bubble`() {
         PreviewBeforeInjectToggle.setEnabled(app, false)
         prefs().edit().putBoolean("streaming_preview_enabled", true).apply()
+        setLiveWindowEnabled(false)
         val (service, listener) = recordingServiceWithOverlay()
 
         listener.onCloudLiveInterim("buffered for live post-cleanup", bufferOnly = true)
@@ -327,13 +363,15 @@ class AccessibilityCloudLiveWiringTest {
     }
 
     /**
-     * Cloud-only user (no streaming model installed, Cloud Live on): the Live preview setting must
-     * be enableable without a model, and once on the interims reach the field, not the bubble.
+     * Cloud-only user (no streaming model installed, Cloud Live on, `liveWindowEnabled = false`):
+     * the Live preview setting must be enableable without a model, and once on the interims reach
+     * the field, not the bubble.
      */
     @Test
     fun `cloud-only user with live preview on and no streaming model gets interims in the field`() {
         PreviewBeforeInjectToggle.setEnabled(app, false)
         configureFullyEnabledCloudLive()
+        setLiveWindowEnabled(false)
         assertTrue(canEnableLivePreview(
             streamingModelInstalled = ModelDownloader.isInstalled(app, STREAMING_MODEL_CATALOG.first()),
             cloudLiveEnabled = CloudLiveToggle.isEnabled(app),
@@ -367,6 +405,7 @@ class AccessibilityCloudLiveWiringTest {
             .apply { isAccessible = true }
         val feedbackView = feedbackViewField.get(service) as android.widget.TextView
         assertFalse(feedbackView.text.toString().contains("must be dropped", ignoreCase = true))
+        assertFalse(liveTranscriptText(service).contains("must be dropped", ignoreCase = true))
     }
 
     /**

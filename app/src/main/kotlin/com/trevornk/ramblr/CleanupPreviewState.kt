@@ -38,6 +38,7 @@ class CleanupPreviewState(
     val candidateText: String,
     val paidFallbackGroup: CleanupStepGroup? = null,
     val historyTimestamp: Long = 0L,
+    val liveText: String? = null,
 ) {
     var resolution: PreviewResolution? = null
         private set
