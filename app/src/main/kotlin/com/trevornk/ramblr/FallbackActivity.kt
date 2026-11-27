@@ -142,6 +142,8 @@ class FallbackActivity : BaseSettingsActivity() {
         }
 
         val chain = ProviderChainStore.load(this)
+        val liveConfig = LiveTranscriptionConfigStore.load(this)
+        val liveKeyConfigured = CloudLiveWiring.hasConfiguredLiveKey(this, liveConfig, chain)
         val isConfigured: (ProviderChainEntry) -> Boolean = { ProviderCredentialStore.isConfiguredOrLegacy(this, it) }
         routingTranscriptionSub.text = EffectiveRouting.transcription(
             chain = chain,
@@ -150,6 +152,9 @@ class FallbackActivity : BaseSettingsActivity() {
             allowCloudFallback = allowCloud,
             isConfigured = isConfigured,
             localAvailable = localSttReady,
+            liveConfig = liveConfig,
+            liveKeyConfigured = liveKeyConfigured,
+            localModelName = localSttModel?.name,
         )
         routingCleanupSub.text = EffectiveRouting.cleanup(
             chain = chain,

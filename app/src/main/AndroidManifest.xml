@@ -66,7 +66,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode">
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -87,49 +87,49 @@
              place instead, so open dialogs (and anything else transient) survive a fold/unfold
              just like they'd survive backgrounding the app. -->
         <activity android:name=".SetupActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".TranscriptionActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".CleanupActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".StyleManagerActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".LivePreviewActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".CloudProviderActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".ApiKeysVaultActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".LiveTranscriptionActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".DictationModeActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".CleanupStylesActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".FallbackActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".NotificationsActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <!-- Invocation-method chooser (#156): same internal-only + fold/unfold handling as the
              other per-category Settings screens above. -->
         <activity android:name=".InvocationActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <!-- Former Advanced sub-screens, now reached from the main list: same configChanges as the
              other per-category Settings screens above, for the same Pixel Fold fold/unfold reasoning. -->
         <activity android:name=".OverlayAppearanceActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".BehaviorActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <activity android:name=".DataLogsActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <!-- Snippets manager (#248): same internal-only + fold/unfold handling as every other
              per-category Settings screen above. -->
         <activity android:name=".SnippetManagerActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
         <!-- #256: per-app exclusion list picker, same internal-only + fold/unfold handling as
              every other Settings sub-screen above. -->
         <activity android:name=".ExclusionListActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
 
         <!-- "Type to fix" selection-menu entry point (#157 Option B): the user selects text in
              any app, taps Ramblr in the Copy/Paste popup, picks a style, and the cleaned text is
@@ -158,7 +158,7 @@
             android:theme="@style/Theme.PhoneWhisper.Transparent"
             android:excludeFromRecents="true"
             android:noHistory="true"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode">
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.PROCESS_TEXT" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -309,7 +309,7 @@
         <!-- #285 audio files / record-later. The Audio files screen is internal-only like every
              other Settings sub-screen (same fold/unfold configChanges handling). -->
         <activity android:name=".AudioFilesActivity" android:exported="false"
-            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden|uiMode" />
+            android:configChanges="screenLayout|smallestScreenSize|screenSize|orientation|keyboardHidden" />
 
         <!-- #285 share target for audio. Necessarily exported (the share sheet launches it); it
              accepts only content:// URIs, never this app's own providers, and does no work itself

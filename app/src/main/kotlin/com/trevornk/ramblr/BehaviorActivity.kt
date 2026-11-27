@@ -33,13 +33,16 @@ class BehaviorActivity : BaseSettingsActivity() {
     private lateinit var autoPeekDelayRow: LinearLayout
     private lateinit var peekSizeRow: LinearLayout
     private lateinit var singleTapRestoreSwitch: MaterialSwitch
+    private lateinit var activeRecordingCapsuleSwitch: MaterialSwitch
     private lateinit var longPressCancelUndoSwitch: MaterialSwitch
+    private lateinit var idleQuickMenuSwitch: MaterialSwitch
     private lateinit var bubbleShortcutRow: LinearLayout
     private lateinit var silenceAutoStopSwitch: MaterialSwitch
     private lateinit var silenceAutoStopRow: LinearLayout
     private lateinit var hapticsSwitch: MaterialSwitch
     private lateinit var hapticsStrengthRow: LinearLayout
     private lateinit var hapticsLengthRow: LinearLayout
+    private lateinit var uiTapHapticsSwitch: MaterialSwitch
     private lateinit var silenceAutoStopThresholdRow: LinearLayout
     /** Latest WorkManager state for the on-demand Silero VAD model download (#108), used to avoid
      *  double-enqueuing while one is already pending/running. */
@@ -224,21 +227,49 @@ class BehaviorActivity : BaseSettingsActivity() {
             singleTapRestoreSwitch.isChecked = newVal
         })
 
-        // #361: lets a user take the two destructive long-press actions (cancel a transcription,
-        // undo the last insertion) off the ring after losing a dictation to an accidental hold.
-        // Independent of auto-hide, so unlike the rows above it is never greyed out in refresh().
+        activeRecordingCapsuleSwitch = MaterialSwitch(this).apply {
+            isChecked = ActiveRecordingCapsuleToggle.isEnabled(this@BehaviorActivity)
+            isClickable = false
+        }
+        place(Section.ICON, 25, settingsRow(
+            "Compact recording capsule",
+            "Expands into a compact pill with live bars, timer, and cancel button while recording. Off: keeps the circular bubble",
+            activeRecordingCapsuleSwitch,
+        ) {
+            val newVal = !activeRecordingCapsuleSwitch.isChecked
+            ActiveRecordingCapsuleToggle.setEnabled(this, newVal)
+            activeRecordingCapsuleSwitch.isChecked = newVal
+        })
+
+        // #361 + Phase 3B.1: unified 3-second hold-to-cancel during recording or processing,
+        // or hold while idle to undo the last insertion.
         longPressCancelUndoSwitch = MaterialSwitch(this).apply {
             isChecked = LongPressCancelUndoToggle.isEnabled(this@BehaviorActivity)
             isClickable = false
         }
         place(Section.ICON, 30, settingsRow(
             "Long-press cancels and undoes",
-            "Hold the icon to cancel a dictation in progress or undo the last insertion. Off: holding only opens the style menu",
+            "Hold for 3 seconds during recording or processing to cancel, or hold while idle to undo the last insertion",
             longPressCancelUndoSwitch,
+            details = "Batch recording discards audio. After a Live cut or during processing, cancelling keeps captured Live text (or raw text during cleanup). Off: holding never cancels or undoes",
         ) {
             val newVal = !longPressCancelUndoSwitch.isChecked
             LongPressCancelUndoToggle.setEnabled(this, newVal)
             longPressCancelUndoSwitch.isChecked = newVal
+        })
+
+        idleQuickMenuSwitch = MaterialSwitch(this).apply {
+            isChecked = IdleQuickMenuToggle.isEnabled(this@BehaviorActivity)
+            isClickable = false
+        }
+        place(Section.ICON, 31, settingsRow(
+            "Idle long-press quick menu",
+            "Hold the idle icon to switch Live/Batch, cleanup, style, or translation. Tap \u2715 or tap outside to close",
+            idleQuickMenuSwitch,
+        ) {
+            val newVal = !idleQuickMenuSwitch.isChecked
+            IdleQuickMenuToggle.setEnabled(this, newVal)
+            idleQuickMenuSwitch.isChecked = newVal
         })
 
         // Optional long-press-menu shortcut that launches an app the user picks. Off ("Not set") by default.
@@ -246,7 +277,7 @@ class BehaviorActivity : BaseSettingsActivity() {
             getString(R.string.bubble_shortcut_title),
             bubbleShortcutSummary(),
         ) { promptBubbleShortcut() }
-        place(Section.ICON, 31, bubbleShortcutRow)
+        place(Section.ICON, 32, bubbleShortcutRow)
 
         // Silence-based auto-stop (#108, mode 1). Off by default (see SilenceAutoStopToggle's
         // kdoc for why) and a genuine behavior change, so it gets its own paired toggle+threshold
@@ -300,6 +331,24 @@ class BehaviorActivity : BaseSettingsActivity() {
             "Plays once with the strength and length above, even if the switch is off",
             indent = 1,
         ) { DictationHaptics.forContext(this).playTest() })
+
+        uiTapHapticsSwitch = MaterialSwitch(this).apply {
+            isChecked = HapticPrefs.isUiTapsEnabled(this@BehaviorActivity)
+            isClickable = false
+        }
+        lateinit var uiTapHapticsRow: LinearLayout
+        uiTapHapticsRow = settingsRow(
+            "Vibrate on app taps & selections",
+            "Light haptic tick when tapping buttons, toggles, and selections in Rhema Cadence",
+            uiTapHapticsSwitch,
+            indent = 0,
+        ) {
+            val newVal = !uiTapHapticsSwitch.isChecked
+            HapticPrefs.setUiTapsEnabled(this, newVal)
+            uiTapHapticsSwitch.isChecked = newVal
+            if (newVal) UiTapHaptics.tick(uiTapHapticsRow)
+        }
+        place(Section.DICTATION, 16, uiTapHapticsRow)
 
         // Fallback restore path (#Feature B): if the icon is currently hidden -- including for
         // someone who turns the toggle above off while already hidden -- give them a way back
@@ -418,10 +467,13 @@ class BehaviorActivity : BaseSettingsActivity() {
         ringVisibilityRowSub.text = ringVisibilitySummary()
         autoPeekSwitch.isChecked = AutoPeekToggle.isEnabled(this)
         singleTapRestoreSwitch.isChecked = SingleTapRestoreToggle.isEnabled(this)
+        activeRecordingCapsuleSwitch.isChecked = ActiveRecordingCapsuleToggle.isEnabled(this)
         longPressCancelUndoSwitch.isChecked = LongPressCancelUndoToggle.isEnabled(this)
+        idleQuickMenuSwitch.isChecked = IdleQuickMenuToggle.isEnabled(this)
         bubbleShortcutRow.findViewWithTag<TextView>("subtitle").text = bubbleShortcutSummary()
         silenceAutoStopSwitch.isChecked = SilenceAutoStopToggle.isEnabled(this)
         hapticsSwitch.isChecked = HapticPrefs.load(this).enabled
+        uiTapHapticsSwitch.isChecked = HapticPrefs.isUiTapsEnabled(this)
         hapticsStrengthRow.findViewWithTag<TextView>("subtitle").text = hapticsStrengthSummary()
         hapticsLengthRow.findViewWithTag<TextView>("subtitle").text = hapticsLengthSummary()
         setRowEnabled(hapticsStrengthRow, hapticsSwitch.isChecked)

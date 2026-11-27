@@ -29,12 +29,31 @@ object EffectiveRouting {
         allowCloudFallback: Boolean,
         isConfigured: (ProviderChainEntry) -> Boolean,
         localAvailable: Boolean = true,
+        liveConfig: LiveTranscriptionConfig? = null,
+        liveKeyConfigured: Boolean = false,
+        localModelName: String? = null,
     ): String {
         val cloudEntries = chain.capableEntriesFor(needsTranscription = true).filter { it.kind != ProviderKind.LOCAL }
         val configuredEntry = cloudEntries.firstOrNull { isConfigured(it) }
         val cloudConfigured = configuredEntry != null
         val cloudLabel = configuredEntry?.let { ProviderCapabilityRegistry.displayNameFor(it) }
         val cloudDescription = if (cloudConfigured && cloudLabel != null) "Cloud ($cloudLabel)" else "Cloud (not configured)"
+
+        if (!useLocalTranscription && liveConfig != null && liveConfig.enabled && liveKeyConfigured) {
+            val liveDisplayName = ModelCapabilityClassifier.curatedModelById(liveConfig.providerId, liveConfig.modelId)?.displayName
+                ?: liveConfig.modelId
+            val batchSegment = if (cloudConfigured && cloudLabel != null) "Batch ($cloudLabel)" else "Batch (not configured)"
+            return if (allowLocalFallback) {
+                val localTail = when {
+                    !localAvailable -> "on-device not installed"
+                    !localModelName.isNullOrBlank() -> "On-device ($localModelName)"
+                    else -> "on-device fallback"
+                }
+                "Live ($liveDisplayName) \u2192 $batchSegment \u2192 $localTail"
+            } else {
+                "Live ($liveDisplayName) \u2192 $batchSegment"
+            }
+        }
 
         return if (useLocalTranscription) {
             val localHead = if (localAvailable) "On-device" else "On-device (not installed)"

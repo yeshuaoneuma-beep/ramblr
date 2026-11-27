@@ -504,8 +504,7 @@ class LiveTranscriptionActivity : BaseSettingsActivity() {
     }
 
     private fun openLiveModelPicker(config: LiveTranscriptionConfig) {
-        val models = ModelCapabilityClassifier.curatedModelsFor(config.providerId, CapabilityLane.LIVE_STT)
-        val items = models.map { m ->
+        fun toPickerItems(models: List<ModelDescriptor>) = models.map { m ->
             OneUiComponents.SearchablePickerSheet.PickerItem(
                 id = m.id,
                 title = m.displayName,
@@ -515,14 +514,42 @@ class LiveTranscriptionActivity : BaseSettingsActivity() {
                 selected = m.id == config.modelId,
             )
         }
+
+        val initialModels = LiveModelCatalogStore.modelsFor(this, config.providerId, CapabilityLane.LIVE_STT)
+        val apiKey = CloudLiveWiring.resolveLiveApiKey(this, config)
+
         OneUiComponents.SearchablePickerSheet.show(
             context = this,
             title = "Select live model",
-            items = items,
+            items = toPickerItems(initialModels),
             searchHint = "Search live models...",
+            onRefreshRequested = { onDone ->
+                LiveModelCatalogStore.refreshAsync(
+                    context = this,
+                    providerId = config.providerId,
+                    apiKey = apiKey,
+                    force = true,
+                ) { res ->
+                    val merged = LiveModelCatalogStore.modelsFor(this, config.providerId, CapabilityLane.LIVE_STT)
+                    val msg = if (res.success) "Refreshed (${merged.size} models)" else res.errorMessage
+                    onDone(toPickerItems(merged), msg)
+                }
+            },
+            allowCustomModelId = true,
+            customModelWarning = { typed ->
+                ModelCapabilityClassifier.wrongLaneWarning(config.providerId, typed, CapabilityLane.LIVE_STT)
+            },
             onSelect = { item ->
                 val lockModel = hasGeminiKey(config)
                 saveConfig(config.copy(modelId = item.id, modelLocked = lockModel))
+            },
+            onCustomIdSelected = { customId ->
+                if (!GeminiCloudLiveTranscriptionClient.isSupportedLiveModel(customId)) {
+                    toast("\"$customId\" is not a supported Gemini Live STT model")
+                    return@show
+                }
+                val lockModel = hasGeminiKey(config)
+                saveConfig(config.copy(modelId = customId, modelLocked = lockModel))
             },
         )
     }

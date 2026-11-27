@@ -84,6 +84,9 @@ interface RuntimeListener {
         if (!bufferOnly) onCloudLiveInterim(text)
     }
 
+    /** Emitted once when Cloud Live starts/connects for the active recording. Main thread. */
+    fun onCloudLiveConnected() {}
+
     /** Emitted once when Cloud Live disconnects mid-recording while local capture continues for Batch handoff. Main thread. */
     fun onCloudLiveDisconnected(event: LiveDisconnectEvent) {}
 
@@ -342,11 +345,17 @@ class DictationRuntime internal constructor(
          *  arrived can still report that setup landed and interims flowed -- otherwise the most
          *  interesting failure on a real device (mid-stream drop) would log nothing but nulls. */
         var lastTiming: CloudLiveTiming? = null
+        /** Latest non-blank normalized live interim/final text captured during this attempt. */
+        var latestLiveText: String? = null
         /** Display-only spacing repair for this attempt's interims; see [CloudInterimNormalizer]. */
         val interimText = CloudInterimNormalizer()
     }
 
     @Volatile private var cloudLiveAttempt: CloudLiveAttempt? = null
+    /** Captured non-blank live text / raw STT text for the in-flight post-recording pipeline so
+     *  a 3-second cancel hold during fallback or cleanup can preserve already-recognized text. */
+    @Volatile private var inFlightLiveText: String? = null
+    @Volatile private var inFlightRawSttText: String? = null
 
     /** Releases only the exact session captured by the caller; stale callbacks are harmless. */
     private fun releaseSessionLease(lease: DictationSessionLease?) {
@@ -938,6 +947,9 @@ class DictationRuntime internal constructor(
         // Placed after the `started` check so a failed recorder start never acquires.
             acquireTranscriptionWakeLock()
             listener.onRecordingStarted()
+            if (liveAttempt != null) {
+                runCatching { listener.onCloudLiveConnected() }
+            }
             startRecordingCountdown(lease)
             // #385: only now -- engine.start succeeded and the UI already knows -- so a failed
             // start never ticks and vibration never sits ahead of recording on the start path.
@@ -972,8 +984,12 @@ class DictationRuntime internal constructor(
                             stateMachine.current() == RecordingStateMachine.State.RECORDING && !attempt.claimed) {
                             // Gemini's cumulative interims intermittently lose the space at a revised
                             // seam; repair it once here so field, bubble and IME all show the same text.
+                            val normalized = attempt.interimText.normalize(text)
+                            if (normalized.isNotBlank()) {
+                                attempt.latestLiveText = normalized
+                            }
                             listener.onCloudLiveInterim(
-                                attempt.interimText.normalize(text),
+                                normalized,
                                 bufferOnly = attempt.config.postCleanupEnabled,
                             )
                         }
@@ -989,6 +1005,9 @@ class DictationRuntime internal constructor(
                         if (attempt.terminal == null) {
                             attempt.terminal = result
                             attempt.lastTiming = result.timing
+                            if (result is CloudLiveTerminal.Success && result.text.isNotBlank()) {
+                                attempt.latestLiveText = result.text.trim()
+                            }
                         }
                         if (result is CloudLiveTerminal.Failure &&
                             result.reason != CloudLiveFailureReason.CANCELLED &&
@@ -1125,8 +1144,11 @@ class DictationRuntime internal constructor(
         activeToken = guard.start()
         val deadline = elapsedRealtimeMs() + WATCHDOG_TIMEOUT_MS
         postRecordingDeadlineAtElapsedMs = deadline
-        cloudLiveAttempt?.takeIf { it.lease === lease && !it.liveStreamEnded }?.let { attempt ->
-            runCatching { attempt.session?.endActivity() }
+        cloudLiveAttempt?.takeIf { it.lease === lease }?.let { attempt ->
+            attempt.latestLiveText?.takeIf { it.isNotBlank() }?.let { inFlightLiveText = it }
+            if (!attempt.liveStreamEnded) {
+                runCatching { attempt.session?.endActivity() }
+            }
         }
         pipelineTiming.start(PipelineTiming(stopTapAtMs = System.currentTimeMillis(), correlationId = correlationIdFor(activeToken)))
         armWatchdog(activeToken, lease, deadline)
@@ -1226,27 +1248,89 @@ class DictationRuntime internal constructor(
         NetworkWarmup.warmUpAsync(hosts)
     }
 
+    /**
+     * Unified 3-second hold while RECORDING (Phase 3B.1):
+     * - If Cloud Live already cut mid-recording and captured non-blank live text, stop recording,
+     *   discard remaining audio, and deliver the captured live text immediately.
+     * - Otherwise delegate to [cancelRecording] for a true Batch discard.
+     */
+    fun cancelOrKeepLiveRecording(): Boolean {
+        if (stateMachine.current() != RecordingStateMachine.State.RECORDING) return false
+        val lease = sessionLease ?: return false
+        val attempt = cloudLiveAttempt?.takeIf { it.lease === lease }
+        val liveText = attempt?.takeIf { it.liveStreamEnded }?.latestLiveText?.takeIf { it.isNotBlank() }
+        if (liveText != null) {
+            cancelRecordingCountdown()
+            cancelCloudLiveAttempt(attempt)
+            inFlightLiveText = null
+            inFlightRawSttText = null
+            haptics.onCancelDiscard()
+            listener.deliverText(
+                finalizeForDelivery(liveText),
+                rawText = null,
+                paidFallbackGroup = null,
+                cleanupError = null,
+                feedbackDurationMs = 2000,
+            )
+            toast("Recording stopped \u2014 kept live text")
+            resetToIdle(lease)
+            return true
+        }
+        return cancelRecording()
+    }
+
     /** 3-second hold while RECORDING: discard the active recording and return to idle without transcribing. */
     fun cancelRecording(): Boolean {
         if (stateMachine.current() != RecordingStateMachine.State.RECORDING) return false
         val lease = sessionLease ?: return false
         cancelRecordingCountdown()
+        haptics.onCancelDiscard()
         pipelineTiming.abandon()
         resetToIdle(lease)
         toast("Recording discarded")
         return true
     }
 
-    /** Long-press while TRANSCRIBING (see the host's overlay touch listener): abort the in-flight call and return to idle. */
+    /** Unified 3-second hold while TRANSCRIBING/CLEANING: abort in-flight work, keeping captured
+     *  Live text or raw STT text when available, or pure cancel otherwise. */
     fun cancelTranscription() {
         if (stateMachine.current() != RecordingStateMachine.State.TRANSCRIBING) return
         val lease = sessionLease ?: return
+        val capturedLive = (cloudLiveAttempt?.takeIf { it.lease === lease }?.latestLiveText ?: inFlightLiveText)
+            ?.takeIf { it.isNotBlank() }
+        val capturedRaw = inFlightRawSttText?.takeIf { it.isNotBlank() }
         inFlightCall.cancel()
-        // H2 (#192): this dictation will never reach finishInjection, so drop its timeline now --
-        // otherwise the next unrelated injection would consume it as its own.
-        pipelineTiming.abandon()
+        cancelCloudLiveAttempt()
+        haptics.onCancelDiscard()
+        when {
+            capturedLive != null -> {
+                listener.deliverText(
+                    finalizeForDelivery(capturedLive),
+                    rawText = null,
+                    paidFallbackGroup = null,
+                    cleanupError = null,
+                    feedbackDurationMs = 2000,
+                )
+                toast("Cancelled \u2014 kept live text")
+            }
+            capturedRaw != null -> {
+                listener.deliverText(
+                    finalizeForDelivery(capturedRaw),
+                    rawText = null,
+                    paidFallbackGroup = null,
+                    cleanupError = null,
+                    feedbackDurationMs = 2000,
+                )
+                toast("Cleanup cancelled \u2014 inserted raw text")
+            }
+            else -> {
+                // H2 (#192): this dictation will never reach finishInjection, so drop its timeline now --
+                // otherwise the next unrelated injection would consume it as its own.
+                pipelineTiming.abandon()
+                toast("Transcription cancelled")
+            }
+        }
         resetToIdle(lease)
-        toast("Transcription cancelled")
     }
 
     /** Backstop for a callback that never arrives (stalled socket, hung local model, etc). See #20. */
@@ -1322,6 +1406,8 @@ class DictationRuntime internal constructor(
             cancelRecordingCountdown()
             haptics.reset()
             cancelCloudLiveAttempt()
+            inFlightLiveText = null
+            inFlightRawSttText = null
             cancelWatchdog()
             postRecordingDeadlineAtElapsedMs = 0L
             guard.cancel()
@@ -1478,8 +1564,11 @@ class DictationRuntime internal constructor(
             activeToken = token
             val deadline = elapsedRealtimeMs() + WATCHDOG_TIMEOUT_MS
             postRecordingDeadlineAtElapsedMs = deadline
-            cloudLiveAttempt?.takeIf { it.lease === lease && !it.liveStreamEnded }?.let { attempt ->
-                runCatching { attempt.session?.endActivity() }
+            cloudLiveAttempt?.takeIf { it.lease === lease }?.let { attempt ->
+                attempt.latestLiveText?.takeIf { it.isNotBlank() }?.let { inFlightLiveText = it }
+                if (!attempt.liveStreamEnded) {
+                    runCatching { attempt.session?.endActivity() }
+                }
             }
             // #115: max-duration auto-stop has no real user "stop tap" -- the cap itself is the
             // trigger -- so anchor the timeline here instead, at the moment this app-side decided
@@ -1607,6 +1696,7 @@ class DictationRuntime internal constructor(
         if (attempt.claimed || cloudLiveAttempt !== attempt || sessionLease !== attempt.lease) return
         attempt.claimed = true
         attempt.liveStreamEnded = true
+        attempt.latestLiveText?.takeIf { it.isNotBlank() }?.let { inFlightLiveText = it }
         attempt.finalWait?.let(handler::removeCallbacks)
         attempt.finalWait = null
         attempt.sessionCutoff?.let(handler::removeCallbacks)
@@ -1634,6 +1724,7 @@ class DictationRuntime internal constructor(
         if (cloudLiveAttempt === attempt) cloudLiveAttempt = null
         attempt.claimed = true
         attempt.liveStreamEnded = true
+        attempt.latestLiveText?.takeIf { it.isNotBlank() }?.let { inFlightLiveText = it }
         attempt.finalWait?.let(handler::removeCallbacks)
         attempt.finalWait = null
         attempt.sessionCutoff?.let(handler::removeCallbacks)
@@ -2589,6 +2680,7 @@ class DictationRuntime internal constructor(
             }
             return
         }
+        inFlightLiveText = text
 
         if (!config.postCleanupEnabled || isJunkTranscript(text)) {
             handler.post {
@@ -2726,6 +2818,7 @@ class DictationRuntime internal constructor(
             }
             return
         }
+        inFlightRawSttText = text
 
         // M3b (#192): a non-blank but content-free transcript (ASR hallucinations like "." or
         // "you"-length fragments) has nothing for a cleanup model to improve -- running the full
@@ -3005,6 +3098,8 @@ class DictationRuntime internal constructor(
         val lease = sessionLease
         if (recordingEngine != null) shutdownLeaseAwaitingReader = lease
         cancelCloudLiveAttempt()
+        inFlightLiveText = null
+        inFlightRawSttText = null
         inFlightCall.cancel()
         stateMachine.reset()
         cancelWatchdog()

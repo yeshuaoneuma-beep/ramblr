@@ -261,4 +261,99 @@ class EffectiveRoutingTest {
             ),
         )
     }
+
+    // --- Phase 3B.1: Live override visibility ---
+
+    @Test fun `live active override names live model, batch provider, and on-device tail`() {
+        val liveOn = LiveTranscriptionConfig(
+            enabled = true,
+            providerId = ProviderCapabilityRegistry.ID_GEMINI,
+            modelId = LiveTranscriptionConfig.DEFAULT_LIVE_MODEL_ID,
+        )
+        assertEquals(
+            "Live (Gemini 3.5 Transcribe Live) \u2192 Batch (OpenAI) \u2192 On-device (Parakeet TDT)",
+            EffectiveRouting.transcription(
+                chain = chain(openAiEntry),
+                useLocalTranscription = false,
+                allowLocalFallback = true,
+                allowCloudFallback = false,
+                isConfigured = { it.kind == ProviderKind.OPENAI },
+                localAvailable = true,
+                liveConfig = liveOn,
+                liveKeyConfigured = true,
+                localModelName = "Parakeet TDT",
+            ),
+        )
+        assertEquals(
+            "Live (Gemini 3.5 Transcribe Live) \u2192 Batch (OpenAI) \u2192 on-device fallback",
+            EffectiveRouting.transcription(
+                chain = chain(openAiEntry),
+                useLocalTranscription = false,
+                allowLocalFallback = true,
+                allowCloudFallback = false,
+                isConfigured = { it.kind == ProviderKind.OPENAI },
+                localAvailable = true,
+                liveConfig = liveOn,
+                liveKeyConfigured = true,
+                localModelName = null,
+            ),
+        )
+        assertEquals(
+            "Live (Gemini 3.5 Transcribe Live) \u2192 Batch (not configured) \u2192 on-device not installed",
+            EffectiveRouting.transcription(
+                chain = chain(),
+                useLocalTranscription = false,
+                allowLocalFallback = true,
+                allowCloudFallback = false,
+                isConfigured = { false },
+                localAvailable = false,
+                liveConfig = liveOn,
+                liveKeyConfigured = true,
+                localModelName = null,
+            ),
+        )
+        assertEquals(
+            "Live (Gemini 3.5 Transcribe Live) \u2192 Batch (OpenAI)",
+            EffectiveRouting.transcription(
+                chain = chain(openAiEntry),
+                useLocalTranscription = false,
+                allowLocalFallback = false,
+                allowCloudFallback = false,
+                isConfigured = { it.kind == ProviderKind.OPENAI },
+                localAvailable = true,
+                liveConfig = liveOn,
+                liveKeyConfigured = true,
+                localModelName = "Parakeet TDT",
+            ),
+        )
+        // Without live key or in local mode, falls back to exact batch/local formatting.
+        assertEquals(
+            "Cloud (OpenAI) \u2192 on-device fallback",
+            EffectiveRouting.transcription(
+                chain = chain(openAiEntry),
+                useLocalTranscription = false,
+                allowLocalFallback = true,
+                allowCloudFallback = false,
+                isConfigured = { it.kind == ProviderKind.OPENAI },
+                localAvailable = true,
+                liveConfig = liveOn,
+                liveKeyConfigured = false,
+                localModelName = "Parakeet TDT",
+            ),
+        )
+        assertEquals(
+            "On-device only",
+            EffectiveRouting.transcription(
+                chain = chain(openAiEntry),
+                useLocalTranscription = true,
+                allowLocalFallback = true,
+                allowCloudFallback = false,
+                isConfigured = { it.kind == ProviderKind.OPENAI },
+                localAvailable = true,
+                liveConfig = liveOn,
+                liveKeyConfigured = true,
+                localModelName = "Parakeet TDT",
+            ),
+        )
+    }
 }

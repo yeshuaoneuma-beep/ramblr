@@ -22,32 +22,38 @@ fun overlayLongPressActionFor(
     state: RecordingStateMachine.State,
     hasPendingInjection: Boolean,
     cancelAndUndoEnabled: Boolean = true,
+    idleQuickMenuEnabled: Boolean = true,
 ): OverlayLongPressAction = when (state) {
     RecordingStateMachine.State.RECORDING ->
         if (cancelAndUndoEnabled) OverlayLongPressAction.CANCEL_RECORDING else OverlayLongPressAction.NONE
     RecordingStateMachine.State.TRANSCRIBING ->
         if (cancelAndUndoEnabled) OverlayLongPressAction.CANCEL_TRANSCRIPTION else OverlayLongPressAction.NONE
-    RecordingStateMachine.State.IDLE ->
-        if (hasPendingInjection && cancelAndUndoEnabled) OverlayLongPressAction.UNDO_INJECTION
-        else OverlayLongPressAction.SHOW_STYLE_MENU
+    RecordingStateMachine.State.IDLE -> when {
+        hasPendingInjection && cancelAndUndoEnabled -> OverlayLongPressAction.UNDO_INJECTION
+        idleQuickMenuEnabled -> OverlayLongPressAction.SHOW_STYLE_MENU
+        else -> OverlayLongPressAction.NONE
+    }
 }
 
-/** Hold duration required before [action] executes. [OverlayLongPressAction.CANCEL_RECORDING]
- *  requires a deliberate 3-second continuous hold; all other actions use the normal long-press timeout. */
+/** Hold duration required before [action] executes. Both [OverlayLongPressAction.CANCEL_RECORDING]
+ *  and [OverlayLongPressAction.CANCEL_TRANSCRIPTION] require a deliberate 3-second continuous hold;
+ *  all other actions use the normal long-press timeout. */
 fun overlayLongPressTimeoutMs(
     action: OverlayLongPressAction,
     systemLongPressMs: Int,
 ): Long = when (action) {
-    OverlayLongPressAction.CANCEL_RECORDING -> RingGestureTracker.recordingCancelHoldMs(systemLongPressMs)
+    OverlayLongPressAction.CANCEL_RECORDING,
+    OverlayLongPressAction.CANCEL_TRANSCRIPTION -> RingGestureTracker.recordingCancelHoldMs(systemLongPressMs)
     else -> RingGestureTracker.longPressTimeoutMs(systemLongPressMs)
 }
 
-/** Delay before showing staged hold-to-discard feedback, or null for standard single-stage holds. */
+/** Delay before showing staged 3-second hold-to-cancel feedback, or null for standard single-stage holds. */
 fun overlayHoldFeedbackDelayMs(
     action: OverlayLongPressAction,
     systemLongPressMs: Int,
 ): Long? = when (action) {
-    OverlayLongPressAction.CANCEL_RECORDING -> RingGestureTracker.longPressTimeoutMs(systemLongPressMs)
+    OverlayLongPressAction.CANCEL_RECORDING,
+    OverlayLongPressAction.CANCEL_TRANSCRIPTION -> RingGestureTracker.longPressTimeoutMs(systemLongPressMs)
     else -> null
 }
 

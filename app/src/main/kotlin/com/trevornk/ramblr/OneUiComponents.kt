@@ -130,7 +130,10 @@ object OneUiComponents {
             isFocusable = enabled
             alpha = if (enabled) 1f else 0.4f
             addView(dot)
-            if (enabled) setOnClickListener { onClick() }
+            if (enabled) setOnClickListener {
+                UiTapHaptics.tick(this)
+                onClick()
+            }
         }
     }
 
@@ -215,6 +218,7 @@ object OneUiComponents {
             addView(circle)
             if (enabled) {
                 setOnClickListener {
+                    UiTapHaptics.tick(this)
                     showAttemptsSelectorSheet(context, clamped, allowedAttempts, onSelect)
                 }
             }
@@ -299,6 +303,7 @@ object OneUiComponents {
                 isFocusable = true
                 applySelectableRipple(this)
                 setOnClickListener {
+                    UiTapHaptics.tick(this)
                     dialog.dismiss()
                     onSelect(index)
                 }
@@ -385,6 +390,7 @@ object OneUiComponents {
                 if (isAllowed) {
                     applySelectableRipple(this)
                     setOnClickListener {
+                        UiTapHaptics.tick(this)
                         dialog.dismiss()
                         onSelect(count)
                     }
@@ -468,7 +474,10 @@ object OneUiComponents {
             alpha = if (enabled) 1f else 0.45f
             if (enabled) {
                 applySelectableRipple(this)
-                setOnClickListener { onClick() }
+                setOnClickListener {
+                    UiTapHaptics.tick(this)
+                    onClick()
+                }
             }
         }
 
@@ -579,7 +588,10 @@ object OneUiComponents {
             alpha = if (enabled) 1f else 0.45f
             if (enabled) {
                 applySelectableRipple(this)
-                setOnClickListener { onClick() }
+                setOnClickListener {
+                    UiTapHaptics.tick(this)
+                    onClick()
+                }
             }
         }
         row.addView(TextView(context).apply {
@@ -736,6 +748,7 @@ object OneUiComponents {
                     setPadding(dp(context, 24), dp(context, 12), dp(context, 16), dp(context, 12))
                     applySelectableRipple(this)
                     setOnClickListener {
+                        UiTapHaptics.tick(this)
                         dialog.dismiss()
                         onSkipSelected()
                     }
@@ -807,6 +820,7 @@ object OneUiComponents {
                             if (item.enabled) {
                                 applySelectableRipple(this)
                                 setOnClickListener {
+                                    UiTapHaptics.tick(this)
                                     dialog.dismiss()
                                     onSelect(item)
                                 }
@@ -919,6 +933,7 @@ object OneUiComponents {
                     setOnClickListener {
                         val typed = customInput.text?.toString()?.trim().orEmpty()
                         if (typed.isNotEmpty()) {
+                            UiTapHaptics.tick(this)
                             dialog.dismiss()
                             onCustomIdSelected(typed)
                         }

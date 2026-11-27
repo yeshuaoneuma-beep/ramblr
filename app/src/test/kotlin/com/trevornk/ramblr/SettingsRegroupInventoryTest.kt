@@ -157,8 +157,9 @@ class SettingsRegroupInventoryTest {
             // Behavior (Floating icon / Recording / Privacy)
             "Allow hiding the floating icon", "Let automation apps turn Rhema Cadence off", "App exclusions",
             "Auto-hide icon when idle", "Auto-hide delay", "Peeked sliver size", "Single-tap restore and record",
-            "Long-press cancels and undoes",
+            "Compact recording capsule", "Long-press cancels and undoes", "Idle long-press quick menu",
             "Auto-stop after silence", "Silence threshold", "Show the icon",
+            "Vibrate on app taps & selections",
             // Overlay Appearance (Size and colors)
             "Icon size", "Border color", "Fill color (idle only)", "Microphone icon color",
             "Custom icon image", "Remove custom icon",

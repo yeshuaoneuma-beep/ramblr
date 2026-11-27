@@ -340,12 +340,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
          *  truncated to this many characters before display. */
         private const val PREVIEW_PREVIEW_CHARS = 80
 
-        private const val COLOR_IDLE = 0xDD1C1C1E.toInt()
-        private const val COLOR_RECORDING = 0xDDEF4444.toInt()
+        private const val COLOR_IDLE = 0xFF000000.toInt()
+        private const val COLOR_RECORDING = 0xFF000000.toInt()
         private const val COLOR_DISCARD_HOLD = 0xDDB91C1C.toInt()
         private const val COLOR_RING_DISCARD = 0xFFFCA5A5.toInt()
-        private const val COLOR_BUSY = 0xDD6B6B6B.toInt()
-        private const val COLOR_FEEDBACK_BG = 0xEE1C1C1E.toInt()
+        private const val COLOR_BUSY = 0xFF000000.toInt()
+        private const val COLOR_FEEDBACK_BG = 0xFF141418.toInt()
         /** Warmer/brighter than [COLOR_FEEDBACK_BG] so a clipboard-fallback (#5) visually stands out
          *  from a routine success bubble instead of looking identical. */
         private const val COLOR_FEEDBACK_FALLBACK_BG = 0xEEB45309.toInt()
@@ -362,19 +362,26 @@ open class WhisperAccessibilityService : AccessibilityService() {
          *  when it's off -- the same colors the old always-visible badge used. */
         private const val COLOR_CLEANUP_ON = 0xFF34D399.toInt()
         private const val COLOR_CLEANUP_OFF = 0xFF6B7280.toInt()
-        /** Subtle light-alpha border around the long-press style menu (#53 follow-up) -- the
-         *  menu's near-black translucent fill has no edge of its own and blends into a dark app
-         *  background or dark wallpaper without one. */
-        private const val COLOR_MENU_BORDER = 0x33FFFFFF
-        /** The mic glyph's original hardcoded color (see ic_mic.xml) -- used when the user hasn't
-         *  picked a custom glyph color (#43), so an unconfigured install renders identically. */
-        private const val COLOR_GLYPH_DEFAULT = 0xFFFFFFFF.toInt()
-
-        /** Default overlay border color for a fresh install (no explicit [OverlayAppearance]
-         *  override yet) -- neon magenta, matching the public launcher icon's accent color and
-         *  Trevor's own long-standing manual override, made the shipped default so new installs
-         *  see the same look out of the box instead of a borderless ring. */
-        private const val COLOR_BORDER_DEFAULT = 0xFFFF00FF.toInt()
+        /** Phase 3B.1 theme-aware pop-up & quick menu tokens (Dark & Light). */
+        private const val COLOR_POPUP_DARK_BG = 0xFF141418.toInt()
+        private const val COLOR_POPUP_DARK_BORDER = 0xFF26262C.toInt()
+        private const val COLOR_POPUP_DARK_PRIMARY = 0xFFFFFFFF.toInt()
+        private const val COLOR_POPUP_DARK_SECONDARY = 0xFFA1A1AA.toInt()
+        private const val COLOR_POPUP_DARK_DIVIDER = 0x40FFFFFF
+        private const val COLOR_POPUP_LIGHT_BG = 0xFFFFFFFF.toInt()
+        private const val COLOR_POPUP_LIGHT_BORDER = 0xFFE5E7EB.toInt()
+        private const val COLOR_POPUP_LIGHT_PRIMARY = 0xFF111827.toInt()
+        private const val COLOR_POPUP_LIGHT_SECONDARY = 0xFF52525B.toInt()
+        private const val COLOR_POPUP_LIGHT_DIVIDER = 0x26000000
+        private const val INSERT_FLASH_DURATION_MS = 350L
+        private const val EDGE_DOCK_PILL_W_DP = 14
+        private const val EDGE_DOCK_PILL_H_DP = 44
+        private const val CAPSULE_WIDTH_DP = 160
+        private const val CAPSULE_HEIGHT_DP = 44
+        /** Default Rhema Cadence Style 1 soundwave glyph color: Cobalt (#3B82F6). */
+        private const val COLOR_GLYPH_DEFAULT = 0xFF3B82F6.toInt()
+        /** Default Rhema Cadence Style 1 halo border color: Cobalt (#3B82F6). */
+        private const val COLOR_BORDER_DEFAULT = 0xFF3B82F6.toInt()
 
         /** Anonymous [ViewOutlineProvider]s can't be `const`, but this one never varies per-view,
          *  so a single shared instance is used to clip a custom icon image (#43) into a circle
@@ -393,6 +400,9 @@ open class WhisperAccessibilityService : AccessibilityService() {
      */
     internal val runtimeListener = object : RuntimeListener {
         override fun onRecordingStartRequested() {
+            cancelInsertFlash()
+            liveConnectedUi = false
+            liveDisconnectedUi = false
             clearRecordingCountdownUi()
             clearStageStatusPill()
             // A still-pending preview (#40) from the previous dictation shouldn't linger silently
@@ -419,15 +429,14 @@ open class WhisperAccessibilityService : AccessibilityService() {
 
         override fun onRecordingStarted() {
             setBusy(false)
-            // Deferred (Trevor-reported bug fix, see animateRingX's kdoc): with SingleTapRestoreToggle
-            // on, this exact call site can run while restoreFromPeek()'s animator is still mid-flight
-            // repositioning the same ring window from the SAME tap gesture. setAppearance()/
-            // startPulse() are a second, independent animation on the same button view; without this
-            // guard the two could interleave and the peek-restore slide would visibly stall or never
-            // finish, even though recording (and its own animation) started correctly.
             deferUntilPeekAnimationDone {
                 setAppearance(COLOR_RECORDING)
                 startPulse()
+                handler.post {
+                    bubbleSoundwave?.setActive(true)
+                    refreshBubbleHaloMode()
+                    expandRecordingCapsuleIfEnabled()
+                }
             }
             // A recording started from the QS tile or a11y button while the keyboard-only gate had
             // the ring hidden must bring it back -- the user needs it to see and stop recording.
@@ -440,12 +449,16 @@ open class WhisperAccessibilityService : AccessibilityService() {
 
         override fun onEnterTranscribingUi() {
             cancelPendingRingHoldRunnables()
+            cancelInsertFlash()
             clearRecordingCountdownUi()
             // #284: remember where this dictation was started, now, while the user is still there.
             captureDictationTarget()
             handler.post {
+                collapseRecordingCapsuleIfExpanded()
                 clearDiscardHoldFeedback(restoreRecordingUi = false)
                 stopPulse()
+                bubbleSoundwave?.setActive(false)
+                bubbleHaloRing?.setMode(BubbleHaloRingView.Mode.ProcessingSweep(cleaning = false))
             }
             setAppearance(COLOR_BUSY)
             setBusy(true)
@@ -457,6 +470,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
             // custom overlay icon (#43) replaces the fill entirely, but the ring always draws on top.
             setBusy(true, cleaning = true)
             setAppearance(COLOR_BUSY)
+            handler.post {
+                if (!discardHoldFeedbackActive) {
+                    bubbleHaloRing?.setMode(BubbleHaloRingView.Mode.ProcessingSweep(cleaning = true))
+                }
+            }
         }
 
         override fun onStageStatus(statusText: String) {
@@ -468,15 +486,42 @@ open class WhisperAccessibilityService : AccessibilityService() {
             clearRecordingCountdownUi()
             clearStageStatusPill()
             clearDictationTarget()
+            liveConnectedUi = false
+            liveDisconnectedUi = false
             handler.post {
+                collapseRecordingCapsuleIfExpanded()
                 clearDiscardHoldFeedback(restoreRecordingUi = false)
                 stopPulse()
+                bubbleSoundwave?.setActive(false)
+                if (!insertFlashActive) {
+                    bubbleHaloRing?.cancelAnimations()
+                    refreshBubbleHaloMode()
+                }
             }
             setBusy(false)
             setAppearance(COLOR_IDLE)
             // Posted, not run inline: deliverText() has already posted this dictation's feedback
             // bubble, and the gate must see that bubble as showing rather than hide it.
             reapplyVisibilityModeGate()
+        }
+
+        override fun wantsAudioLevel(): Boolean {
+            val appearance = OverlayAppearancePrefs.load(this@WhisperAccessibilityService)
+            return !appearance.hasCustomIcon || ActiveRecordingCapsuleToggle.isEnabled(this@WhisperAccessibilityService)
+        }
+
+        override fun onAudioLevel(level: Float) {
+            bubbleSoundwave?.push(level)
+            capsuleSoundwave?.push(level)
+        }
+
+        override fun onCloudLiveConnected() {
+            liveConnectedUi = true
+            liveDisconnectedUi = false
+            handler.post {
+                refreshBubbleHaloMode()
+                updateRecordingCapsuleLiveBadge()
+            }
         }
 
         override fun onStreamingTeardown() {
@@ -533,6 +578,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 session.node.recycle()
             }
             streamingSession = null
+            liveConnectedUi = false
+            liveDisconnectedUi = true
+            handler.post {
+                refreshBubbleHaloMode()
+                updateRecordingCapsuleLiveBadge()
+            }
         }
 
         override fun deliverText(
@@ -858,14 +909,33 @@ open class WhisperAccessibilityService : AccessibilityService() {
     internal var translationBadge: TextView? = null
     private var button: ImageView? = null
     private var spinner: ProgressBar? = null
+    internal var bubbleSoundwave: BubbleSoundwaveView? = null
+    internal var bubbleHaloRing: BubbleHaloRingView? = null
+    internal var edgeDockPillView: FrameLayout? = null
+    internal var recordingCapsuleView: LinearLayout? = null
+    private var capsuleStatusDot: View? = null
+    private var capsuleLiveLabel: TextView? = null
+    private var capsuleSoundwave: BubbleSoundwaveView? = null
+    private var capsuleTimerText: TextView? = null
+    private var capsuleExpanded = false
+    private var preCapsuleDockedX = 0
+    private var preCapsuleRingSize = 0
+    private var capsuleStartedAtMs = 0L
+    private var capsuleTimerRunnable: Runnable? = null
+    private var liveConnectedUi = false
+    private var liveDisconnectedUi = false
+    private var insertFlashActive = false
+    private var insertFlashRunnable: Runnable? = null
     /** True while the busy ring shows the cleanup phase (#294). Main thread only. */
     private var cleaningUi = false
     /** Pending ring touch hold runnables promoted to instance fields so state transitions can cancel them. */
     private var holdFeedbackAction: Runnable? = null
     private var longPressAction: Runnable? = null
-    /** Visual/haptic feedback state during the 3-second hold-to-discard gesture while RECORDING. Main thread only. */
+    /** Visual/haptic feedback state during the 3-second hold-to-cancel gesture while RECORDING or TRANSCRIBING. Main thread only. */
     private var discardHoldFeedbackActive = false
+    private var discardHoldIsTranscription = false
     private var discardHoldAnimator: android.animation.ValueAnimator? = null
+    private var discardHoldProgressAnimator: android.animation.ValueAnimator? = null
     private var discardHoldCountdownRunnable: Runnable? = null
     /** 7:00 recording countdown cue state. Main thread only. */
     private var recordingCountdownRemainingMs: Long? = null
@@ -873,7 +943,13 @@ open class WhisperAccessibilityService : AccessibilityService() {
     private var stageStatusPillShowing = false
     private var activeStageStatusText: String? = null
     private var countdownNotificationPosted = false
+    internal var feedbackContainer: LinearLayout? = null
     private var feedbackView: TextView? = null
+    internal var feedbackCloseButton: TextView? = null
+    private var lastFeedbackIsFallback = false
+    private var lastFeedbackDismissible = false
+    private var lastUiModeNightMask: Int = 0
+    private var styleMenuIsHideConfirm = false
     /** True from [showFeedback] until [hideFeedback] runs; keeps the keyboard-only gate from
      *  hiding the ring under a bubble that may still need a tap. Main thread only. */
     private var feedbackShowing = false
@@ -926,20 +1002,22 @@ open class WhisperAccessibilityService : AccessibilityService() {
         feedbackShowing = false
         countdownPillShowing = false
         stageStatusPillShowing = false
+        lastFeedbackDismissible = false
+        feedbackCloseButton?.visibility = View.GONE
         setFeedbackTouchable(false)
-        // alpha only, never GONE (real root cause, verified via UID/window-token-attributed
-        // BLASTSyncEngine analysis on-device: this window's WindowToken is type=2032
-        // TYPE_ACCESSIBILITY_OVERLAY, the only such token in the accessibility-service window
-        // set. On a fold-triggered screen-off display switch, WMS collects a synchronous BLAST
-        // sync across every window under that token and blocks screen-on for up to a fixed
-        // 2000ms waiting for each to draw a frame. A window whose root is View.GONE never draws,
-        // so it can never satisfy the sync -- it just eats the full 2s timeout every time,
-        // regardless of how the ring (the OTHER window under the same token) behaves. This is
-        // exactly why the earlier alpha-vs-GONE fix to the ring alone changed nothing: this
-        // feedback bubble was still going GONE every time it hid, and one non-drawing window is
-        // enough to stall the whole token's sync. See applyOverlayVisibility() for the same fix
-        // applied to the ring.
-        feedbackView?.animate()?.alpha(0f)?.setDuration(180)?.start()
+        // alpha only, never GONE (BLASTSyncEngine invariant: window root stays View.VISIBLE permanently).
+        // Sync both feedbackContainer and feedbackView alpha for reflection contract compatibility.
+        val container = feedbackContainer
+        val view = feedbackView
+        if (isReducedMotionEnabled()) {
+            container?.animate()?.cancel()
+            view?.animate()?.cancel()
+            container?.alpha = 0f
+            view?.alpha = 0f
+        } else {
+            container?.animate()?.alpha(0f)?.setDuration(180)?.start()
+            view?.animate()?.alpha(0f)?.setDuration(180)?.start()
+        }
         // The bubble was what kept the keyboard-only gate open; re-evaluate now that it's gone.
         // wasShowing guards against a loop: applyOverlayVisibility() itself posts this runnable.
         if (wasShowing && RingVisibilityMode.read(this@WhisperAccessibilityService) != RingVisibilityMode.ALWAYS) {
@@ -1293,6 +1371,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
      */
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        val newNightMask = newConfig.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        if (newNightMask != lastUiModeNightMask) {
+            lastUiModeNightMask = newNightMask
+            refreshThemedOverlaySurfaces()
+        }
         handleScreenSizeChange()
     }
 
@@ -1346,9 +1429,14 @@ open class WhisperAccessibilityService : AccessibilityService() {
         pendingPreviewTarget?.node?.recycle()
         pendingPreviewTarget = null
         cancelPendingRingHoldRunnables()
+        cancelInsertFlash()
+        collapseRecordingCapsuleIfExpanded()
         clearRecordingCountdownUi()
         clearStageStatusPill()
         clearDiscardHoldFeedback(restoreRecordingUi = false)
+        bubbleHaloRing?.cancelAnimations()
+        bubbleSoundwave?.stop()
+        capsuleSoundwave?.stop()
         dismissStyleMenu()
         removeOverlay()
         super.onDestroy()
@@ -1391,6 +1479,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // a duplicate window and overwrite the tracking fields pointing at the first one,
         // orphaning it beyond removeOverlay()'s reach.
         if (overlayView != null) return
+        lastUiModeNightMask = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val ringSizeDp = OverlayAppearancePrefs.load(this).ringSizeDp
         val buttonSize = (dpScaledToRing(BTN_DP, ringSizeDp) * dp).toInt()
@@ -1398,44 +1487,53 @@ open class WhisperAccessibilityService : AccessibilityService() {
         val pad = (dpScaledToRing(PAD_DP, ringSizeDp) * dp).toInt()
         val margin = (MARGIN_DP * dp).toInt()
 
-        // Busy ring drawn INSIDE the button's own circular fill (Trevor's fix, 2026-07-06) rather
-        // than in the ~6dp margin outside it: the prior outer-ring placement was invisible over
-        // Google Keep's white note editor because COLOR_RING (a near-white gray) had no contrast
-        // against a white host-app background it was drawn over. Sizing/z-ordering the ring to sit
-        // on top of the button's OWN fill color (whatever COLOR_BUSY/custom appearance fill is
-        // active) makes contrast fully within this app's control regardless of what's behind the
-        // overlay -- no host-app background can ever show through it again.
-        // visibility is left at its VISIBLE default here and deferred to a post{} below, rather
-        // than set to GONE inline before attach (Pixel Fold display-delay bug, reported by Trevor
-        // /w r/PixelFold thread https://www.reddit.com/r/PixelFold/comments/1ficw8u/ as reference):
-        // Pixel OS has a confirmed bug (root-caused by the Quick Cursor dev, filed against Google)
-        // where a view attached to the WindowManager with visibility=GONE already set at attach
-        // time causes a ~2s black-screen delay on the NEXT fold/unfold. Deferring the GONE
-        // assignment to the following frame via post{} keeps the view VISIBLE for the single
-        // attach frame (imperceptible -- it's 0-alpha/no drawable difference either way since
-        // isIndeterminate hasn't started spinning) while avoiding the OS-level trigger condition.
+        val halo = BubbleHaloRingView(this)
         val ring = ProgressBar(this).apply {
             isIndeterminate = true
             indeterminateTintList = ColorStateList.valueOf(COLOR_RING)
+            elevation = 4 * dp
         }
         ring.post { ring.visibility = View.GONE }
 
         val img = ImageView(this).apply {
             setPadding(pad, pad, pad, pad)
+            elevation = 4 * dp
+            outlineProvider = OVAL_OUTLINE_PROVIDER
+            clipToOutline = true
         }
 
+        val soundwave = BubbleSoundwaveView(this).apply {
+            setPadding(pad, pad, pad, pad)
+            elevation = 4 * dp
+        }
+
+        val edgePill = buildEdgeDockPill()
+        val capsule = buildRecordingCapsule()
+
         val overlay = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(halo, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(img, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.CENTER))
+            addView(soundwave, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.CENTER))
             // Added after img (on top in z-order) and sized to the button itself, not the larger
             // outer ringSize, so it draws as a ring inset within the button's circular fill instead
             // of in the transparent margin around it.
             addView(ring, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.CENTER))
+            addView(edgePill, FrameLayout.LayoutParams(
+                (EDGE_DOCK_PILL_W_DP * dp).toInt(),
+                (EDGE_DOCK_PILL_H_DP * dp).toInt(),
+                Gravity.START or Gravity.CENTER_VERTICAL,
+            ))
+            addView(capsule, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
         // Language badge ("ES") while a "Translate to" target is set. A child of the same ring
         // window, so it never changes the window size or touch area, and it is not clickable so
         // touches fall through to the ring's own listener. GONE (and absent from layout) when the
         // target is Original; see [refreshTranslationBadge].
-        val badge = buildTranslationBadge(ringSizeDp)
+        val badge = buildTranslationBadge(ringSizeDp).apply {
+            elevation = 5 * dp
+        }
         overlay.addView(badge, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.END,
@@ -1507,27 +1605,35 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // tracker state that was never updated for this gesture.
         var consumedByPeekRestore = false
         val holdFeedback = Runnable {
-            if (downPendingAction != OverlayLongPressAction.CANCEL_RECORDING) return@Runnable
-            if (runtime.currentState() != RecordingStateMachine.State.RECORDING) return@Runnable
+            val state = runtime.currentState()
+            val matchesRecording = downPendingAction == OverlayLongPressAction.CANCEL_RECORDING &&
+                state == RecordingStateMachine.State.RECORDING
+            val matchesTranscribing = downPendingAction == OverlayLongPressAction.CANCEL_TRANSCRIPTION &&
+                state == RecordingStateMachine.State.TRANSCRIBING
+            if (!matchesRecording && !matchesTranscribing) return@Runnable
             if (!gesture.onHoldFeedbackTimer()) return@Runnable
             val feedbackDelay = overlayHoldFeedbackDelayMs(
                 downPendingAction,
                 ViewConfiguration.getLongPressTimeout(),
             ) ?: 0L
             val remainingMs = (gesture.longPressTimeoutMs - feedbackDelay).coerceAtLeast(1L)
-            beginDiscardHoldFeedback(remainingMs)
+            beginDiscardHoldFeedback(remainingMs, isTranscriptionCancel = matchesTranscribing)
         }
         val longPress = Runnable {
             val action = overlayLongPressActionFor(
                 runtime.currentState(),
                 hasPendingInjection = pendingInjection != null,
                 cancelAndUndoEnabled = LongPressCancelUndoToggle.isEnabled(this),
+                idleQuickMenuEnabled = IdleQuickMenuToggle.isEnabled(this),
             )
             // Drag wins (#57): a hold that already became a drag never fires a long-press. Either
             // way the touch can no longer end as a tap (#322).
             if (!gesture.onLongPressTimer()) return@Runnable
-            if (downPendingAction == OverlayLongPressAction.CANCEL_RECORDING &&
-                action != OverlayLongPressAction.CANCEL_RECORDING) {
+            if ((downPendingAction == OverlayLongPressAction.CANCEL_RECORDING &&
+                    action != OverlayLongPressAction.CANCEL_RECORDING) ||
+                (downPendingAction == OverlayLongPressAction.CANCEL_TRANSCRIPTION &&
+                    action != OverlayLongPressAction.CANCEL_TRANSCRIPTION)
+            ) {
                 clearDiscardHoldFeedback(restoreRecordingUi = false)
                 return@Runnable
             }
@@ -1538,9 +1644,13 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 OverlayLongPressAction.CANCEL_RECORDING -> {
                     clearDiscardHoldFeedback(restoreRecordingUi = false)
                     overlay.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
-                    cancelRecording()
+                    runtime.cancelOrKeepLiveRecording()
                 }
-                OverlayLongPressAction.CANCEL_TRANSCRIPTION -> cancelTranscription()
+                OverlayLongPressAction.CANCEL_TRANSCRIPTION -> {
+                    clearDiscardHoldFeedback(restoreRecordingUi = false)
+                    overlay.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
+                    cancelTranscription()
+                }
                 OverlayLongPressAction.UNDO_INJECTION -> undoLastInjection()
                 OverlayLongPressAction.SHOW_STYLE_MENU -> { showStyleMenu(); styleMenuOpenedByLongPress = true }
                 OverlayLongPressAction.NONE -> Unit
@@ -1559,9 +1669,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
             // no on-screen affordance left to recover it.
             params.y = params.y.coerceIn(margin, (screenH - ringSize - margin).coerceAtLeast(margin))
             wm.updateViewLayout(v, params)
-            feedbackLayoutParams?.let {
-                positionFeedback(it, params, feedbackView?.height ?: 0)
-                wm.updateViewLayout(feedbackView, it)
+            feedbackLayoutParams?.let { lp ->
+                feedbackContainer?.let { fc ->
+                    positionFeedback(lp, params, fc.height)
+                    wm.updateViewLayout(fc, lp)
+                }
             }
             // Persist the newly-settled drag position (#101) so it survives a later
             // service recreation instead of only living in this in-memory params
@@ -1612,6 +1724,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                         runtime.currentState(),
                         hasPendingInjection = pendingInjection != null,
                         cancelAndUndoEnabled = LongPressCancelUndoToggle.isEnabled(this),
+                        idleQuickMenuEnabled = IdleQuickMenuToggle.isEnabled(this),
                     )
                     downPendingAction = pendingAction
                     val armed = pendingAction != OverlayLongPressAction.NONE
@@ -1657,9 +1770,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
                         params.x = startX + (ev.rawX - touchX).toInt()
                         params.y = startY + (ev.rawY - touchY).toInt()
                         wm.updateViewLayout(v, params)
-                        feedbackLayoutParams?.let {
-                            positionFeedback(it, params, feedbackView?.height ?: 0)
-                            wm.updateViewLayout(feedbackView, it)
+                        feedbackLayoutParams?.let { lp ->
+                            feedbackContainer?.let { fc ->
+                                positionFeedback(lp, params, fc.height)
+                                wm.updateViewLayout(fc, lp)
+                            }
                         }
                     }
                     true
@@ -1735,28 +1850,40 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // was the actual trigger, just not only "at attach time" as originally believed.
         val feedback = TextView(this).apply {
             textSize = 13f
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(overlayPopupPrimaryText())
             setPadding((12 * dp).toInt(), (8 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
-            background = pill(COLOR_FEEDBACK_BG)
             alpha = 0f
             isClickable = true
             setOnClickListener { onFeedbackTapped() }
-            // #121: TalkBack never announced bubble text changes -- including actionable states
-            // like "Preview: ... tap to insert" and "Cleanup failed (...)" -- because this view had
-            // no live region set. POLITE (rather than a per-case ASSERTIVE-for-errors split) is
-            // used uniformly here: it's a simple, correct fix for every state this bubble shows,
-            // and none of those states are urgent/interrupting enough to justify stealing focus
-            // from whatever the user is already doing (ASSERTIVE's whole point) at the cost of the
-            // added complexity of threading a "is this an error" flag through to every call site.
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        // No post-attach GONE assignment (real root cause fix -- see hideFeedback's comment
-        // above): this window's root view stays VISIBLE permanently; hidden state is expressed
-        // purely via alpha, matching the ring's fix. alpha is already 0f above so nothing is
-        // visibly drawn, and FLAG_NOT_TOUCHABLE / setFeedbackTouchable gate interaction, exactly
-        // as before -- only the window's participation in WMS's fold-triggered BLAST sync
-        // changes, since a permanently-attached VISIBLE window can actually draw a frame and
-        // satisfy the sync instead of stalling it for the full 2000ms timeout.
+        val closeBtn = TextView(this).apply {
+            text = "\u2715"
+            textSize = 13f
+            contentDescription = "Dismiss"
+            gravity = Gravity.CENTER
+            setTextColor(overlayPopupSecondaryText())
+            setPadding((8 * dp).toInt(), (6 * dp).toInt(), (10 * dp).toInt(), (6 * dp).toInt())
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            setOnClickListener { onFeedbackDismissTapped() }
+        }
+        val feedbackHost = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = themedFeedbackPill(isFallback = false)
+            alpha = 0f
+            visibility = View.VISIBLE
+            addView(feedback, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
+            addView(closeBtn, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
+        }
 
         val feedbackParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -1769,26 +1896,22 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
         positionFeedback(feedbackParams, params, feedbackHeight = 0)
 
-        // #260: record each window as it attaches, rather than assigning every tracking field
-        // after both addView calls returned. Under the old ordering a throw on the second call
-        // left the first window attached with overlayView still null, and removeOverlay()'s
-        // null-guarded teardown could then never remove it -- the window leaked for the life of
-        // the process. These are TYPE_ACCESSIBILITY_OVERLAY windows whose token belongs to the
-        // live service connection, so addView legitimately throws BadTokenException when that
-        // connection is torn down between onServiceConnected() and here (an automation app
-        // toggling the service off mid-connect does exactly that). Uncaught, it propagated out
-        // of a lifecycle callback and took the process down; failing to attach the overlay
-        // should cost the user their floating button, not the whole service.
         try {
             wm.addView(overlay, params)
             overlayView = overlay
             button = img
             spinner = ring
+            bubbleSoundwave = soundwave
+            bubbleHaloRing = halo
+            edgeDockPillView = edgePill
+            recordingCapsuleView = capsule
             translationBadge = badge
             refreshTranslationBadge()
             layoutParams = params
-            wm.addView(feedback, feedbackParams)
+            wm.addView(feedbackHost, feedbackParams)
+            feedbackContainer = feedbackHost
             feedbackView = feedback
+            feedbackCloseButton = closeBtn
             feedbackLayoutParams = feedbackParams
         } catch (e: WindowManager.BadTokenException) {
             Log.e(TAG, "Could not attach overlay windows; floating button unavailable", e)
@@ -1823,8 +1946,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
      * and fold/rotation repositioning without needing to be reapplied on every layout change.
      * Requires API 29+ (minSdk is 30, see build.gradle.kts) so no version guard is needed.
      */
-    private fun applyGestureExclusion(overlay: View, ringSize: Int) {
-        overlay.setSystemGestureExclusionRects(listOf(Rect(0, 0, ringSize, ringSize)))
+    private fun applyGestureExclusion(overlay: View, widthPx: Int, heightPx: Int = widthPx) {
+        overlay.setSystemGestureExclusionRects(listOf(Rect(0, 0, widthPx, heightPx)))
     }
 
     /** Scales [valueDp] (one of [BTN_DP]/[PAD_DP], defined against the [RING_DP] reference size)
@@ -1903,9 +2026,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // one frame, which is imperceptible for a repositioning animation.
         handler.post {
             overlayView?.let { wm.updateViewLayout(it, params) }
-            feedbackLayoutParams?.let {
-                positionFeedback(it, params, feedbackView?.height ?: 0)
-                wm.updateViewLayout(feedbackView, it)
+            feedbackLayoutParams?.let { lp ->
+                feedbackContainer?.let { fc ->
+                    positionFeedback(lp, params, fc.height)
+                    wm.updateViewLayout(fc, lp)
+                }
             }
         }
         // Persist the fold/unfold-settled position (#101) so a subsequent service recreation
@@ -2131,6 +2256,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         prePeekX = params.x
         isPeeked = true
         refreshTranslationBadge()
+        updateEdgeDockPillVisual(peeked = true, dockedX = params.x, ringSize = ringSize)
         Log.i(TAG, "Peeking ring: x=${params.x} -> $targetX (sliver ${peekVisiblePx}px, inset ${ringInsetPx()}px)")
         animateRingX(params, wm, targetX)
     }
@@ -2169,6 +2295,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         isPeeked = false
         prePeekX = null
         refreshTranslationBadge()
+        updateEdgeDockPillVisual(peeked = false, dockedX = targetX, ringSize = params.width)
         Log.i(TAG, "Restoring ring from peek: x=${params.x} -> $targetX")
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         animateRingX(params, wm, targetX)
@@ -2182,6 +2309,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         isPeeked = false
         prePeekX = null
         refreshTranslationBadge()
+        updateEdgeDockPillVisual(peeked = false, dockedX = dockedX, ringSize = params.width)
         armIdlePeekTimer()
     }
 
@@ -2223,9 +2351,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
         if (isReducedMotionEnabled()) {
             params.x = targetX
             wm.updateViewLayout(overlay, params)
-            feedbackLayoutParams?.let {
-                positionFeedback(it, params, feedbackView?.height ?: 0)
-                wm.updateViewLayout(feedbackView, it)
+            feedbackLayoutParams?.let { lp ->
+                feedbackContainer?.let { fc ->
+                    positionFeedback(lp, params, fc.height)
+                    wm.updateViewLayout(fc, lp)
+                }
             }
             return
         }
@@ -2235,9 +2365,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
             addUpdateListener { anim ->
                 params.x = anim.animatedValue as Int
                 wm.updateViewLayout(overlay, params)
-                feedbackLayoutParams?.let {
-                    positionFeedback(it, params, feedbackView?.height ?: 0)
-                    wm.updateViewLayout(feedbackView, it)
+                feedbackLayoutParams?.let { lp ->
+                    feedbackContainer?.let { fc ->
+                        positionFeedback(lp, params, fc.height)
+                        wm.updateViewLayout(fc, lp)
+                    }
                 }
             }
             // Fires the deferred appearance/pulse change (see [deferUntilPeekAnimationDone]) once
@@ -2331,15 +2463,21 @@ open class WhisperAccessibilityService : AccessibilityService() {
         peekAnimator?.cancel()
         peekAnimator = null
         cancelPendingRingHoldRunnables()
+        cancelInsertFlash()
+        stopCapsuleTimer()
+        capsuleExpanded = false
+        discardHoldAnimator?.cancel()
+        discardHoldAnimator = null
+        discardHoldProgressAnimator?.cancel()
+        discardHoldProgressAnimator = null
+        discardHoldCountdownRunnable?.let(handler::removeCallbacks)
+        discardHoldCountdownRunnable = null
+        bubbleHaloRing?.cancelAnimations()
+        bubbleSoundwave?.stop()
+        capsuleSoundwave?.stop()
         holdFeedbackAction = null
         longPressAction = null
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        // #260: removeOverlay() is now also the unwind path for a failed attach in showOverlay(),
-        // so a throw here would defeat that recovery. removeView throws IllegalArgumentException
-        // for a view WMS no longer considers attached, which is exactly the state a torn-down
-        // service connection leaves behind. Null the field either way: if the view is already
-        // gone there is nothing left to remove, and holding the reference only risks a later
-        // removeView against a stale token.
         overlayView?.let {
             try {
                 wm.removeView(it)
@@ -2348,16 +2486,26 @@ open class WhisperAccessibilityService : AccessibilityService() {
             }
             overlayView = null
         }
-        feedbackView?.let {
+        feedbackContainer?.let {
             try {
                 wm.removeView(it)
             } catch (e: IllegalArgumentException) {
                 Log.w(TAG, "Feedback window already detached", e)
             }
-            feedbackView = null
+            feedbackContainer = null
         }
+        feedbackView = null
+        feedbackCloseButton = null
         button = null
         spinner = null
+        bubbleSoundwave = null
+        bubbleHaloRing = null
+        edgeDockPillView = null
+        recordingCapsuleView = null
+        capsuleStatusDot = null
+        capsuleLiveLabel = null
+        capsuleSoundwave = null
+        capsuleTimerText = null
         translationBadge = null
         layoutParams = null
         feedbackLayoutParams = null
@@ -2404,25 +2552,359 @@ open class WhisperAccessibilityService : AccessibilityService() {
         if (appearance.hasCustomIcon) {
             val bitmap = OverlayIconStore.load(this)
             if (bitmap != null) {
+                bubbleSoundwave?.visibility = View.GONE
+                spinner?.alpha = 1f
                 btn.background = null
                 btn.scaleType = ImageView.ScaleType.CENTER_CROP
                 btn.imageTintList = null
                 btn.setImageBitmap(bitmap)
                 btn.clipToOutline = true
                 btn.outlineProvider = OVAL_OUTLINE_PROVIDER
+                if (!discardHoldFeedbackActive && !insertFlashActive) refreshBubbleHaloMode()
                 return
             }
             // Stored file missing/corrupt: fall through to the built-in glyph (#43's documented
             // fallback) instead of leaving the button with no image at all.
         }
 
-        btn.clipToOutline = false
-        btn.outlineProvider = null
+        btn.clipToOutline = true
+        btn.outlineProvider = OVAL_OUTLINE_PROVIDER
+        btn.elevation = 4 * dp
         btn.scaleType = ImageView.ScaleType.CENTER_INSIDE
-        btn.setImageResource(R.drawable.ic_mic)
-        btn.imageTintList = ColorStateList.valueOf(appearance.glyphColor ?: COLOR_GLYPH_DEFAULT)
+        btn.setImageDrawable(null)
+        btn.imageTintList = null
         val fill = if (stateColor == COLOR_IDLE) (appearance.fillColor ?: COLOR_IDLE) else stateColor
-        btn.background = circleWithBorder(fill, appearance.borderColor ?: COLOR_BORDER_DEFAULT)
+        btn.background = circleWithBorder(fill, Color.TRANSPARENT)
+        bubbleSoundwave?.visibility = if (capsuleExpanded) View.GONE else View.VISIBLE
+        bubbleSoundwave?.color = when (stateColor) {
+            COLOR_DISCARD_HOLD -> 0xFFFFFFFF.toInt()
+            else -> appearance.glyphColor ?: COLOR_GLYPH_DEFAULT
+        }
+        spinner?.alpha = 0f
+        if (!discardHoldFeedbackActive && !insertFlashActive) {
+            refreshBubbleHaloMode()
+        }
+    }
+
+    // --- Phase 3B.1: Theme-aware overlay surfaces, signature bubble halo, edge-dock pill & capsule ---
+
+    private fun isDarkMode(): Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) != Configuration.UI_MODE_NIGHT_NO
+
+    private fun overlayPopupBg(): Int = if (isDarkMode()) COLOR_POPUP_DARK_BG else COLOR_POPUP_LIGHT_BG
+    private fun overlayPopupBorder(): Int = if (isDarkMode()) COLOR_POPUP_DARK_BORDER else COLOR_POPUP_LIGHT_BORDER
+    private fun overlayPopupPrimaryText(): Int = if (isDarkMode()) COLOR_POPUP_DARK_PRIMARY else COLOR_POPUP_LIGHT_PRIMARY
+    private fun overlayPopupSecondaryText(): Int = if (isDarkMode()) COLOR_POPUP_DARK_SECONDARY else COLOR_POPUP_LIGHT_SECONDARY
+    private fun overlayPopupDividerColor(): Int = if (isDarkMode()) COLOR_POPUP_DARK_DIVIDER else COLOR_POPUP_LIGHT_DIVIDER
+
+    private fun themedFeedbackPill(isFallback: Boolean): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = 16 * dp
+        if (isFallback) {
+            setColor(COLOR_FEEDBACK_FALLBACK_BG)
+            setStroke((1 * dp).toInt().coerceAtLeast(1), 0x40FFFFFF)
+        } else {
+            setColor(overlayPopupBg())
+            setStroke((1 * dp).toInt().coerceAtLeast(1), overlayPopupBorder())
+        }
+    }
+
+    private fun refreshThemedOverlaySurfaces() {
+        feedbackContainer?.background = themedFeedbackPill(lastFeedbackIsFallback)
+        feedbackView?.setTextColor(if (lastFeedbackIsFallback) 0xFFFFFFFF.toInt() else overlayPopupPrimaryText())
+        feedbackCloseButton?.setTextColor(if (lastFeedbackIsFallback) 0xFFFFFFFF.toInt() else overlayPopupSecondaryText())
+        styleRecordingCapsuleChrome()
+        if (styleMenuView != null) {
+            val builder = if (styleMenuIsHideConfirm) ::buildHideIconConfirmMenu else ::buildStyleMenuContent
+            showStyleMenu(builder)
+        }
+    }
+
+    private fun refreshBubbleHaloMode() {
+        val halo = bubbleHaloRing ?: return
+        val appearance = OverlayAppearancePrefs.load(this)
+        val hasCustomIcon = appearance.hasCustomIcon && OverlayIconStore.exists(this)
+        val borderDefault = appearance.borderColor ?: COLOR_BORDER_DEFAULT
+        val mode = when (runtimeInstance?.currentState() ?: RecordingStateMachine.State.IDLE) {
+            RecordingStateMachine.State.RECORDING -> when {
+                liveConnectedUi -> BubbleHaloRingView.Mode.RecordingLiveConnected
+                liveDisconnectedUi -> BubbleHaloRingView.Mode.RecordingLiveDisconnected
+                else -> BubbleHaloRingView.Mode.RecordingBatch(borderDefault)
+            }
+            RecordingStateMachine.State.TRANSCRIBING -> BubbleHaloRingView.Mode.ProcessingSweep(cleaningUi)
+            RecordingStateMachine.State.IDLE -> BubbleHaloRingView.Mode.Idle(
+                if (hasCustomIcon) Color.TRANSPARENT else borderDefault
+            )
+        }
+        halo.setMode(mode)
+    }
+
+    private fun triggerInsertFlash() {
+        if (isReducedMotionEnabled()) return
+        cancelInsertFlash()
+        val halo = bubbleHaloRing ?: return
+        insertFlashActive = true
+        halo.setMode(BubbleHaloRingView.Mode.InsertFlash)
+        val clear = Runnable {
+            insertFlashRunnable = null
+            insertFlashActive = false
+            refreshBubbleHaloMode()
+        }
+        insertFlashRunnable = clear
+        handler.postDelayed(clear, INSERT_FLASH_DURATION_MS)
+    }
+
+    private fun cancelInsertFlash() {
+        insertFlashRunnable?.let(handler::removeCallbacks)
+        insertFlashRunnable = null
+        insertFlashActive = false
+    }
+
+    private fun buildEdgeDockPill(): FrameLayout {
+        val accentBar = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 1 * dp
+                setColor(COLOR_BORDER_DEFAULT)
+            }
+            layoutParams = FrameLayout.LayoutParams((2 * dp).toInt().coerceAtLeast(2), (22 * dp).toInt(), Gravity.CENTER)
+        }
+        return FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 7 * dp
+                setColor(COLOR_POPUP_DARK_BG)
+                setStroke((1 * dp).toInt().coerceAtLeast(1), COLOR_POPUP_DARK_BORDER)
+            }
+            alpha = 0f
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            addView(accentBar)
+        }
+    }
+
+    private fun updateEdgeDockPillVisual(peeked: Boolean, dockedX: Int, ringSize: Int) {
+        val pill = edgeDockPillView ?: return
+        val snappedRight = RingPeek.isSnappedToRightEdge(dockedX, screenW, ringSize)
+        val peekVisiblePx = (PeekVisibleSize.dpOrDefault(this) * dp).toInt()
+        val pillW = (EDGE_DOCK_PILL_W_DP * dp).toInt()
+        val offset = (ringInsetPx() + peekVisiblePx - pillW).coerceAtLeast(0)
+        val lp = (pill.layoutParams as? FrameLayout.LayoutParams) ?: FrameLayout.LayoutParams(
+            pillW, (EDGE_DOCK_PILL_H_DP * dp).toInt()
+        )
+        if (snappedRight) {
+            lp.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            lp.marginStart = offset
+            lp.marginEnd = 0
+        } else {
+            lp.gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            lp.marginStart = 0
+            lp.marginEnd = offset
+        }
+        pill.layoutParams = lp
+
+        val bubbleAlpha = if (peeked) 0f else 1f
+        val pillAlpha = if (peeked) 1f else 0f
+        if (isReducedMotionEnabled()) {
+            button?.alpha = bubbleAlpha
+            bubbleSoundwave?.alpha = bubbleAlpha
+            bubbleHaloRing?.alpha = bubbleAlpha
+            pill.alpha = pillAlpha
+        } else {
+            button?.animate()?.alpha(bubbleAlpha)?.setDuration(150)?.start()
+            bubbleSoundwave?.animate()?.alpha(bubbleAlpha)?.setDuration(150)?.start()
+            bubbleHaloRing?.animate()?.alpha(bubbleAlpha)?.setDuration(150)?.start()
+            pill.animate().alpha(pillAlpha).setDuration(150).start()
+        }
+    }
+
+    private fun buildRecordingCapsule(): LinearLayout {
+        val dot = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xFFEF4444.toInt())
+            }
+            layoutParams = LinearLayout.LayoutParams((8 * dp).toInt(), (8 * dp).toInt()).apply {
+                marginEnd = (6 * dp).toInt()
+            }
+        }
+        val liveLbl = TextView(this).apply {
+            text = "LIVE"
+            textSize = 10f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(BubbleHaloRingView.COLOR_EMERALD)
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                marginEnd = (6 * dp).toInt()
+            }
+        }
+        val bars = BubbleSoundwaveView(this).apply {
+            color = COLOR_GLYPH_DEFAULT
+            layoutParams = LinearLayout.LayoutParams((24 * dp).toInt(), (20 * dp).toInt()).apply {
+                marginEnd = (8 * dp).toInt()
+            }
+        }
+        val timer = TextView(this).apply {
+            text = "0:00"
+            textSize = 12f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(overlayPopupPrimaryText())
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                marginEnd = (8 * dp).toInt()
+            }
+        }
+        val cancelBtn = TextView(this).apply {
+            text = "\u2715"
+            textSize = 13f
+            contentDescription = "Cancel recording"
+            gravity = Gravity.CENTER
+            setTextColor(overlayPopupSecondaryText())
+            setPadding((6 * dp).toInt(), (4 * dp).toInt(), (6 * dp).toInt(), (4 * dp).toInt())
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                runtime.cancelOrKeepLiveRecording()
+            }
+        }
+        capsuleStatusDot = dot
+        capsuleLiveLabel = liveLbl
+        capsuleSoundwave = bars
+        capsuleTimerText = timer
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((12 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 22 * dp
+                setColor(overlayPopupBg())
+                setStroke((1 * dp).toInt().coerceAtLeast(1), overlayPopupBorder())
+            }
+            visibility = View.GONE
+            isClickable = true
+            setOnClickListener { onTap() }
+            addView(dot)
+            addView(liveLbl)
+            addView(bars)
+            addView(timer)
+            addView(cancelBtn)
+        }
+    }
+
+    private fun styleRecordingCapsuleChrome() {
+        recordingCapsuleView?.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 22 * dp
+            setColor(overlayPopupBg())
+            setStroke((1 * dp).toInt().coerceAtLeast(1), overlayPopupBorder())
+        }
+        capsuleTimerText?.setTextColor(overlayPopupPrimaryText())
+    }
+
+    private fun updateRecordingCapsuleLiveBadge() {
+        val dotColor = when {
+            liveConnectedUi -> BubbleHaloRingView.COLOR_EMERALD
+            liveDisconnectedUi -> BubbleHaloRingView.COLOR_AMBER
+            else -> 0xFFEF4444.toInt()
+        }
+        (capsuleStatusDot?.background as? GradientDrawable)?.setColor(dotColor)
+        capsuleLiveLabel?.visibility = if (liveConnectedUi) View.VISIBLE else View.GONE
+    }
+
+    private fun expandRecordingCapsuleIfEnabled() {
+        if (!ActiveRecordingCapsuleToggle.isEnabled(this)) return
+        if (capsuleExpanded) return
+        val overlay = overlayView ?: return
+        val params = layoutParams ?: return
+        val capsule = recordingCapsuleView ?: return
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        preCapsuleDockedX = params.x
+        preCapsuleRingSize = params.width
+        capsuleExpanded = true
+
+        val margin = (MARGIN_DP * dp).toInt()
+        val capsuleW = (CAPSULE_WIDTH_DP * dp).toInt().coerceAtMost((screenW - 2 * margin).coerceAtLeast(preCapsuleRingSize))
+        val capsuleH = (CAPSULE_HEIGHT_DP * dp).toInt()
+        val snappedRight = RingPeek.isSnappedToRightEdge(preCapsuleDockedX, screenW, preCapsuleRingSize)
+        params.width = capsuleW
+        params.height = capsuleH
+        params.x = if (snappedRight) {
+            (preCapsuleDockedX + preCapsuleRingSize - capsuleW).coerceAtLeast(screenLeft + margin)
+        } else {
+            preCapsuleDockedX.coerceAtMost((screenW - capsuleW - margin).coerceAtLeast(screenLeft + margin))
+        }
+
+        button?.visibility = View.GONE
+        bubbleSoundwave?.visibility = View.GONE
+        bubbleHaloRing?.visibility = View.GONE
+        edgeDockPillView?.visibility = View.GONE
+        translationBadge?.visibility = View.GONE
+        styleRecordingCapsuleChrome()
+        updateRecordingCapsuleLiveBadge()
+        capsule.visibility = View.VISIBLE
+        capsuleSoundwave?.setActive(true)
+        startCapsuleTimer()
+
+        wm.updateViewLayout(overlay, params)
+        applyGestureExclusion(overlay, capsuleW, capsuleH)
+    }
+
+    private fun collapseRecordingCapsuleIfExpanded() {
+        stopCapsuleTimer()
+        capsuleSoundwave?.setActive(false)
+        if (!capsuleExpanded) return
+        capsuleExpanded = false
+        val overlay = overlayView
+        val params = layoutParams
+        recordingCapsuleView?.visibility = View.GONE
+        button?.visibility = View.VISIBLE
+        val appearance = OverlayAppearancePrefs.load(this)
+        val hasCustom = appearance.hasCustomIcon && OverlayIconStore.exists(this)
+        bubbleSoundwave?.visibility = if (hasCustom) View.GONE else View.VISIBLE
+        bubbleHaloRing?.visibility = View.VISIBLE
+        edgeDockPillView?.visibility = View.VISIBLE
+        refreshTranslationBadge()
+        if (overlay != null && params != null && preCapsuleRingSize > 0) {
+            params.width = preCapsuleRingSize
+            params.height = preCapsuleRingSize
+            params.x = preCapsuleDockedX
+            try {
+                (getSystemService(WINDOW_SERVICE) as WindowManager).updateViewLayout(overlay, params)
+            } catch (_: IllegalArgumentException) {
+            }
+            applyGestureExclusion(overlay, preCapsuleRingSize)
+        }
+    }
+
+    private fun startCapsuleTimer() {
+        stopCapsuleTimer()
+        capsuleStartedAtMs = android.os.SystemClock.elapsedRealtime()
+        capsuleTimerText?.text = "0:00"
+        if (isReducedMotionEnabled()) return
+        val tick = object : Runnable {
+            override fun run() {
+                if (!capsuleExpanded) return
+                val sec = ((android.os.SystemClock.elapsedRealtime() - capsuleStartedAtMs) / 1000L).coerceAtLeast(0L)
+                capsuleTimerText?.text = String.format(java.util.Locale.US, "%d:%02d", sec / 60L, sec % 60L)
+                handler.postDelayed(this, 1000L)
+            }
+        }
+        capsuleTimerRunnable = tick
+        handler.postDelayed(tick, 1000L)
+    }
+
+    private fun stopCapsuleTimer() {
+        capsuleTimerRunnable?.let(handler::removeCallbacks)
+        capsuleTimerRunnable = null
     }
 
     private fun setAppearance(color: Int) {
@@ -2459,6 +2941,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
             (btn.layoutParams as FrameLayout.LayoutParams).apply { width = buttonSize; height = buttonSize }
             btn.setPadding(pad, pad, pad, pad)
             btn.requestLayout()
+            bubbleSoundwave?.let { sw ->
+                (sw.layoutParams as FrameLayout.LayoutParams).apply { width = buttonSize; height = buttonSize }
+                sw.setPadding(pad, pad, pad, pad)
+                sw.requestLayout()
+            }
 
             val stateColor = when (runtime.currentState()) {
                 RecordingStateMachine.State.IDLE -> COLOR_IDLE
@@ -2467,7 +2954,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
             }
             applyButtonAppearance(stateColor)
 
-            feedbackLayoutParams?.let { positionFeedback(it, params, feedbackView?.height ?: 0); wm.updateViewLayout(feedbackView, it) }
+            feedbackLayoutParams?.let { lp ->
+                feedbackContainer?.let { fc ->
+                    positionFeedback(lp, params, fc.height)
+                    wm.updateViewLayout(fc, lp)
+                }
+            }
 
             // #111: the exclusion rect reserved in showOverlay() is sized to the ring at the
             // time it was first shown. A live overlay-size settings change resizes params.width/
@@ -2552,37 +3044,53 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun showFeedback(text: String, durationMs: Long = 2000, touchable: Boolean = false, isFallback: Boolean = false, targetBounds: Rect? = null) {
+    private fun showFeedback(
+        text: String,
+        durationMs: Long = 2000,
+        touchable: Boolean = false,
+        isFallback: Boolean = false,
+        targetBounds: Rect? = null,
+        dismissible: Boolean = false,
+    ) {
         handler.post {
             // #373: never draw (or make touchable) a bubble over the lock screen / AOD. Dropped,
             // not queued, so nothing stale replays on wake. Dictation itself is unaffected.
             if (!feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff())) return@post
+            val container = feedbackContainer ?: return@post
             val view = feedbackView ?: return@post
             val bubbleParams = layoutParams ?: return@post
             val feedbackParams = feedbackLayoutParams ?: return@post
             val wm = getSystemService(WINDOW_SERVICE) as WindowManager
 
+            lastFeedbackIsFallback = isFallback
+            lastFeedbackDismissible = dismissible
             view.text = text
-            view.background = pill(if (isFallback) COLOR_FEEDBACK_FALLBACK_BG else COLOR_FEEDBACK_BG)
-            setFeedbackTouchable(touchable)
-            // view.height reflects the PREVIOUS text's measured size (0 before the bubble has
-            // ever been shown) -- close enough for the initial placement below, then corrected
-            // once this text's real layout is available, same two-pass approach as
-            // showStyleMenu's menu.post{} (WRAP_CONTENT's true size still isn't known until after
-            // the next layout pass actually runs).
-            positionFeedback(feedbackParams, bubbleParams, view.height, targetBounds)
-            wm.updateViewLayout(view, feedbackParams)
-            view.post {
-                if (feedbackView !== view) return@post // hidden/replaced already
-                positionFeedback(feedbackParams, bubbleParams, view.height, targetBounds)
-                wm.updateViewLayout(view, feedbackParams)
+            view.setTextColor(if (isFallback) 0xFFFFFFFF.toInt() else overlayPopupPrimaryText())
+            feedbackCloseButton?.setTextColor(if (isFallback) 0xFFFFFFFF.toInt() else overlayPopupSecondaryText())
+            feedbackCloseButton?.visibility = if (dismissible) View.VISIBLE else View.GONE
+            container.background = themedFeedbackPill(isFallback)
+            setFeedbackTouchable(touchable || dismissible)
+            positionFeedback(feedbackParams, bubbleParams, container.height, targetBounds)
+            wm.updateViewLayout(container, feedbackParams)
+            container.post {
+                if (feedbackContainer !== container) return@post // hidden/replaced already
+                positionFeedback(feedbackParams, bubbleParams, container.height, targetBounds)
+                wm.updateViewLayout(container, feedbackParams)
             }
 
             handler.removeCallbacks(hideFeedback)
+            container.animate().cancel()
             view.animate().cancel()
+            container.visibility = View.VISIBLE
             view.visibility = View.VISIBLE
-            view.alpha = 0f
-            view.animate().alpha(1f).setDuration(120).start()
+            if (isReducedMotionEnabled()) {
+                container.alpha = 1f
+                view.alpha = 1f
+            } else {
+                container.alpha = 0f
+                view.alpha = 1f
+                container.animate().alpha(1f).setDuration(120).start()
+            }
             handler.postDelayed(hideFeedback, durationMs)
             countdownPillShowing = false
             stageStatusPillShowing = false
@@ -2601,14 +3109,25 @@ open class WhisperAccessibilityService : AccessibilityService() {
      * is on offer.
      */
     private fun setFeedbackTouchable(touchable: Boolean) {
-        val view = feedbackView ?: return
+        val container = feedbackContainer ?: return
         val params = feedbackLayoutParams ?: return
         params.flags = if (touchable) {
             params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         } else {
             params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         }
-        (getSystemService(WINDOW_SERVICE) as WindowManager).updateViewLayout(view, params)
+        (getSystemService(WINDOW_SERVICE) as WindowManager).updateViewLayout(container, params)
+    }
+
+    private fun onFeedbackDismissTapped() {
+        if (pendingPreview != null) {
+            resolvePreview { p -> p.discard() }
+            return
+        }
+        fallbackClipboardText = null
+        clearPendingInjection()
+        handler.removeCallbacks(hideFeedback)
+        hideFeedback.run()
     }
 
     // --- Long-press style/cleanup menu (#53, #103) ---
@@ -2786,17 +3305,39 @@ open class WhisperAccessibilityService : AccessibilityService() {
         minimumWidth = (220 * dp).toInt()
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = 12 * dp
-            setColor(COLOR_FEEDBACK_BG)
-            // A near-black translucent fill with no edge blends into a dark app background or
-            // dark wallpaper -- a subtle light-alpha border keeps the menu visually distinct
-            // regardless of what's behind it, without needing a hard opaque outline.
-            setStroke((1 * dp).toInt(), COLOR_MENU_BORDER)
+            cornerRadius = 16 * dp
+            setColor(overlayPopupBg())
+            setStroke((1 * dp).toInt().coerceAtLeast(1), overlayPopupBorder())
         }
         setPadding((6 * dp).toInt(), (6 * dp).toInt(), (6 * dp).toInt(), (6 * dp).toInt())
     }
 
+    private fun styleMenuHeader(title: String): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding((14 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt(), (6 * dp).toInt())
+        addView(TextView(this@WhisperAccessibilityService).apply {
+            text = title
+            textSize = 13f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            setTextColor(overlayPopupSecondaryText())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        addView(TextView(this@WhisperAccessibilityService).apply {
+            text = "\u2715"
+            textSize = 14f
+            contentDescription = "Close menu"
+            gravity = Gravity.CENTER
+            setTextColor(overlayPopupSecondaryText())
+            setPadding((10 * dp).toInt(), (6 * dp).toInt(), (10 * dp).toInt(), (6 * dp).toInt())
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { dismissStyleMenu() }
+        })
+    }
+
     private fun buildStyleMenuContent(): LinearLayout {
+        styleMenuIsHideConfirm = false
         val container = styleMenuContainer()
 
         // Read once, while building, and reused by every in-place rebuild (expand/collapse): once
@@ -2822,6 +3363,9 @@ open class WhisperAccessibilityService : AccessibilityService() {
         expanded: Boolean,
     ) {
         container.removeAllViews()
+        container.addView(styleMenuHeader("Quick menu"))
+        container.addView(styleMenuDivider())
+
         // #312: the model (cleanup state, current style, the list) comes from the helper the
         // keyboard's picker also uses, so the two surfaces can never disagree.
         val model = CleanupStyleMenu.load(this, hostPackage)
@@ -2831,6 +3375,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
             personas = model.personas,
             current = model.current,
             expanded = expanded,
+            includeLiveMode = true,
         )
 
         rows.forEachIndexed { i, row ->
@@ -2839,6 +3384,23 @@ open class WhisperAccessibilityService : AccessibilityService() {
             if (i > 0 && !groupedWithPrev) container.addView(styleMenuDivider())
             when (row) {
                 StyleMenuRow.Shortcut -> if (shortcut != null) container.addView(shortcutMenuRow(shortcut))
+                StyleMenuRow.LiveMode -> {
+                    val liveConfig = LiveTranscriptionConfigStore.load(this)
+                    val hasLiveKey = CloudLiveWiring.hasConfiguredLiveKey(this, liveConfig)
+                    val useLocal = prefs().getBoolean("use_local", true)
+                    val liveOn = liveConfig.enabled && hasLiveKey && !useLocal
+                    container.addView(
+                        styleMenuRow(
+                            icon = null,
+                            title = if (liveOn) "Live mode: On" else "Live mode: Off",
+                            subtitle = when {
+                                liveOn -> "Tap to switch to Batch"
+                                hasLiveKey -> "Tap to switch to Cloud Live"
+                                else -> "Requires a Gemini API key in Settings"
+                            },
+                        ) { onStyleMenuLiveModeToggleTapped() }
+                    )
+                }
                 StyleMenuRow.Cleanup -> {
                     val on = model.cleanupEnabled
                     val cleanupIcon = getDrawable(R.drawable.ic_cleanup)?.mutate()?.apply {
@@ -2996,12 +3558,13 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     gravity = Gravity.CENTER
-                    setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFE0E0E0.toInt())
+                    setTextColor(if (selected) 0xFFFFFFFF.toInt() else overlayPopupPrimaryText())
                     setPadding((8 * dp).toInt(), (7 * dp).toInt(), (8 * dp).toInt(), (7 * dp).toInt())
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.RECTANGLE
                         cornerRadius = 8 * dp
-                        setColor(if (selected) COLOR_TRANSLATE_BADGE else 0x26FFFFFF)
+                        val unselectedChip = if (isDarkMode()) 0x22FFFFFF else 0x14000000
+                        setColor(if (selected) COLOR_TRANSLATE_BADGE else unselectedChip)
                     }
                     isEnabled = !busy
                     alpha = if (busy) 0.4f else 1f
@@ -3058,7 +3621,10 @@ open class WhisperAccessibilityService : AccessibilityService() {
      * TYPE_APPLICATION_OVERLAY dialog would be a second window to manage for no benefit.
      */
     private fun buildHideIconConfirmMenu(): LinearLayout {
+        styleMenuIsHideConfirm = true
         val container = styleMenuContainer()
+        container.addView(styleMenuHeader("Hide icon"))
+        container.addView(styleMenuDivider())
 
         HideIconConfirmMenu.rows.forEachIndexed { i, spec ->
             if (i > 0) container.addView(styleMenuDivider())
@@ -3082,12 +3648,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
         return container
     }
 
-    /** Thin horizontal rule separating style menu row groups (#53/#57). */
+    /** Crisp 1px horizontal hairline separating quick menu row groups. */
     private fun styleMenuDivider(): View = View(this).apply {
-        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (1 * dp).toInt()).apply {
-            topMargin = (4 * dp).toInt(); bottomMargin = (4 * dp).toInt()
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply {
+            topMargin = (3 * dp).toInt(); bottomMargin = (3 * dp).toInt()
         }
-        setBackgroundColor(0x33FFFFFF)
+        setBackgroundColor(overlayPopupDividerColor())
     }
 
     private fun styleMenuRow(
@@ -3137,17 +3703,41 @@ open class WhisperAccessibilityService : AccessibilityService() {
             addView(TextView(this@WhisperAccessibilityService).apply {
                 text = title
                 textSize = if (prominent) 17f else 15f
-                setTextColor(0xFFFFFFFF.toInt())
+                setTextColor(if (prominent) 0xFFFFFFFF.toInt() else overlayPopupPrimaryText())
                 if (emphasized) setTypeface(typeface, android.graphics.Typeface.BOLD)
             })
             addView(TextView(this@WhisperAccessibilityService).apply {
                 text = subtitle
                 textSize = 12f
-                setTextColor(0xFFB0B0B0.toInt())
+                setTextColor(if (prominent) 0xFFE0E7FF.toInt() else overlayPopupSecondaryText())
                 setPadding(0, (2 * dp).toInt(), 0, 0)
             })
         })
         return row
+    }
+
+    /** Live <-> Batch quick mode toggle from the single idle quick menu (Phase 3B.1). */
+    private fun onStyleMenuLiveModeToggleTapped() {
+        val config = LiveTranscriptionConfigStore.load(this)
+        val hasKey = CloudLiveWiring.hasConfiguredLiveKey(this, config)
+        val useLocal = prefs().getBoolean("use_local", true)
+        val currentlyOn = config.enabled && hasKey && !useLocal
+        dismissStyleMenu()
+        if (currentlyOn) {
+            LiveTranscriptionConfigStore.save(this, config.copy(enabled = false))
+            showFeedback("Live mode off", durationMs = 1200)
+        } else {
+            if (!hasKey) {
+                toast("Add a Gemini API key in Rhema Cadence settings first")
+                return
+            }
+            prefs().edit().putBoolean("use_local", false).apply()
+            LiveTranscriptionConfigStore.save(
+                this,
+                config.copy(enabled = true, providerLocked = true, modelLocked = true),
+            )
+            showFeedback("Live mode on", durationMs = 1200)
+        }
     }
 
     /**
@@ -3311,15 +3901,31 @@ open class WhisperAccessibilityService : AccessibilityService() {
         runtime.onTap()
     }
 
-    /** Visual + haptic feedback during the 3-second hold-to-discard gesture while RECORDING. */
-    private fun beginDiscardHoldFeedback(remainingMs: Long) {
+    /** Visual + haptic feedback during the unified 3-second hold-to-cancel gesture (RECORDING or TRANSCRIBING). */
+    private fun beginDiscardHoldFeedback(remainingMs: Long, isTranscriptionCancel: Boolean = false) {
         clearDiscardHoldFeedback(restoreRecordingUi = false)
         discardHoldFeedbackActive = true
+        discardHoldIsTranscription = isTranscriptionCancel
         overlayView?.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
         stopPulse()
         applyButtonAppearance(COLOR_DISCARD_HOLD)
         spinner?.indeterminateTintList = ColorStateList.valueOf(COLOR_RING_DISCARD)
         spinner?.visibility = View.VISIBLE
+        val holdColor = BubbleHaloRingView.COLOR_DANGER
+        if (isReducedMotionEnabled()) {
+            bubbleHaloRing?.setMode(BubbleHaloRingView.Mode.HoldProgress(0.5f, holdColor))
+        } else {
+            bubbleHaloRing?.setMode(BubbleHaloRingView.Mode.HoldProgress(0f, holdColor))
+            discardHoldProgressAnimator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = remainingMs
+                interpolator = android.view.animation.LinearInterpolator()
+                addUpdateListener { anim ->
+                    if (!discardHoldFeedbackActive) return@addUpdateListener
+                    bubbleHaloRing?.setMode(BubbleHaloRingView.Mode.HoldProgress(anim.animatedValue as Float, holdColor))
+                }
+                start()
+            }
+        }
         val btn = button
         if (btn != null) {
             if (isReducedMotionEnabled()) {
@@ -3338,17 +3944,24 @@ open class WhisperAccessibilityService : AccessibilityService() {
             }
         }
         val endAtMs = android.os.SystemClock.uptimeMillis() + remainingMs
+        var initializedPill = false
         val countdown = object : Runnable {
             override fun run() {
                 if (!discardHoldFeedbackActive) return
                 val leftMs = (endAtMs - android.os.SystemClock.uptimeMillis()).coerceAtLeast(1L)
                 val secondsLeft = ((leftMs + 999L) / 1000L).toInt().coerceAtLeast(1)
-                showFeedback(
-                    getString(R.string.overlay_discard_hold_countdown, secondsLeft),
-                    durationMs = leftMs + 250L,
-                    touchable = false,
-                    isFallback = true,
-                )
+                val text = if (isTranscriptionCancel) {
+                    "Hold to cancel (${secondsLeft}s)\u2026"
+                } else {
+                    getString(R.string.overlay_discard_hold_countdown, secondsLeft)
+                }
+                if (!initializedPill) {
+                    initializedPill = true
+                    showHoldCountdownPill(text)
+                } else {
+                    // Update text in place without resetting alpha = 0f every second (no blink).
+                    feedbackView?.text = text
+                }
                 if (leftMs > 1000L) {
                     val nextDelay = ((leftMs - 1L) % 1000L) + 1L
                     handler.postDelayed(this, nextDelay)
@@ -3359,24 +3972,76 @@ open class WhisperAccessibilityService : AccessibilityService() {
         countdown.run()
     }
 
-    /** Clears active hold-to-discard visual feedback; restores recording pulse if still recording. */
+    private fun showHoldCountdownPill(text: String) {
+        if (!feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff())) return
+        val container = feedbackContainer ?: return
+        val view = feedbackView ?: return
+        val bubbleParams = layoutParams ?: return
+        val feedbackParams = feedbackLayoutParams ?: return
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        handler.removeCallbacks(hideFeedback)
+        lastFeedbackIsFallback = true
+        lastFeedbackDismissible = false
+        view.text = text
+        view.setTextColor(0xFFFFFFFF.toInt())
+        feedbackCloseButton?.visibility = View.GONE
+        container.background = themedFeedbackPill(isFallback = true)
+        setFeedbackTouchable(false)
+        positionFeedback(feedbackParams, bubbleParams, container.height)
+        wm.updateViewLayout(container, feedbackParams)
+        container.post {
+            if (feedbackContainer === container && discardHoldFeedbackActive) {
+                positionFeedback(feedbackParams, bubbleParams, container.height)
+                wm.updateViewLayout(container, feedbackParams)
+            }
+        }
+        container.animate().cancel()
+        view.animate().cancel()
+        container.visibility = View.VISIBLE
+        view.visibility = View.VISIBLE
+        container.alpha = 1f
+        view.alpha = 1f
+        countdownPillShowing = false
+        stageStatusPillShowing = false
+        feedbackShowing = true
+    }
+
+    /** Clears active hold-to-cancel visual feedback; restores recording/transcribing UI if still active. */
     private fun clearDiscardHoldFeedback(restoreRecordingUi: Boolean) {
         discardHoldAnimator?.cancel()
         discardHoldAnimator = null
+        discardHoldProgressAnimator?.cancel()
+        discardHoldProgressAnimator = null
         discardHoldCountdownRunnable?.let(handler::removeCallbacks)
         discardHoldCountdownRunnable = null
         button?.scaleX = 1f
         button?.scaleY = 1f
         if (!discardHoldFeedbackActive) return
         discardHoldFeedbackActive = false
+        discardHoldIsTranscription = false
+        val currentState = runtimeInstance?.currentState()
+        if (restoreRecordingUi && currentState == RecordingStateMachine.State.TRANSCRIBING) {
+            spinner?.indeterminateTintList = ColorStateList.valueOf(if (cleaningUi) COLOR_RING_CLEANING else COLOR_RING)
+            spinner?.visibility = View.VISIBLE
+            handler.removeCallbacks(hideFeedback)
+            hideFeedback.run()
+            applyButtonAppearance(COLOR_BUSY)
+            bubbleHaloRing?.setMode(BubbleHaloRingView.Mode.ProcessingSweep(cleaningUi))
+            activeStageStatusText?.let { showStageStatusPill(it) }
+            return
+        }
         spinner?.visibility = View.GONE
         spinner?.indeterminateTintList = ColorStateList.valueOf(COLOR_RING)
         handler.removeCallbacks(hideFeedback)
         hideFeedback.run()
-        if (restoreRecordingUi && runtimeInstance?.isRecording() == true) {
+        if (restoreRecordingUi && currentState == RecordingStateMachine.State.RECORDING) {
             applyButtonAppearance(COLOR_RECORDING)
             startPulse()
+            refreshBubbleHaloMode()
             recordingCountdownRemainingMs?.let { renderRecordingCountdownUi(it) }
+        } else if (!insertFlashActive) {
+            refreshBubbleHaloMode()
         }
     }
 
@@ -3438,33 +4103,48 @@ open class WhisperAccessibilityService : AccessibilityService() {
 
     private fun showCountdownPill(text: String) {
         if (!feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff())) return
+        val container = feedbackContainer ?: return
         val view = feedbackView ?: return
         val bubbleParams = layoutParams ?: return
         val feedbackParams = feedbackLayoutParams ?: return
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
 
         handler.removeCallbacks(hideFeedback)
+        lastFeedbackIsFallback = false
+        lastFeedbackDismissible = false
         view.text = text
-        view.background = pill(COLOR_FEEDBACK_BG)
+        view.setTextColor(overlayPopupPrimaryText())
+        feedbackCloseButton?.visibility = View.GONE
+        container.background = themedFeedbackPill(isFallback = false)
         setFeedbackTouchable(false)
-        positionFeedback(feedbackParams, bubbleParams, view.height)
-        wm.updateViewLayout(view, feedbackParams)
-        view.post {
-            if (feedbackView === view && countdownPillShowing) {
-                positionFeedback(feedbackParams, bubbleParams, view.height)
-                wm.updateViewLayout(view, feedbackParams)
+        positionFeedback(feedbackParams, bubbleParams, container.height)
+        wm.updateViewLayout(container, feedbackParams)
+        container.post {
+            if (feedbackContainer === container && countdownPillShowing) {
+                positionFeedback(feedbackParams, bubbleParams, container.height)
+                wm.updateViewLayout(container, feedbackParams)
             }
         }
+        container.animate().cancel()
         view.animate().cancel()
+        container.visibility = View.VISIBLE
         view.visibility = View.VISIBLE
+        container.alpha = 1f
         view.alpha = 1f
         countdownPillShowing = true
     }
 
     private fun hideCountdownPillImmediately() {
         countdownPillShowing = false
+        lastFeedbackDismissible = false
+        feedbackCloseButton?.visibility = View.GONE
         handler.removeCallbacks(hideFeedback)
         setFeedbackTouchable(false)
+        feedbackContainer?.let {
+            it.animate().cancel()
+            it.visibility = View.VISIBLE
+            it.alpha = 0f
+        }
         feedbackView?.let {
             it.animate().cancel()
             it.visibility = View.VISIBLE
@@ -3486,25 +4166,33 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
         activeStageStatusText = text
         if (!feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff())) return
+        val container = feedbackContainer ?: return
         val view = feedbackView ?: return
         val bubbleParams = layoutParams ?: return
         val feedbackParams = feedbackLayoutParams ?: return
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
 
         handler.removeCallbacks(hideFeedback)
+        lastFeedbackIsFallback = false
+        lastFeedbackDismissible = false
         view.text = text
-        view.background = pill(COLOR_FEEDBACK_BG)
+        view.setTextColor(overlayPopupPrimaryText())
+        feedbackCloseButton?.visibility = View.GONE
+        container.background = themedFeedbackPill(isFallback = false)
         setFeedbackTouchable(false)
-        positionFeedback(feedbackParams, bubbleParams, view.height)
-        wm.updateViewLayout(view, feedbackParams)
-        view.post {
-            if (feedbackView === view && stageStatusPillShowing) {
-                positionFeedback(feedbackParams, bubbleParams, view.height)
-                wm.updateViewLayout(view, feedbackParams)
+        positionFeedback(feedbackParams, bubbleParams, container.height)
+        wm.updateViewLayout(container, feedbackParams)
+        container.post {
+            if (feedbackContainer === container && stageStatusPillShowing) {
+                positionFeedback(feedbackParams, bubbleParams, container.height)
+                wm.updateViewLayout(container, feedbackParams)
             }
         }
+        container.animate().cancel()
         view.animate().cancel()
+        container.visibility = View.VISIBLE
         view.visibility = View.VISIBLE
+        container.alpha = 1f
         view.alpha = 1f
         countdownPillShowing = false
         stageStatusPillShowing = true
@@ -3522,8 +4210,15 @@ open class WhisperAccessibilityService : AccessibilityService() {
         if (clearActiveText) activeStageStatusText = null
         if (!stageStatusPillShowing) return
         stageStatusPillShowing = false
+        lastFeedbackDismissible = false
+        feedbackCloseButton?.visibility = View.GONE
         handler.removeCallbacks(hideFeedback)
         setFeedbackTouchable(false)
+        feedbackContainer?.let {
+            it.animate().cancel()
+            it.visibility = View.VISIBLE
+            it.alpha = 0f
+        }
         feedbackView?.let {
             it.animate().cancel()
             it.visibility = View.VISIBLE
@@ -3570,7 +4265,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
 
         val truncated = candidateText.take(PREVIEW_PREVIEW_CHARS)
         val suffix = if (candidateText.length > truncated.length) "…" else ""
-        showFeedback("Preview: $truncated$suffix · tap to insert", PREVIEW_TIMEOUT_MS, touchable = true)
+        showFeedback("Preview: $truncated$suffix · tap to insert", PREVIEW_TIMEOUT_MS, touchable = true, dismissible = true)
     }
 
     /** Runs [action] against the pending preview (if any) and injects whatever it resolved to. */
@@ -4056,6 +4751,10 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
 
         Log.i(TAG, if (method != InjectMethod.NONE) "Text injection action reported success" else "No injection action succeeded; clipboard fallback only")
+        if (method != InjectMethod.NONE) {
+            triggerInsertFlash()
+            DictationHaptics.forContext(this).onTextInserted()
+        }
         // NONE: the clipboard is the deliverable the user pastes from manually (#5).
         if (method == InjectMethod.NONE) stageClipboard(text)
 
@@ -4125,7 +4824,16 @@ open class WhisperAccessibilityService : AccessibilityService() {
             node.getBoundsInScreen(rect)
             rect
         }
-        displayFeedback?.let { showFeedback(it, duration, touchable = retryRawOffered || isFallback, isFallback = isFallback, targetBounds = targetBounds) }
+        displayFeedback?.let {
+            showFeedback(
+                it,
+                duration,
+                touchable = retryRawOffered || isFallback,
+                isFallback = isFallback,
+                targetBounds = targetBounds,
+                dismissible = retryRawOffered || isFallback,
+            )
+        }
 
         val stagedText = clipboardStaging.stagedPayload ?: text
         when (val action = clipboardClearActionFor(method, clipboardStaging.isStaged, CLIPBOARD_CLEAR_DELAY_MS)) {

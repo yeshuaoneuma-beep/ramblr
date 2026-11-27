@@ -47,14 +47,14 @@ class GeminiCloudLiveTranscriptionClient(
     private val keepaliveIntervalMs: Long = DEFAULT_KEEPALIVE_INTERVAL_MS,
 ) : CloudLiveTranscriptionSessionFactory {
     private val callbacks = SerialCallbackExecutor(callbackExecutor)
-    private val inboundLimitBytes = if (model == SECONDARY_MODEL) MAX_INBOUND_AUDIO_MODEL_BYTES else MAX_INBOUND_BYTES
+    private val inboundLimitBytes = if (!usesTranscribeTextProtocol(model)) MAX_INBOUND_AUDIO_MODEL_BYTES else MAX_INBOUND_BYTES
 
     init {
         require(endpoint.scheme == "https" || (allowTestEndpoint && endpoint.scheme == "http"))
         require(endpoint.encodedPath == ENDPOINT_PATH && endpoint.query == null && endpoint.fragment == null) { "Unexpected Gemini Live endpoint" }
         require(allowTestEndpoint || endpoint.host == GEMINI_HOST) { "Unexpected Gemini Live host" }
         require(apiKey.isNotBlank()) { "Gemini API key is blank" }
-        require(MODEL_ID.matches(model) && model in SUPPORTED_MODELS) { "Invalid Gemini Live model id" }
+        require(isSupportedLiveModel(model)) { "Invalid Gemini Live model id" }
         require(languageCodes.all(LANGUAGE_CODE::matches)) { "Invalid language code" }
         require(customVocabulary.size <= MAX_CUSTOM_VOCABULARY && customVocabulary.none { it.isBlank() }) { "Invalid custom vocabulary" }
         require(setupTimeoutMs > 0 && finalTimeoutMs > 0 && maxSessionMs > 0 && keepaliveIntervalMs > 0)
@@ -315,8 +315,8 @@ class GeminiCloudLiveTranscriptionClient(
                 return
             }
             val content = root.optJSONObject("serverContent") ?: return
-            if (model == SECONDARY_MODEL) {
-                // gemini-3.8-live: ignore modelTurn (audio output) and outputTranscription.
+            if (!usesTranscribeTextProtocol(model)) {
+                // gemini-3.8-live / audio-modality live models: ignore modelTurn (audio output) and outputTranscription.
                 val inputTx = content.optJSONObject("inputTranscription")
                 var interimToEmit: String? = null
                 var finalToDeliver: String? = null
@@ -502,6 +502,17 @@ class GeminiCloudLiveTranscriptionClient(
         private val MODEL_ID = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
         private val LANGUAGE_CODE = Regex("[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
 
+        internal fun isSupportedLiveModel(model: String): Boolean =
+            MODEL_ID.matches(model) &&
+                ModelCapabilityClassifier.supportsLane(
+                    ProviderCapabilityRegistry.ID_GEMINI,
+                    model,
+                    CapabilityLane.LIVE_STT,
+                )
+
+        internal fun usesTranscribeTextProtocol(model: String): Boolean =
+            model == DEFAULT_MODEL || "transcribe" in model.lowercase()
+
         fun setupJson(model: String, languageCodes: List<String>, customVocabulary: List<String>): String =
             setupJson(model, languageCodes, customVocabulary, mode = LiveTranscriptionMode.VERBATIM)
 
@@ -512,7 +523,7 @@ class GeminiCloudLiveTranscriptionClient(
             mode: LiveTranscriptionMode = LiveTranscriptionMode.VERBATIM,
         ): String {
             val setup = JSONObject().put("model", "models/$model")
-            if (model == SECONDARY_MODEL) {
+            if (!usesTranscribeTextProtocol(model)) {
                 setup.put("generationConfig", JSONObject().put("responseModalities", JSONArray().put("AUDIO")))
                 val transcription = JSONObject()
                 if (languageCodes.isNotEmpty()) transcription.put("languageCodes", JSONArray(languageCodes))

@@ -122,6 +122,8 @@ object CleanupStyleMenu {
 sealed interface StyleMenuRow {
     /** The optional bubble shortcut ("Open <app>"); only present when an app is set. */
     data object Shortcut : StyleMenuRow
+    /** Live <-> Batch transcription mode quick toggle (Phase 3B.1). */
+    data object LiveMode : StyleMenuRow
     data object Cleanup : StyleMenuRow
     /** The single collapsed style row: "Style: <current>" with an expand/collapse affordance. */
     data class StyleSummary(val currentTitle: String, val expanded: Boolean) : StyleMenuRow
@@ -153,8 +155,10 @@ fun styleMenuRows(
     personas: List<CleanupPersona>,
     current: CleanupPersona,
     expanded: Boolean,
+    includeLiveMode: Boolean = false,
 ): List<StyleMenuRow> = buildList {
     if (shortcutSet) add(StyleMenuRow.Shortcut)
+    if (includeLiveMode) add(StyleMenuRow.LiveMode)
     add(StyleMenuRow.Cleanup)
     add(StyleMenuRow.StyleSummary(current.title, expanded))
     if (expanded) personas.forEach { add(StyleMenuRow.StyleChoice(it, it == current)) }

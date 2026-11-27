@@ -28,6 +28,7 @@ object HapticPrefs {
     const val KEY_ENABLED = "haptics_enabled"
     const val KEY_STRENGTH = "haptics_strength"
     const val KEY_LENGTH_MS = "haptics_length_ms"
+    const val KEY_UI_TAPS_ENABLED = "haptics_ui_taps_enabled"
 
     const val DEFAULT_LENGTH_MS = 25
     const val MIN_LENGTH_MS = 10
@@ -57,10 +58,19 @@ object HapticPrefs {
         prefs.edit().putInt(KEY_LENGTH_MS, clampLengthMs(ms)).apply()
     }
 
+    fun isUiTapsEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_UI_TAPS_ENABLED, false)
+
+    fun setUiTapsEnabled(prefs: SharedPreferences, enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_UI_TAPS_ENABLED, enabled).apply()
+    }
+
     fun load(context: Context): HapticSettings = load(prefs(context))
     fun setEnabled(context: Context, enabled: Boolean) = setEnabled(prefs(context), enabled)
     fun setStrength(context: Context, strength: HapticStrength) = setStrength(prefs(context), strength)
     fun setLengthMs(context: Context, ms: Int) = setLengthMs(prefs(context), ms)
+    fun isUiTapsEnabled(context: Context): Boolean = isUiTapsEnabled(prefs(context))
+    fun setUiTapsEnabled(context: Context, enabled: Boolean) = setUiTapsEnabled(prefs(context), enabled)
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 }

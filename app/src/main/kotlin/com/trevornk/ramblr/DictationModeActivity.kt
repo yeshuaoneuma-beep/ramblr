@@ -128,9 +128,12 @@ class DictationModeActivity : BaseSettingsActivity() {
         val postProcessingOn = PostProcessingToggle.isEnabled(this)
         val allowLocalFallback = DictationModeToggle.allowLocalFallback(this)
         val allowCloudFallback = DictationModeToggle.allowCloudFallback(this)
-        val localSttAvailable = LocalTranscriber.availableModels(this).isNotEmpty()
+        val localSttModel = TranscriptionActivity.resolveInstalledTranscriptionModel(this, persistIfBlank = false)
+        val localSttAvailable = localSttModel != null || LocalTranscriber.availableModels(this).isNotEmpty()
         val localCleanupAvailable = ModelDownloader.localCleanupModelFile(this, LocalCleanupProvider.selectedModel(this)) != null
         val chain = ProviderChainStore.load(this)
+        val liveConfig = LiveTranscriptionConfigStore.load(this)
+        val liveKeyConfigured = CloudLiveWiring.hasConfiguredLiveKey(this, liveConfig, chain)
         val isConfigured: (ProviderChainEntry) -> Boolean = { ProviderCredentialStore.isConfiguredOrLegacy(this, it) }
 
         cloudTranscriptionSwitch.isChecked = !useLocal
@@ -146,6 +149,9 @@ class DictationModeActivity : BaseSettingsActivity() {
             allowCloudFallback = allowCloudFallback,
             isConfigured = isConfigured,
             localAvailable = localSttAvailable,
+            liveConfig = liveConfig,
+            liveKeyConfigured = liveKeyConfigured,
+            localModelName = localSttModel?.name,
         )
         routingCleanupSub.text = EffectiveRouting.cleanup(
             chain = chain,

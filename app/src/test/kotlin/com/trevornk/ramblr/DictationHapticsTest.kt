@@ -188,6 +188,56 @@ class DictationHapticsTest {
         haptics(on, throwing).onLiveDisconnected()
     }
 
+    @Test fun `ui tap haptics preference defaults off and round-trips`() {
+        val prefs = FakeSharedPreferences()
+        assertFalse(HapticPrefs.isUiTapsEnabled(prefs))
+        HapticPrefs.setUiTapsEnabled(prefs, true)
+        assertTrue(HapticPrefs.isUiTapsEnabled(prefs))
+        HapticPrefs.setUiTapsEnabled(prefs, false)
+        assertFalse(HapticPrefs.isUiTapsEnabled(prefs))
+    }
+
+    @Test fun `onTextInserted plays subtle double-tick when enabled and respects muted or disabled`() {
+        val out = FakeOutput(caps = HapticCapabilities(hasAmplitudeControl = true, predefinedSupported = true))
+        haptics(on.copy(enabled = false), out).onTextInserted()
+        assertTrue(out.played.isEmpty())
+
+        haptics(on, out).onTextInserted()
+        assertEquals(1, out.played.size)
+        val wave = out.played.single() as HapticEffectSpec.Waveform
+        assertEquals(listOf(0L, 12L, 45L, 12L), wave.timings)
+        assertEquals(listOf(0, 72, 0, 96), wave.amplitudes)
+
+        val noAmp = FakeOutput(caps = HapticCapabilities(hasAmplitudeControl = false, predefinedSupported = true))
+        haptics(on, noAmp).onTextInserted()
+        assertEquals(HapticEffectSpec.Waveform(listOf(0L, 12L, 45L, 12L), null), noAmp.played.single())
+
+        val muted = FakeOutput(caps = null)
+        haptics(on, muted).onTextInserted()
+        assertTrue(muted.played.isEmpty())
+    }
+
+    @Test fun `onCancelDiscard plays firm thud when enabled and respects capabilities and muted`() {
+        val out = FakeOutput(caps = HapticCapabilities(hasAmplitudeControl = true, predefinedSupported = true))
+        haptics(on.copy(enabled = false), out).onCancelDiscard()
+        assertTrue(out.played.isEmpty())
+
+        haptics(on, out).onCancelDiscard()
+        assertEquals(HapticEffectSpec.OneShot(45L, 220), out.played.single())
+
+        val predef = FakeOutput(caps = HapticCapabilities(hasAmplitudeControl = false, predefinedSupported = true))
+        haptics(on, predef).onCancelDiscard()
+        assertEquals(HapticEffectSpec.Predefined(PredefinedHaptic.HEAVY_CLICK), predef.played.single())
+
+        val basic = FakeOutput(caps = HapticCapabilities(hasAmplitudeControl = false, predefinedSupported = false))
+        haptics(on, basic).onCancelDiscard()
+        assertEquals(HapticEffectSpec.Duration(45L), basic.played.single())
+
+        val muted = FakeOutput(caps = null)
+        haptics(on, muted).onCancelDiscard()
+        assertTrue(muted.played.isEmpty())
+    }
+
     /** Minimal in-memory [SharedPreferences] fake covering the types [HapticPrefs] stores. */
     private class FakeSharedPreferences(
         private val values: MutableMap<String, Any?> = mutableMapOf()

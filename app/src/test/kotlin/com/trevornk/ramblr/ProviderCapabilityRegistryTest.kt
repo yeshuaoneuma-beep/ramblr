@@ -110,4 +110,33 @@ class ProviderCapabilityRegistryTest {
         assertEquals("openrouter", ProviderCapabilityRegistry.providerIdFor(ProviderKind.OPENAI, baseUrlOverride = "https://openrouter.ai/api/v1"))
         assertEquals("custom_openai", ProviderCapabilityRegistry.providerIdFor(ProviderKind.OPENAI, baseUrlOverride = "https://my-gateway.local/v1"))
     }
+
+    @Test fun `non-speech and utility models are blocked across BATCH_STT, CLEANUP, and LIVE_STT`() {
+        val blocked = listOf(
+            "gemini-nano-banana-2.1",
+            "gemini-2.5-flash-image",
+            "lyria-002",
+            "veo-3.0-generate",
+            "imagen-4.0-fast",
+            "gemini-tts",
+            "gemini-2.5-flash-preview-tts",
+            "text-bison-001",
+            "embedding-gecko-001",
+        )
+        for (modelId in blocked) {
+            assertTrue("$modelId must match isNonSpeechOrUtilityModel", ModelCapabilityClassifier.isNonSpeechOrUtilityModel(modelId))
+            for (lane in CapabilityLane.entries) {
+                assertFalse(
+                    "$modelId must be blocked from $lane",
+                    ModelCapabilityClassifier.supportsLane(ProviderCapabilityRegistry.ID_GEMINI, modelId, lane),
+                )
+            }
+        }
+        // Live streaming models like native-audio and *-live* pass LIVE_STT on Gemini.
+        assertTrue(ModelCapabilityClassifier.supportsLane("gemini", "gemini-2.5-flash-native-audio-preview", CapabilityLane.LIVE_STT))
+        assertTrue(ModelCapabilityClassifier.supportsLane("gemini", "gemini-3.5-transcribe-live", CapabilityLane.LIVE_STT))
+        assertTrue(ModelCapabilityClassifier.supportsLane("gemini", "gemini-3.8-live", CapabilityLane.LIVE_STT))
+        assertFalse(ModelCapabilityClassifier.supportsLane("gemini", "gemini-2.5-flash", CapabilityLane.LIVE_STT))
+        assertFalse(ModelCapabilityClassifier.supportsLane("gemini", "gemini-3.5-live-translate-preview", CapabilityLane.LIVE_STT))
+    }
 }

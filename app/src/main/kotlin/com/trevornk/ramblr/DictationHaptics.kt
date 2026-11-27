@@ -9,6 +9,8 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import android.view.HapticFeedbackConstants
+import android.view.View
 
 /** What the device's vibrator can do right now (#385). */
 data class HapticCapabilities(val hasAmplitudeControl: Boolean, val predefinedSupported: Boolean)
@@ -69,6 +71,12 @@ interface HapticFeedback {
 
     /** Subtle attention vibration when Cloud Live drops mid-recording while local capture continues. */
     fun onLiveDisconnected() {}
+
+    /** Subtle double-tick confirmation when dictated text is successfully inserted. */
+    fun onTextInserted() {}
+
+    /** Firm confirmation thud when a 3-second hold-to-cancel/discard completes. */
+    fun onCancelDiscard() {}
 
     /** Forget any pending start tick; called when the runtime goes idle or shuts down. */
     fun reset()
@@ -132,6 +140,38 @@ class DictationHaptics(
         }
     }
 
+    override fun onTextInserted() {
+        try {
+            if (!settings().enabled) return
+            val out = output()
+            val caps = out.capabilities() ?: return
+            val spec = if (caps.hasAmplitudeControl) {
+                HapticEffectSpec.Waveform(listOf(0L, 12L, 45L, 12L), listOf(0, 72, 0, 96))
+            } else {
+                HapticEffectSpec.Waveform(listOf(0L, 12L, 45L, 12L), null)
+            }
+            out.play(spec)
+        } catch (e: Exception) {
+            Log.w(TAG, "Text inserted haptic failed; ignoring", e)
+        }
+    }
+
+    override fun onCancelDiscard() {
+        try {
+            if (!settings().enabled) return
+            val out = output()
+            val caps = out.capabilities() ?: return
+            val spec = when {
+                caps.hasAmplitudeControl -> HapticEffectSpec.OneShot(45L, 220)
+                caps.predefinedSupported -> HapticEffectSpec.Predefined(PredefinedHaptic.HEAVY_CLICK)
+                else -> HapticEffectSpec.Duration(45L)
+            }
+            out.play(spec)
+        } catch (e: Exception) {
+            Log.w(TAG, "Cancel/discard haptic failed; ignoring", e)
+        }
+    }
+
     /** Settings "Test" button: plays with the current strength/length even when the master switch is off. */
     fun playTest() {
         tick(requireEnabled = false)
@@ -165,6 +205,16 @@ class DictationHaptics(
                 settings = { HapticPrefs.load(app) },
                 output = { AndroidHapticOutput(app) },
             )
+        }
+    }
+}
+
+/** Crisp, lightweight haptic tick for in-app taps, toggles, and selections. */
+object UiTapHaptics {
+    fun tick(view: View) {
+        runCatching {
+            if (!HapticPrefs.isUiTapsEnabled(view.context)) return
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         }
     }
 }

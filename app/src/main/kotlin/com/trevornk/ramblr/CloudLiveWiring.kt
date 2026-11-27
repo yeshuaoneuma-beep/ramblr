@@ -55,6 +55,29 @@ object CloudLiveWiring {
                 ProviderCredentialStore.isConfiguredOrLegacy(context, entry)
         }
 
+    internal fun resolveLiveApiKey(
+        context: Context,
+        config: LiveTranscriptionConfig = LiveTranscriptionConfigStore.load(context),
+        chain: ProviderChain = ProviderChainStore.load(context),
+    ): String {
+        val vaultSecret = ApiKeyVaultStore.resolveSecret(context, config.effectiveVaultKeyId(), config.providerId)
+        if (vaultSecret.isNotBlank()) return vaultSecret
+        val hasPersistedConfig = LiveTranscriptionConfigStore.hasPersistedConfig(context)
+        return if (hasPersistedConfig) {
+            ProviderCredentialStore.getForKind(context, chain, ProviderKind.GEMINI)
+        } else {
+            resolveEligibleGeminiEntry(context, chain)
+                ?.let { ProviderCredentialStore.getOrLegacy(context, it) }
+                ?: ""
+        }
+    }
+
+    fun hasConfiguredLiveKey(
+        context: Context,
+        config: LiveTranscriptionConfig = LiveTranscriptionConfigStore.load(context),
+        chain: ProviderChain = ProviderChainStore.load(context),
+    ): Boolean = resolveLiveApiKey(context, config, chain).isNotBlank()
+
     /**
      * A configured live factory, or null when live transcription is not allowed or cannot be
      * built.
@@ -75,22 +98,11 @@ object CloudLiveWiring {
         val useLocal = prefs.getBoolean("use_local", true)
         if (useLocal) return null
 
-        val hasPersistedConfig = LiveTranscriptionConfigStore.hasPersistedConfig(context)
-        val apiKey = ApiKeyVaultStore.resolveSecret(context, config.vaultKeyId, ProviderCapabilityRegistry.ID_GEMINI)
-            .ifBlank {
-                val chain = ProviderChainStore.load(context)
-                if (hasPersistedConfig) {
-                    ProviderCredentialStore.getForKind(context, chain, ProviderKind.GEMINI)
-                } else {
-                    resolveEligibleGeminiEntry(context, chain)
-                        ?.let { ProviderCredentialStore.getOrLegacy(context, it) }
-                        ?: ""
-                }
-            }
+        val apiKey = resolveLiveApiKey(context, config)
         if (!isLiveAllowed(config.enabled, useLocal, apiKey)) return null
 
         val safeModel = config.modelId
-            .takeIf { it in GeminiCloudLiveTranscriptionClient.SUPPORTED_MODELS }
+            .takeIf { GeminiCloudLiveTranscriptionClient.isSupportedLiveModel(it) }
             ?: GeminiCloudLiveTranscriptionClient.DEFAULT_MODEL
 
         // Same terms the batch transcription path biases on (#26/#114), read from the same key.

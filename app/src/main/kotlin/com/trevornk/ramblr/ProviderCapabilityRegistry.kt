@@ -276,16 +276,27 @@ object ModelCapabilityClassifier {
     )
 
     private val NON_TEXT_NON_ASR_MARKERS = listOf(
-        "embedding",
-        "embed-",
+        "nano-banana",
+        "nanobanana",
         "imagen",
         "veo",
+        "lyria",
+        "embedding",
+        "embed-",
+        "aqa",
+        "robotics",
+        "-image",
+        "image-",
+        "_image",
+        "-tts",
+        "tts-",
+        "_tts",
+        "/tts",
+        "bison",
+        "gecko",
         "dall-e",
         "moderation",
         "sora",
-        "-tts",
-        "tts-",
-        "aqa",
         "bisheng",
         "babbage",
         "davinci",
@@ -293,8 +304,9 @@ object ModelCapabilityClassifier {
         "guard",
         "safeguard",
         "computer-use",
-        "robotics",
     )
+
+    private val TTS_TOKEN_REGEX = Regex("(^|[-_/.])tts($|[-_/.])")
 
     private val CURATED_MODELS: List<ModelDescriptor> = listOf(
         // --- Gemini: BATCH_STT ---
@@ -629,9 +641,9 @@ object ModelCapabilityClassifier {
         return TEXT_ONLY_PREFIXES.any { id.startsWith(it) || leaf.startsWith(it) }
     }
 
-    private fun isNonTextNonAsrUtility(modelId: String): Boolean {
+    fun isNonSpeechOrUtilityModel(modelId: String): Boolean {
         val id = normalizeId(modelId)
-        return NON_TEXT_NON_ASR_MARKERS.any { it in id }
+        return NON_TEXT_NON_ASR_MARKERS.any { it in id } || TTS_TOKEN_REGEX.containsMatchIn(id)
     }
 
     private val LIVE_TOKEN_REGEX = Regex("(^|[-_/.])live($|[-_/.])")
@@ -664,15 +676,15 @@ object ModelCapabilityClassifier {
         if (!descriptor.supports(lane)) return false
         val id = normalizeId(modelId)
         if (id.isEmpty()) return false
-        if (isNonTextNonAsrUtility(id)) return false
+        if (isNonSpeechOrUtilityModel(id)) return false
 
         val normalizedModalities = inputModalities?.map { it.lowercase() }?.toSet()
 
         return when (lane) {
             CapabilityLane.LIVE_STT -> {
                 if (providerId != ProviderCapabilityRegistry.ID_GEMINI) return false
-                if (isBlockedTranslateModel(id)) return false
-                id == GEMINI_LIVE_DEFAULT_ID || id == GEMINI_LIVE_SECONDARY_ID
+                if (isBlockedTranslateModel(id) || isNonSpeechOrUtilityModel(id)) return false
+                isLiveStreamingModel(id)
             }
 
             CapabilityLane.BATCH_STT -> {

@@ -104,13 +104,57 @@ class OverlayLongPressActionTest {
         )
     }
 
-    @Test fun `cancel-recording uses 3-second floor while other actions use normal long-press timeout`() {
-        assertEquals(3_000L, overlayLongPressTimeoutMs(OverlayLongPressAction.CANCEL_RECORDING, 400))
-        assertEquals(3_000L, overlayLongPressTimeoutMs(OverlayLongPressAction.CANCEL_RECORDING, 1_500))
-        assertEquals(4_000L, overlayLongPressTimeoutMs(OverlayLongPressAction.CANCEL_RECORDING, 4_000))
+    @Test fun `idleQuickMenuEnabled controls whether idle long-press opens the quick menu`() {
+        assertEquals(
+            OverlayLongPressAction.SHOW_STYLE_MENU,
+            overlayLongPressActionFor(
+                RecordingStateMachine.State.IDLE,
+                hasPendingInjection = false,
+                cancelAndUndoEnabled = true,
+                idleQuickMenuEnabled = true,
+            ),
+        )
+        assertEquals(
+            OverlayLongPressAction.NONE,
+            overlayLongPressActionFor(
+                RecordingStateMachine.State.IDLE,
+                hasPendingInjection = false,
+                cancelAndUndoEnabled = true,
+                idleQuickMenuEnabled = false,
+            ),
+        )
+        // Undo still works when pending injection + cancelAndUndoEnabled even if idle quick menu is off.
+        assertEquals(
+            OverlayLongPressAction.UNDO_INJECTION,
+            overlayLongPressActionFor(
+                RecordingStateMachine.State.IDLE,
+                hasPendingInjection = true,
+                cancelAndUndoEnabled = true,
+                idleQuickMenuEnabled = false,
+            ),
+        )
+        assertEquals(
+            OverlayLongPressAction.NONE,
+            overlayLongPressActionFor(
+                RecordingStateMachine.State.IDLE,
+                hasPendingInjection = true,
+                cancelAndUndoEnabled = false,
+                idleQuickMenuEnabled = false,
+            ),
+        )
+    }
+
+    @Test fun `both cancel-recording and cancel-transcription use 3-second floor while other actions use normal timeout`() {
+        for (action in listOf(
+            OverlayLongPressAction.CANCEL_RECORDING,
+            OverlayLongPressAction.CANCEL_TRANSCRIPTION,
+        )) {
+            assertEquals("$action @ 400ms", 3_000L, overlayLongPressTimeoutMs(action, 400))
+            assertEquals("$action @ 1500ms", 3_000L, overlayLongPressTimeoutMs(action, 1_500))
+            assertEquals("$action @ 4000ms", 4_000L, overlayLongPressTimeoutMs(action, 4_000))
+        }
 
         for (action in listOf(
-            OverlayLongPressAction.CANCEL_TRANSCRIPTION,
             OverlayLongPressAction.UNDO_INJECTION,
             OverlayLongPressAction.SHOW_STYLE_MENU,
             OverlayLongPressAction.NONE,
@@ -120,12 +164,16 @@ class OverlayLongPressActionTest {
         }
     }
 
-    @Test fun `only cancel-recording arms staged hold feedback`() {
-        assertEquals(500L, overlayHoldFeedbackDelayMs(OverlayLongPressAction.CANCEL_RECORDING, 400))
-        assertEquals(1_500L, overlayHoldFeedbackDelayMs(OverlayLongPressAction.CANCEL_RECORDING, 1_500))
+    @Test fun `both cancel-recording and cancel-transcription arm staged hold feedback`() {
+        for (action in listOf(
+            OverlayLongPressAction.CANCEL_RECORDING,
+            OverlayLongPressAction.CANCEL_TRANSCRIPTION,
+        )) {
+            assertEquals("$action @ 400ms", 500L, overlayHoldFeedbackDelayMs(action, 400))
+            assertEquals("$action @ 1500ms", 1_500L, overlayHoldFeedbackDelayMs(action, 1_500))
+        }
 
         for (action in listOf(
-            OverlayLongPressAction.CANCEL_TRANSCRIPTION,
             OverlayLongPressAction.UNDO_INJECTION,
             OverlayLongPressAction.SHOW_STYLE_MENU,
             OverlayLongPressAction.NONE,

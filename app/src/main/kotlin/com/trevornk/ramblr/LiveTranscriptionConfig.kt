@@ -168,12 +168,7 @@ object LiveTranscriptionConfigStore {
 
     fun sanitizeLiveModelId(modelId: String?): String {
         val trimmed = modelId?.trim().orEmpty()
-        return if (ModelCapabilityClassifier.supportsLane(
-                ProviderCapabilityRegistry.ID_GEMINI,
-                trimmed,
-                CapabilityLane.LIVE_STT,
-            )
-        ) {
+        return if (GeminiCloudLiveTranscriptionClient.isSupportedLiveModel(trimmed)) {
             trimmed
         } else {
             LiveTranscriptionConfig.DEFAULT_LIVE_MODEL_ID

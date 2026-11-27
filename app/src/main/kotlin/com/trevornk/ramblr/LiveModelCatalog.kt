@@ -102,10 +102,18 @@ object ProviderModelsParser {
             ) {
                 continue
             }
-            val lanes = ModelCapabilityClassifier.classifyLanes(
+            var lanes = ModelCapabilityClassifier.classifyLanes(
                 providerId = ProviderCapabilityRegistry.ID_GEMINI,
                 modelId = id,
             )
+            if (methods.isNotEmpty() &&
+                CapabilityLane.LIVE_STT in lanes &&
+                "bidigeneratecontent" !in methods &&
+                id != ModelCapabilityClassifier.GEMINI_LIVE_DEFAULT_ID &&
+                id != ModelCapabilityClassifier.GEMINI_LIVE_SECONDARY_ID
+            ) {
+                lanes = lanes - CapabilityLane.LIVE_STT
+            }
             if (lanes.isEmpty()) continue
 
             val curated = ModelCapabilityClassifier.curatedModelById(ProviderCapabilityRegistry.ID_GEMINI, id)
@@ -278,6 +286,12 @@ object LiveModelCatalogStore {
         val curated = ModelCapabilityClassifier.curatedModelsFor(providerId, lane)
         val liveFiltered = liveOrCached.filter { descriptor ->
             descriptor.supports(lane) &&
+                ModelCapabilityClassifier.supportsLane(
+                    providerId = providerId,
+                    modelId = descriptor.id,
+                    lane = lane,
+                    inputModalities = descriptor.inputModalities.takeIf { it.isNotEmpty() },
+                ) &&
                 (lane == CapabilityLane.LIVE_STT || !ModelCapabilityClassifier.isLiveStreamingModel(descriptor.id))
         }
         val liveById = liveFiltered.associateBy { ModelCapabilityClassifier.normalizeId(it.id) }

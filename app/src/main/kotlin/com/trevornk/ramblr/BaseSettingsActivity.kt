@@ -31,12 +31,24 @@ import androidx.core.view.WindowInsetsCompat
  */
 abstract class BaseSettingsActivity : AppCompatActivity() {
 
+    private var createdNightModeMask: Int = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // targetSdk 36 lays every window out behind the system bars with no opt-out. Declaring it
         // explicitly means the behaviour is identical on API 30-34, so there is one layout to
         // reason about and to test on old devices, rather than a path that only appears on 35+.
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        createdNightModeMask = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
         super.onCreate(savedInstanceState)
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val newMask = newConfig.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+        if (newMask != createdNightModeMask) {
+            createdNightModeMask = newMask
+            recreate()
+        }
     }
 
     /**
@@ -287,7 +299,10 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
                 val outValue = TypedValue()
                 context.theme.resolveAttribute(android.R.attr.selectableItemBackground, outValue, true)
                 setBackgroundResource(outValue.resourceId)
-                setOnClickListener { onClick() }
+                setOnClickListener {
+                    UiTapHaptics.tick(this)
+                    onClick()
+                }
             }
         }
 

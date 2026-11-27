@@ -479,7 +479,9 @@ class RamblrImeService : InputMethodService() {
             editorSnapshot = { Triple(editorGeneration, editorIdentity, currentInputConnection) },
             commitText = { connection, text ->
                 check(Looper.myLooper() == Looper.getMainLooper()) { "InputConnection commit must run on main" }
-                (connection as android.view.inputmethod.InputConnection).commitText(text, 1)
+                val committed = (connection as android.view.inputmethod.InputConnection).commitText(text, 1)
+                if (committed) DictationHaptics.forContext(this).onTextInserted()
+                committed
             },
             renderPartial = ::renderPartial,
             userMessage = ::showMessage,

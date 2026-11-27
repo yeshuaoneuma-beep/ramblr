@@ -76,7 +76,7 @@ class OverlayAppearanceActivity : BaseSettingsActivity() {
         root.addView(overlaySizeRow)
 
         overlayBorderColorRow = settingsRow("Border color", "") {
-            pickOverlayColor("Border color", OverlayAppearancePrefs.load(this).borderColor) { color ->
+            pickOverlayColor("Border color", OverlayAppearancePrefs.load(this).borderColor, DEFAULT_BORDER_COLOR) { color ->
                 OverlayAppearancePrefs.setBorderColor(this, color)
                 onOverlayAppearanceChanged()
             }
@@ -84,7 +84,7 @@ class OverlayAppearanceActivity : BaseSettingsActivity() {
         root.addView(overlayBorderColorRow)
 
         overlayFillColorRow = settingsRow("Fill color (idle only)", "") {
-            pickOverlayColor("Fill color", OverlayAppearancePrefs.load(this).fillColor) { color ->
+            pickOverlayColor("Fill color", OverlayAppearancePrefs.load(this).fillColor, DEFAULT_FILL_COLOR) { color ->
                 OverlayAppearancePrefs.setFillColor(this, color)
                 onOverlayAppearanceChanged()
             }
@@ -92,7 +92,7 @@ class OverlayAppearanceActivity : BaseSettingsActivity() {
         root.addView(overlayFillColorRow)
 
         overlayGlyphColorRow = settingsRow("Microphone icon color", "") {
-            pickOverlayColor("Microphone icon color", OverlayAppearancePrefs.load(this).glyphColor) { color ->
+            pickOverlayColor("Microphone icon color", OverlayAppearancePrefs.load(this).glyphColor, DEFAULT_GLYPH_COLOR) { color ->
                 OverlayAppearancePrefs.setGlyphColor(this, color)
                 onOverlayAppearanceChanged()
             }
@@ -128,6 +128,7 @@ class OverlayAppearanceActivity : BaseSettingsActivity() {
 
     private val overlayColorSwatches: List<Pair<String, Int?>> = listOf(
         "Default" to null,
+        "Cobalt" to 0xFF3B82F6.toInt(),
         "White" to 0xFFFFFFFF.toInt(),
         "Black" to 0xFF000000.toInt(),
         "Emerald" to 0xFF34D399.toInt(),
@@ -184,18 +185,18 @@ class OverlayAppearanceActivity : BaseSettingsActivity() {
         }
     }
 
-    private fun pickOverlayColor(title: String, current: Int?, onPick: (Int?) -> Unit) {
+    private fun pickOverlayColor(title: String, current: Int?, defaultColor: Int, onPick: (Int?) -> Unit) {
         val swatchItems = overlayColorSwatches.map { (label, color) ->
             SpannableString("●  $label").apply {
                 setSpan(
-                    ForegroundColorSpan(color ?: attrColor(android.R.attr.textColorSecondary)),
+                    ForegroundColorSpan(color ?: defaultColor),
                     0, 1, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
                 )
             }
         }
         val customItem = SpannableString("●  Custom…").apply {
             setSpan(
-                ForegroundColorSpan(current ?: attrColor(android.R.attr.textColorSecondary)),
+                ForegroundColorSpan(current ?: defaultColor),
                 0, 1, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
             )
         }
@@ -204,23 +205,15 @@ class OverlayAppearanceActivity : BaseSettingsActivity() {
             .setTitle(title)
             .setItems(items.toTypedArray()) { _, which ->
                 if (which < overlayColorSwatches.size) onPick(overlayColorSwatches[which].second)
-                else openCustomColorPicker(title, current, onPick)
+                else openCustomColorPicker(title, current, defaultColor, onPick)
             }
             .show()
     }
 
-    private fun openCustomColorPicker(title: String, current: Int?, onPick: (Int?) -> Unit) {
+    private fun openCustomColorPicker(title: String, current: Int?, defaultColor: Int, onPick: (Int?) -> Unit) {
         val hsv = FloatArray(3)
-        Color.colorToHSV((current ?: Color.WHITE) or 0xFF000000.toInt(), hsv)
-        // Opacity (#126 audit finding): the shipped default idle fill is 0xDD (~87% opaque, see
-        // WhisperAccessibilityService.COLOR_IDLE et al.), but a custom color picked here was
-        // previously forced to full 0xFF opacity with no way to preserve any translucency --
-        // directly working against the "must not obstruct the screen" goal for anyone who wants
-        // their custom color to read the same way the default does. Extracted alpha (0-255) from
-        // the current color when one exists, defaulting to the same ~87% (0xDD) the built-in
-        // colors use so a first-time custom pick starts at parity with the default look rather
-        // than opening already fully opaque.
-        var alpha = current?.let { (it ushr 24) and 0xFF } ?: 0xDD
+        Color.colorToHSV((current ?: defaultColor) or 0xFF000000.toInt(), hsv)
+        var alpha = current?.let { (it ushr 24) and 0xFF } ?: 0xFF
 
         var isSyncing = false
         fun currentColor(): Int = (Color.HSVToColor(hsv) and 0x00FFFFFF) or (alpha shl 24)
@@ -334,6 +327,9 @@ class OverlayAppearanceActivity : BaseSettingsActivity() {
 
     companion object {
         private const val LP_MATCH = LinearLayout.LayoutParams.MATCH_PARENT
+        internal const val DEFAULT_FILL_COLOR = 0xFF000000.toInt()
+        internal const val DEFAULT_BORDER_COLOR = 0xFF3B82F6.toInt()
+        internal const val DEFAULT_GLYPH_COLOR = 0xFF3B82F6.toInt()
 
         /** Subtitle for the "Size and colors" row on the Floating icon screen (#104). */
         fun subtitle(context: android.content.Context): String {
