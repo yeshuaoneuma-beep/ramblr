@@ -210,6 +210,112 @@ class CloudCleanupFidelityGuardTest {
         assertOk(s, s)
     }
 
+    // --- Phase 3B.3: always-on safety guard, expanded self-corrections & spoken emoji commands ---
+
+    @Test fun `checkSafety rejects Video 1 question-answering hallucination with Hetzner injection`() {
+        val raw = "How's work going?"
+        val hallucinatedReply = "Yo, things are crazy over here on Hetzner right now, man. " +
+            "We've been spinning up servers all week, pushing FastHTML updates, debugging the deployment pipeline, " +
+            "and trying to keep everything running smooth before Friday afternoon hits the team hard."
+        val verdict = CloudCleanupFidelityGuard.checkSafety(raw, hallucinatedReply, listOf("Hetzner", "FastHTML"))
+        assertTrue("Expected rejection for hallucinated reply, got $verdict", verdict is FidelityVerdict.Rejected)
+        assertEquals(FidelityViolation.QUESTION_ANSWERED, (verdict as FidelityVerdict.Rejected).reason)
+    }
+
+    @Test fun `checkSafety allows legitimate restyled questions and rewriting personas`() {
+        assertEquals(
+            FidelityVerdict.Ok,
+            CloudCleanupFidelityGuard.checkSafety("How's work going?", "Yo, how's the hustle goin'?"),
+        )
+        assertEquals(
+            FidelityVerdict.Ok,
+            CloudCleanupFidelityGuard.checkSafety(
+                "hey tell mark the invoice is ready",
+                "Hi Mark,\n\nI wanted to let you know that the invoice is ready for your review.",
+            ),
+        )
+        assertEquals(
+            FidelityVerdict.Ok,
+            CloudCleanupFidelityGuard.checkSafety(
+                "that stupid deadline makes no sense",
+                "I have concerns about the current deadline and would appreciate reconsidering the timeline.",
+            ),
+        )
+    }
+
+    @Test fun `checkSafety rejects unmentioned vocabulary topic-injection while preserving spelling fixes`() {
+        assertEquals(
+            FidelityVerdict.Rejected(FidelityViolation.WORDS_INSERTED),
+            CloudCleanupFidelityGuard.checkSafety(
+                "Let's grab coffee tomorrow",
+                "Let's grab coffee tomorrow and talk about our Hetzner cluster migration and deployment strategy.",
+                vocabularyTerms = listOf("Hetzner"),
+            ),
+        )
+        assertEquals(
+            FidelityVerdict.Ok,
+            CloudCleanupFidelityGuard.checkSafety("check hats near status", "Check Hetzner status.", listOf("Hetzner")),
+        )
+        assertEquals(
+            FidelityVerdict.Ok,
+            CloudCleanupFidelityGuard.checkSafety(
+                "we updated fast html on the dashboard today",
+                "We updated FastHTML on the dashboard today for the team.",
+                listOf("FastHTML"),
+            ),
+        )
+    }
+
+    @Test fun `expanded self-correction cues allow pruning while keeping everyday actually rejected`() {
+        assertOk(
+            "Let's meet on Tuesday nah make that Monday afternoon please",
+            "Let's meet on Monday afternoon, please.",
+        )
+        assertOk(
+            "Send it to Marketing, wait, forget that send it to Finance instead",
+            "Send it to Finance instead.",
+        )
+        assertOk(
+            "Book the flight for Tuesday no, actually change that to Thursday",
+            "Book the flight for Thursday.",
+        )
+        assertRejected(
+            FidelityViolation.LENGTH_COLLAPSE,
+            "actually I mean the delivery is late and the driver says he will be there around noon today",
+            "Delivery is late.",
+        )
+    }
+
+    @Test fun `spoken emoji commands are exempted from numeric divergence and collapse while casual mentions stay untouched`() {
+        assertEquals(
+            FidelityVerdict.Ok,
+            CloudCleanupFidelityGuard.check(
+                "that was hilarious three laughing emojis",
+                "That was hilarious \uD83D\uDE02\uD83D\uDE02\uD83D\uDE02",
+                spokenEmojiCommands = true,
+            ),
+        )
+        assertEquals(
+            FidelityVerdict.Ok,
+            CloudCleanupFidelityGuard.check(
+                "that demo was awesome fire emoji thumbs up emoji",
+                "That demo was awesome \uD83D\uDD25 \uD83D\uDC4D",
+                spokenEmojiCommands = false,
+            ),
+        )
+        // Unrelated numeric change must STILL be rejected even with spoken emoji commands present!
+        assertEquals(
+            FidelityVerdict.Rejected(FidelityViolation.NUMERIC_DIVERGENCE),
+            CloudCleanupFidelityGuard.check(
+                "meet me at 5 pm three laughing emojis",
+                "Meet me at 6 pm \uD83D\uDE02\uD83D\uDE02\uD83D\uDE02",
+                spokenEmojiCommands = true,
+            ),
+        )
+        // Casual mention preserved verbatim passes cleanly.
+        assertOk("I don't use laughing emojis", "I don't use laughing emojis.")
+    }
+
     // --- user-facing notice ---------------------------------------------------------------------
 
     @Test fun `every violation has a fixed user-facing phrase`() {

@@ -323,7 +323,9 @@ internal object BackgroundDictationNotifications {
     fun ensureChannels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
         nm.createNotificationChannel(
-            NotificationChannel(WORK_CHANNEL_ID, "Dictation in progress", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(WORK_CHANNEL_ID, "Dictation in progress", NotificationManager.IMPORTANCE_LOW).apply {
+                setShowBadge(false)
+            }
         )
         nm.createNotificationChannel(
             NotificationChannel(RESULT_CHANNEL_ID, "Dictation results", NotificationManager.IMPORTANCE_DEFAULT)

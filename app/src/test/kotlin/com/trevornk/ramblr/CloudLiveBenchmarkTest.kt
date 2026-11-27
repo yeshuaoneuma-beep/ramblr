@@ -236,7 +236,7 @@ class CloudLiveBenchmarkTest {
         runtime.onTap()
         engines.single().finishAs(pcm, RecordingEngine.StopReason.USER)
         idleMainLooper()
-        shadowOf(Looper.getMainLooper()).idleFor(2_501, TimeUnit.MILLISECONDS)
+        shadowOf(Looper.getMainLooper()).idleFor(10_501, TimeUnit.MILLISECONDS)
 
         val live = awaitCloudLiveLine().getJSONObject("cloudLive")
         assertEquals("BATCH_SERVED_NO_TERMINAL", live.getString("outcome"))

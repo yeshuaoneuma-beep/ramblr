@@ -130,9 +130,9 @@ class DictationHaptics(
             val out = output()
             val caps = out.capabilities() ?: return
             val spec = if (caps.hasAmplitudeControl) {
-                HapticEffectSpec.Waveform(listOf(0L, 25L, 60L, 25L), listOf(0, 128, 0, 128))
+                HapticEffectSpec.Waveform(listOf(0L, 35L, 65L, 35L), listOf(0, 190, 0, 190))
             } else {
-                HapticEffectSpec.Waveform(listOf(0L, 25L, 60L, 25L), null)
+                HapticEffectSpec.Waveform(listOf(0L, 35L, 65L, 35L), null)
             }
             out.play(spec)
         } catch (e: Exception) {

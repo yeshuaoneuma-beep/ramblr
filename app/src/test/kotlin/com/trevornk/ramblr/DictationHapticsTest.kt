@@ -172,13 +172,17 @@ class DictationHapticsTest {
         assertTrue(out.played.isEmpty())
     }
 
-    @Test fun `onLiveDisconnected plays subtle double-tick waveform and respects muted system`() {
+    @Test fun `onLiveDisconnected plays firm double-tick waveform and respects muted system`() {
         val out = FakeOutput(caps = HapticCapabilities(hasAmplitudeControl = true, predefinedSupported = true))
         haptics(on.copy(enabled = false), out).onLiveDisconnected()
         assertEquals(1, out.played.size)
         val wave = out.played.single() as HapticEffectSpec.Waveform
-        assertEquals(listOf(0L, 25L, 60L, 25L), wave.timings)
-        assertEquals(listOf(0, 128, 0, 128), wave.amplitudes)
+        assertEquals(listOf(0L, 35L, 65L, 35L), wave.timings)
+        assertEquals(listOf(0, 190, 0, 190), wave.amplitudes)
+
+        val noAmp = FakeOutput(caps = HapticCapabilities(hasAmplitudeControl = false, predefinedSupported = true))
+        haptics(on, noAmp).onLiveDisconnected()
+        assertEquals(HapticEffectSpec.Waveform(listOf(0L, 35L, 65L, 35L), null), noAmp.played.single())
 
         val muted = FakeOutput(caps = null)
         haptics(on, muted).onLiveDisconnected()

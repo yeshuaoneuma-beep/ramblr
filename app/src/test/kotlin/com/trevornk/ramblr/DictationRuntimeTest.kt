@@ -738,7 +738,7 @@ class DictationRuntimeTest {
         runtime.onTap()
         engines.single().finishAs(pcm, RecordingEngine.StopReason.USER)
         idleMainLooper()
-        shadowOf(Looper.getMainLooper()).idleFor(2_501, TimeUnit.MILLISECONDS)
+        shadowOf(Looper.getMainLooper()).idleFor(10_501, TimeUnit.MILLISECONDS)
 
         val deadline = System.currentTimeMillis() + 5_000
         while (System.currentTimeMillis() < deadline && runtime.currentState() != RecordingStateMachine.State.IDLE) {
@@ -990,7 +990,7 @@ class DictationRuntimeTest {
 
         // The wait expires and the live final lands in the same main-looper turn: whichever wins,
         // exactly one of them may claim the preserved PCM.
-        shadowOf(Looper.getMainLooper()).idleFor(2_501, TimeUnit.MILLISECONDS)
+        shadowOf(Looper.getMainLooper()).idleFor(10_501, TimeUnit.MILLISECONDS)
         session.complete(CloudLiveTerminal.Success("racing final", CloudLiveTiming(1, finalAtMs = 2)))
         awaitDelivery()
         awaitIdle()

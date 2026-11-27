@@ -406,11 +406,21 @@ class DataLogsActivity : BaseSettingsActivity() {
     }
 
     private fun historyRow(store: DictationHistoryStore, entry: DictationHistoryEntry, onDeleted: () -> Unit): View {
-        val text = entry.cleanedText ?: entry.rawText
+        val text = entry.displayedText()
+        val versions = distinctHistoryVersions(entry)
+        val hasMultipleVersions = versions.size > 1
+        val titleText = buildString {
+            append(historyTimestampFormat.format(java.util.Date(entry.timestamp)))
+            if (hasMultipleVersions) append(" \u00b7 Compare versions")
+        }
         val badge = paidFallbackBadgeOrNull(entry)
-        val row = settingsRow(historyTimestampFormat.format(java.util.Date(entry.timestamp)), text, badge) {
-            ClipboardUtil.copy(this, text)
-            toast("Copied to clipboard")
+        val row = settingsRow(titleText, text, badge) {
+            if (hasMultipleVersions) {
+                showHistoryVersionComparison(versions)
+            } else {
+                ClipboardUtil.copy(this, text)
+                toast("Copied to clipboard")
+            }
         }
         row.setOnLongClickListener {
             confirmDeleteHistoryEntry(store, entry, onDeleted)
@@ -420,6 +430,59 @@ class DataLogsActivity : BaseSettingsActivity() {
         subtitle.maxLines = 2
         subtitle.ellipsize = android.text.TextUtils.TruncateAt.END
         return row
+    }
+
+    private fun showHistoryVersionComparison(versions: List<HistoryVersionOption>) {
+        val container = vertical(0).apply {
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+        val primaryText = attrColor(android.R.attr.textColorPrimary)
+        val secondaryText = attrColor(android.R.attr.textColorSecondary)
+        val accent = attrColor(com.google.android.material.R.attr.colorPrimary)
+        versions.forEachIndexed { idx, version ->
+            val headerRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(0, if (idx == 0) 0 else dp(12), 0, dp(4))
+            }
+            headerRow.addView(TextView(this).apply {
+                text = if (version.wasInserted) "${version.label} (Inserted)" else version.label
+                textSize = 13f
+                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+                setTextColor(if (version.wasInserted) accent else secondaryText)
+                layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f)
+            })
+            headerRow.addView(TextView(this).apply {
+                text = "Copy"
+                textSize = 13f
+                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+                setTextColor(accent)
+                setPadding(dp(12), dp(4), dp(4), dp(4))
+                isClickable = true
+                isFocusable = true
+                OneUiComponents.applySelectableRipple(this)
+                setOnClickListener {
+                    ClipboardUtil.copy(this@DataLogsActivity, version.text)
+                    toast("Copied ${version.label.lowercase()} text")
+                }
+            })
+            container.addView(headerRow)
+            container.addView(TextView(this).apply {
+                text = version.text
+                textSize = 14f
+                setTextColor(primaryText)
+                setTextIsSelectable(true)
+                setPadding(0, 0, 0, dp(10))
+            })
+            if (idx < versions.lastIndex) {
+                container.addView(hairlineDivider(0, 0))
+            }
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Compare versions")
+            .setView(ScrollView(this).apply { addView(container) })
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun paidFallbackBadgeOrNull(entry: DictationHistoryEntry): TextView? {

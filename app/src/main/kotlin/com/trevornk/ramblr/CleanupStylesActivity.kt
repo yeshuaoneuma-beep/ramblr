@@ -24,6 +24,8 @@ class CleanupStylesActivity : BaseSettingsActivity() {
     private lateinit var previewBeforeInjectSwitch: MaterialSwitch
     private lateinit var perAppPersonaSwitch: MaterialSwitch
     private lateinit var rawTextRetrySwitch: MaterialSwitch
+    private lateinit var smartSelfCorrectionSwitch: MaterialSwitch
+    private lateinit var spokenEmojiCommandsSwitch: MaterialSwitch
     private lateinit var translationLanguagesRowSub: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -111,6 +113,38 @@ class CleanupStylesActivity : BaseSettingsActivity() {
             }
         )
 
+        smartSelfCorrectionSwitch = MaterialSwitch(this).apply {
+            isChecked = CleanupModifiersPrefs.isSmartSelfCorrectionEnabled(this@CleanupStylesActivity)
+            isClickable = false
+        }
+        root.addView(
+            settingsRow(
+                title = "Smart self-correction",
+                subtitle = "Prunes explicit mid-sentence corrections while keeping genuine uncertainty intact",
+                widget = smartSelfCorrectionSwitch,
+            ) {
+                val newVal = !smartSelfCorrectionSwitch.isChecked
+                CleanupModifiersPrefs.setSmartSelfCorrectionEnabled(this, newVal)
+                smartSelfCorrectionSwitch.isChecked = newVal
+            }
+        )
+
+        spokenEmojiCommandsSwitch = MaterialSwitch(this).apply {
+            isChecked = CleanupModifiersPrefs.isSpokenEmojiCommandsEnabled(this@CleanupStylesActivity)
+            isClickable = false
+        }
+        root.addView(
+            settingsRow(
+                title = "Spoken emoji commands",
+                subtitle = "Converts explicit spoken commands like \"fire emoji\" or \"three laughing emojis\" into emoji",
+                widget = spokenEmojiCommandsSwitch,
+            ) {
+                val newVal = !spokenEmojiCommandsSwitch.isChecked
+                CleanupModifiersPrefs.setSpokenEmojiCommandsEnabled(this, newVal)
+                spokenEmojiCommandsSwitch.isChecked = newVal
+            }
+        )
+
         root.addView(sectionHeader(getString(R.string.translation_section_title)))
         val translationLanguagesRow = settingsRow(
             title = getString(R.string.keyboard_translation_languages_title),
@@ -148,6 +182,8 @@ class CleanupStylesActivity : BaseSettingsActivity() {
         previewBeforeInjectSwitch.isChecked = PreviewBeforeInjectToggle.isEnabled(this)
         perAppPersonaSwitch.isChecked = PerAppPersonaToggle.isEnabled(this)
         rawTextRetrySwitch.isChecked = RawTextRetryToggle.isEnabled(this)
+        smartSelfCorrectionSwitch.isChecked = CleanupModifiersPrefs.isSmartSelfCorrectionEnabled(this)
+        spokenEmojiCommandsSwitch.isChecked = CleanupModifiersPrefs.isSpokenEmojiCommandsEnabled(this)
         translationLanguagesRowSub.text = KeyboardTranslation.summary(this)
     }
 

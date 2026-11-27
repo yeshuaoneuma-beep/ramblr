@@ -55,9 +55,17 @@ internal object AudioJobNotifications {
 
     fun ensureChannels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
-        nm.createNotificationChannel(NotificationChannel(PROGRESS_CHANNEL, ctx.getString(R.string.audio_channel_progress), NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(
+            NotificationChannel(PROGRESS_CHANNEL, ctx.getString(R.string.audio_channel_progress), NotificationManager.IMPORTANCE_LOW).apply {
+                setShowBadge(false)
+            }
+        )
         nm.createNotificationChannel(NotificationChannel(RESULT_CHANNEL, ctx.getString(R.string.audio_channel_result), NotificationManager.IMPORTANCE_DEFAULT))
-        nm.createNotificationChannel(NotificationChannel(RECORDING_CHANNEL, ctx.getString(R.string.audio_channel_recording), NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(
+            NotificationChannel(RECORDING_CHANNEL, ctx.getString(R.string.audio_channel_recording), NotificationManager.IMPORTANCE_LOW).apply {
+                setShowBadge(false)
+            }
+        )
     }
 
     private fun activityIntent(ctx: Context, requestCode: Int, intent: Intent): PendingIntent =

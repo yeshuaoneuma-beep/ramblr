@@ -15,8 +15,61 @@ data class DictationHistoryEntry(
     val timestamp: Long,
     val rawText: String,
     val cleanedText: String?,
-    val paidFallbackGroup: CleanupStepGroup? = null
+    val paidFallbackGroup: CleanupStepGroup? = null,
+    val liveText: String? = null,
+    val insertedSource: String? = null,
+) {
+    /** Text that was actually inserted, respecting [insertedSource] with safe fallback. */
+    fun displayedText(): String = when (insertedSource) {
+        "cleaned" -> cleanedText ?: rawText
+        "live" -> liveText ?: rawText
+        "raw" -> rawText
+        else -> cleanedText ?: rawText
+    }
+}
+
+/** One distinct version of a dictation for side-by-side comparison in History. */
+data class HistoryVersionOption(
+    val sourceKey: String,
+    val label: String,
+    val text: String,
+    val wasInserted: Boolean,
 )
+
+/**
+ * Collects distinct non-blank versions among Post-processed ([DictationHistoryEntry.cleanedText]),
+ * Live ([DictationHistoryEntry.liveText]), and Raw ([DictationHistoryEntry.rawText]), deduplicating
+ * identical text while accurately tagging whichever version was inserted.
+ */
+fun distinctHistoryVersions(entry: DictationHistoryEntry): List<HistoryVersionOption> {
+    val insertedKey = entry.insertedSource ?: when {
+        !entry.cleanedText.isNullOrBlank() -> "cleaned"
+        !entry.liveText.isNullOrBlank() && entry.liveText == entry.rawText -> "live"
+        else -> "raw"
+    }
+    val rawCandidates = buildList {
+        entry.cleanedText?.takeIf { it.isNotBlank() }?.let { add(Triple("cleaned", "Post-processed", it)) }
+        entry.liveText?.takeIf { it.isNotBlank() }?.let { add(Triple("live", "Live", it)) }
+        entry.rawText.takeIf { it.isNotBlank() }?.let { add(Triple("raw", "Raw", it)) }
+    }
+    val deduped = mutableListOf<HistoryVersionOption>()
+    for ((key, label, text) in rawCandidates) {
+        val existingIdx = deduped.indexOfFirst { it.text.trim() == text.trim() }
+        if (existingIdx >= 0) {
+            if (key == insertedKey) {
+                deduped[existingIdx] = deduped[existingIdx].copy(wasInserted = true)
+            }
+        } else {
+            deduped += HistoryVersionOption(
+                sourceKey = key,
+                label = label,
+                text = text,
+                wasInserted = key == insertedKey,
+            )
+        }
+    }
+    return deduped
+}
 
 /** Whether one history row's "paid fallback" badge (#33) should render: the debug/visibility
  *  toggle must be on, and the entry must actually have been served by a paid group. */
@@ -166,6 +219,8 @@ class DictationHistoryStore(
             put("rawText", entry.rawText)
             put("cleanedText", entry.cleanedText ?: JSONObject.NULL)
             put("paidFallbackGroup", entry.paidFallbackGroup?.name ?: JSONObject.NULL)
+            put("liveText", entry.liveText ?: JSONObject.NULL)
+            put("insertedSource", entry.insertedSource ?: JSONObject.NULL)
         }.toString()
 
     private fun parse(line: String): DictationHistoryEntry {
@@ -178,7 +233,9 @@ class DictationHistoryStore(
             // (Android's org.json), so a pre-#33 history line with no "paidFallbackGroup" key at
             // all parses to null here rather than throwing.
             paidFallbackGroup = if (json.isNull("paidFallbackGroup")) null
-                else runCatching { CleanupStepGroup.valueOf(json.getString("paidFallbackGroup")) }.getOrNull()
+                else runCatching { CleanupStepGroup.valueOf(json.getString("paidFallbackGroup")) }.getOrNull(),
+            liveText = if (json.isNull("liveText")) null else json.optString("liveText").takeIf { it.isNotEmpty() },
+            insertedSource = if (json.isNull("insertedSource")) null else json.optString("insertedSource").takeIf { it.isNotEmpty() },
         )
     }
 }

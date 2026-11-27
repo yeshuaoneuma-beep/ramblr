@@ -42,4 +42,18 @@ object NetworkClients {
             .followSslRedirects(false)
             .build()
     }
+
+    /**
+     * Dedicated OkHttp client for long-lived Gemini Live WebSockets:
+     * - 15s WebSocket PING keepalive to detect dead mobile/NAT sockets quickly,
+     * - unbounded readTimeout & callTimeout (0ms) so multi-minute live sessions are never killed by
+     *   [shared]'s 120s/180s batch HTTP timeouts while [shared] remains untouched.
+     */
+    val liveWebSocket: OkHttpClient by lazy {
+        shared.newBuilder() // Inherits fastFallback=true (#363).
+            .pingInterval(15, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .build()
+    }
 }

@@ -17,6 +17,7 @@ enum class FidelityViolation {
     LENGTH_COLLAPSE,
     LENGTH_EXPANSION,
     NUMERIC_DIVERGENCE,
+    QUESTION_ANSWERED,
     ENTITY_LOST,
     WORDS_INSERTED,
 }
@@ -64,9 +65,28 @@ object CloudCleanupFidelityGuard {
     // point of cleanup, so neither the lost-name nor the collapse check applies. Deliberately
     // phrases, not single words: "actually" or "I mean" alone are everyday filler.
     internal val SELF_CORRECTION_CUE = Regex(
-        "\\b(no,? sorry|no,? wait|wait,? no|sorry,? i (meant|mean)|i meant|scratch that|never ?mind|" +
-            "actually,? (make|let[\u2019']?s make|change)|make that|or rather|correction)\\b",
+        "\\b(?:no,?\\s+sorry|no,?\\s+wait|no,?\\s+actually|actually,?\\s+no|wait,?\\s+no|wait,?\\s+actually|wait,?\\s+make|" +
+            "nah\\s+(?:make|actually|let[\u2019']?s|change)|forget\\s+that|change\\s+that\\s+to|" +
+            "sorry,?\\s+i\\s+(?:meant|mean)|i\\s+meant|scratch\\s+that|never\\s?mind|" +
+            "actually,?\\s+(?:make|let[\u2019']?s\\s+make|change)|make\\s+that|or\\s+rather|correction)\\b|\\b(?:nah|wait),",
         RegexOption.IGNORE_CASE,
+    )
+
+    // Explicit spoken emoji command spans (e.g. "three laughing emojis", "fire emoji", "thumbs up emoji").
+    internal val SPOKEN_EMOJI_COMMAND = Regex(
+        "\\b(?:(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+)?(?!(?:am|pm|a\\.m\\.|p\\.m\\.)\\b)(?:[\\p{L}]+\\s+){1,2}emojis?\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private val INTERROGATIVE_START = Regex(
+        "^(?:how|what|why|where|when|who|is|are|do|does|did|can|could|would|will|should)" +
+            "(?:['](?:s|re|ve|ll|d|t|m)|n[']t)?\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private val CONVERSATIONAL_REPLY_OPENERS = listOf(
+        "yes", "no", "yeah", "well", "honestly", "things are", "it's going", "work is", "work's",
+        "doing great", "pretty good", "the capital", "i'm doing", "yo", "hey", "man", "bro",
     )
 
     // Replies a model gives instead of cleaning up. Only a rejection when the transcript does not
@@ -106,7 +126,56 @@ object CloudCleanupFidelityGuard {
      * Checks [output] (a cloud cleanup result) against the [raw] transcript it was produced from.
      * Rules run cheapest-first and the first violation wins.
      */
-    fun check(raw: String, output: String): FidelityVerdict {
+    fun check(raw: String, output: String, spokenEmojiCommands: Boolean = false): FidelityVerdict {
+        val rawText = raw.trim()
+        val outText = output.trim()
+        if (rawText.isEmpty() || outText.isEmpty()) return FidelityVerdict.Ok
+        if (COMMAND_REQUEST.containsMatchIn(rawText)) return FidelityVerdict.Ok
+
+        if (isMetaReply(rawText, outText)) return FidelityVerdict.Rejected(FidelityViolation.META_REPLY)
+
+        val emojiExempt = (spokenEmojiCommands || hasUnicodeEmoji(outText)) &&
+            SPOKEN_EMOJI_COMMAND.containsMatchIn(rawText) &&
+            hasUnicodeEmoji(outText)
+
+        val rawWords = rawText.split(Regex("\\s+")).size
+        val outWords = outText.split(Regex("\\s+")).size
+        val effectiveRawWordsForCollapse = if (emojiExempt) {
+            val savedWords = SPOKEN_EMOJI_COMMAND.findAll(rawText).sumOf { m ->
+                (m.value.trim().split(Regex("\\s+")).size - 1).coerceAtLeast(0)
+            }
+            (rawWords - savedWords).coerceAtLeast(1)
+        } else {
+            rawWords
+        }
+        if (effectiveRawWordsForCollapse >= MIN_WORDS_FOR_LENGTH_CHECK) {
+            val ratio = outWords.toDouble() / effectiveRawWordsForCollapse
+            if (ratio < MIN_LENGTH_RATIO && !SELF_CORRECTION_CUE.containsMatchIn(rawText)) {
+                return FidelityVerdict.Rejected(FidelityViolation.LENGTH_COLLAPSE)
+            }
+        }
+        if (rawWords >= MIN_WORDS_FOR_LENGTH_CHECK) {
+            val ratio = outWords.toDouble() / rawWords
+            if (ratio > MAX_LENGTH_RATIO) return FidelityVerdict.Rejected(FidelityViolation.LENGTH_EXPANSION)
+        }
+
+        val rawForNumbers = if (emojiExempt) SPOKEN_EMOJI_COMMAND.replace(rawText, " ") else rawText
+        if (numbersChanged(rawForNumbers, outText)) return FidelityVerdict.Rejected(FidelityViolation.NUMERIC_DIVERGENCE)
+        if (entityLost(rawText, outText)) return FidelityVerdict.Rejected(FidelityViolation.ENTITY_LOST)
+        if (tooManyInsertedWords(rawText, outText)) return FidelityVerdict.Rejected(FidelityViolation.WORDS_INSERTED)
+        return FidelityVerdict.Ok
+    }
+
+    /**
+     * Always-on anti-hallucination and question-answering safety check that runs on EVERY cloud
+     * cleanup output, including rewriting/custom/per-app styles where [PostProcessor.preservesWording]
+     * is false.
+     */
+    fun checkSafety(
+        raw: String,
+        output: String,
+        vocabularyTerms: List<String> = emptyList(),
+    ): FidelityVerdict {
         val rawText = raw.trim()
         val outText = output.trim()
         if (rawText.isEmpty() || outText.isEmpty()) return FidelityVerdict.Ok
@@ -116,16 +185,80 @@ object CloudCleanupFidelityGuard {
 
         val rawWords = rawText.split(Regex("\\s+")).size
         val outWords = outText.split(Regex("\\s+")).size
-        if (rawWords >= MIN_WORDS_FOR_LENGTH_CHECK) {
-            val ratio = outWords.toDouble() / rawWords
-            if (ratio < MIN_LENGTH_RATIO && !SELF_CORRECTION_CUE.containsMatchIn(rawText)) return FidelityVerdict.Rejected(FidelityViolation.LENGTH_COLLAPSE)
-            if (ratio > MAX_LENGTH_RATIO) return FidelityVerdict.Rejected(FidelityViolation.LENGTH_EXPANSION)
+
+        if (isQuestionAnswered(rawText, outText, rawWords, outWords)) {
+            return FidelityVerdict.Rejected(FidelityViolation.QUESTION_ANSWERED)
         }
 
-        if (numbersChanged(rawText, outText)) return FidelityVerdict.Rejected(FidelityViolation.NUMERIC_DIVERGENCE)
-        if (entityLost(rawText, outText)) return FidelityVerdict.Rejected(FidelityViolation.ENTITY_LOST)
-        if (tooManyInsertedWords(rawText, outText)) return FidelityVerdict.Rejected(FidelityViolation.WORDS_INSERTED)
+        if (rawWords <= 8 && outWords > 18 && outWords.toDouble() / rawWords > 3.5) {
+            return FidelityVerdict.Rejected(FidelityViolation.LENGTH_EXPANSION)
+        }
+        if (rawWords > 8 && outWords.toDouble() / rawWords > 3.0 && outWords - rawWords >= 20) {
+            return FidelityVerdict.Rejected(FidelityViolation.LENGTH_EXPANSION)
+        }
+
+        if (hasInjectedVocabularyTerm(rawText, outText, rawWords, outWords, vocabularyTerms)) {
+            return FidelityVerdict.Rejected(FidelityViolation.WORDS_INSERTED)
+        }
+
         return FidelityVerdict.Ok
+    }
+
+    private fun isQuestionAnswered(rawText: String, outText: String, rawWords: Int, outWords: Int): Boolean {
+        if (rawWords > 12) return false
+        val isQuestion = rawText.endsWith("?") || INTERROGATIVE_START.containsMatchIn(leadingText(rawText))
+        if (!isQuestion) return false
+        if (outText.contains('?')) return false
+        if (outWords >= maxOf(8, rawWords * 2)) return true
+        val rawLower = normalizeApostrophes(rawText).lowercase()
+        val outHead = leadingText(outText)
+        return CONVERSATIONAL_REPLY_OPENERS.any { opener ->
+            outHead.startsWith(opener) &&
+                !outHead.getOrElse(opener.length) { ' ' }.isLetterOrDigit() &&
+                !rawLower.contains(opener)
+        }
+    }
+
+    private fun hasInjectedVocabularyTerm(
+        rawText: String,
+        outText: String,
+        rawWords: Int,
+        outWords: Int,
+        vocabularyTerms: List<String>,
+    ): Boolean {
+        if (outWords < rawWords + 4) return false
+        val combinedTerms = (vocabularyTerms + VocabularyTerms.DEFAULTS)
+            .map { it.trim() }
+            .filter { it.length >= 4 }
+            .distinctBy { it.lowercase() }
+        if (combinedTerms.isEmpty()) return false
+        val rawLower = normalizeApostrophes(rawText).lowercase()
+        val outLower = normalizeApostrophes(outText).lowercase()
+        val rawTokens = tokens(rawText)
+        for (term in combinedTerms) {
+            val termLower = normalizeApostrophes(term).lowercase()
+            if (rawLower.contains(termLower)) continue
+            val wholeWord = Regex("(?<![\\p{L}\\p{N}])${Regex.escape(termLower)}(?![\\p{L}\\p{N}])")
+            if (!wholeWord.containsMatchIn(outLower)) continue
+            val compactPrefix = termLower.filter { it.isLetterOrDigit() }.take(3)
+            val subPrefixes = termLower.split(Regex("[^\\p{L}\\p{N}]+")).filter { it.length >= 3 }.map { it.take(3) }
+            val prefixesToCheck = (listOf(compactPrefix) + subPrefixes).filter { it.length >= 3 }.distinct()
+            val sharesPrefix = rawTokens.any { tok ->
+                tok.length >= 3 && prefixesToCheck.any { prefix -> tok.startsWith(prefix) }
+            }
+            if (!sharesPrefix) return true
+        }
+        return false
+    }
+
+    private fun hasUnicodeEmoji(text: String): Boolean {
+        var i = 0
+        while (i < text.length) {
+            val cp = text.codePointAt(i)
+            i += Character.charCount(cp)
+            if (cp in 0x1F300..0x1FAFF || cp in 0x2600..0x27BF || cp == 0xFE0F) return true
+        }
+        return false
     }
 
     private fun normalizeApostrophes(s: String) = s.replace('\u2019', '\'').replace('\u2018', '\'')

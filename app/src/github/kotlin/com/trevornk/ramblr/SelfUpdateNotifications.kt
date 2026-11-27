@@ -89,6 +89,7 @@ object SelfUpdateNotifications {
                 category = AppNotificationCategory.UPDATE,
                 title = "Update available: v${update.versionName}",
                 body = "A new release is available in Settings > Updates.",
+                postShadeAlert = false,
             )
         }
         ensureChannel(ctx)

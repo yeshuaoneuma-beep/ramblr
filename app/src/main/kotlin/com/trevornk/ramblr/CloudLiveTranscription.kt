@@ -24,6 +24,7 @@ fun interface CloudLiveTranscriptionSessionFactory {
 }
 
 interface CloudLiveTranscriptionListener {
+    fun onConnected() {}
     fun onInterim(text: String, timing: CloudLiveTiming)
     fun onTerminal(result: CloudLiveTerminal)
 }
@@ -42,6 +43,7 @@ enum class CloudLiveFailureReason {
     SETUP_TIMEOUT,
     FINAL_TIMEOUT,
     SESSION_LIMIT,
+    STREAM_STALLED,
     BUFFER_LIMIT,
     SEND_FAILED,
     PROTOCOL_ERROR,

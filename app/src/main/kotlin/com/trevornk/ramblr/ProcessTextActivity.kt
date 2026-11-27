@@ -156,11 +156,15 @@ class ProcessTextActivity : Activity() {
         val vocabulary = vocabularyTerms()
         // An explicit pick in the dialog above is an explicit selection, so the persona's own
         // prompt is used verbatim -- the same contract as the overlay's quick style menu.
-        val prompt = PostProcessor.withKeepLanguage(
-            PostProcessor.interpolateVocabulary(
-                CleanupPersonas.promptForExplicitSelection(persona),
-                vocabulary,
-            )
+        val prompt = PostProcessor.withCleanupModifiers(
+            prompt = PostProcessor.withKeepLanguage(
+                PostProcessor.interpolateVocabulary(
+                    CleanupPersonas.promptForExplicitSelection(persona),
+                    vocabulary,
+                )
+            ),
+            smartSelfCorrection = CleanupModifiersPrefs.isSmartSelfCorrectionEnabled(this),
+            spokenEmojiCommands = CleanupModifiersPrefs.isSpokenEmojiCommandsEnabled(this),
         )
         runProcessing(
             request, plan.chain, plan.waterfall, prompt, vocabulary,
@@ -261,6 +265,7 @@ class ProcessTextActivity : Activity() {
                     // #182 option 2: local cleanup applies the same terms as a deterministic
                     // post-pass over its output instead of in its prompt (which broke LFM2.5).
                     localVocabulary = vocabulary,
+                    vocabularyTerms = vocabulary,
                     temperatureCacheContext = applicationContext,
                     // Off for a translation (#360), exactly as for dictation translation: the
                     // output shares no words with the selection. Otherwise the default the

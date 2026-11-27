@@ -24,6 +24,9 @@ class RecordingStateMachine {
     /** RECORDING -> TRANSCRIBING. Returns false (no-op) if not currently RECORDING. */
     fun tryStartTranscribing(): Boolean = ref.compareAndSet(State.RECORDING, State.TRANSCRIBING)
 
+    /** IDLE -> TRANSCRIBING (e.g. launching Post-Cleanup from a paused Continue Live session). */
+    fun tryStartTranscribingFromIdle(): Boolean = ref.compareAndSet(State.IDLE, State.TRANSCRIBING)
+
     /** Unconditionally forces IDLE, e.g. once transcription completes or on teardown. */
     fun reset() { ref.set(State.IDLE) }
 }

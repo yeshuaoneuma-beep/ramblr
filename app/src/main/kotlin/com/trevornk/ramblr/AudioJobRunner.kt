@@ -444,7 +444,11 @@ internal class AudioJobRunner(
         val prefs = context.getSharedPreferences("ramblr", Context.MODE_PRIVATE)
         val vocabulary = VocabularyTerms.parse(prefs.getString("custom_vocabulary_terms", VocabularyTerms.DEFAULT_SERIALIZED))
         val savedPrompt = PostProcessor.effectiveSavedPrompt(prefs.getString("post_processing_prompt", null), prefs.getString("cleanup_style", null))
-        val prompt = PostProcessor.withKeepLanguage(PostProcessor.interpolateVocabulary(savedPrompt, vocabulary))
+        val prompt = PostProcessor.withCleanupModifiers(
+            prompt = PostProcessor.withKeepLanguage(PostProcessor.interpolateVocabulary(savedPrompt, vocabulary)),
+            smartSelfCorrection = CleanupModifiersPrefs.isSmartSelfCorrectionEnabled(context),
+            spokenEmojiCommands = CleanupModifiersPrefs.isSpokenEmojiCommandsEnabled(context),
+        )
         val cursor = CleanupWaterfallCursor()
 
         val tally = CleanupSectionTally()
@@ -470,6 +474,7 @@ internal class AudioJobRunner(
                 localModelPath = { ModelDownloader.localCleanupModelFile(context, LocalCleanupProvider.selectedModel(context))?.absolutePath },
                 localPrompt = localPrompt,
                 localVocabulary = vocabulary,
+                vocabularyTerms = vocabulary,
                 temperatureCacheContext = context.applicationContext,
                 localStepBudgetMs = TranscriptChunker.localStepBudgetMsFor(waterfall),
             ) { r -> result = r; latch.countDown() }

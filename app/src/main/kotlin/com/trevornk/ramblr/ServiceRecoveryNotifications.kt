@@ -125,6 +125,7 @@ object ServiceRecoveryNotifications {
                 category = AppNotificationCategory.SETUP_REMINDER,
                 title = "Rhema Cadence was turned off",
                 body = "Accessibility service was turned off. Open Setup or Android Accessibility settings to turn it back on.",
+                postShadeAlert = false,
             )
         }
         ensureChannel(ctx)

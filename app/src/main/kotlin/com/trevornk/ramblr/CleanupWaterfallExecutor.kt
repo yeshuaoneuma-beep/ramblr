@@ -662,6 +662,9 @@ object CleanupWaterfallExecutor {
         // exclusive by construction, so terms are never applied twice to one result. Defaulted
         // empty so existing tests/call sites keep their exact behavior unless they opt in.
         localVocabulary: List<String> = emptyList(),
+        // Active personal vocabulary terms threaded to [CloudCleanupFidelityGuard.checkSafety]
+        // for unmentioned topic-injection detection across all cloud cleanup styles.
+        vocabularyTerms: List<String> = emptyList(),
         // Injectable wall clock (defaults to the real one) so the hard-cap path is unit-testable
         // without sleeping -- previously it read System.currentTimeMillis() directly, so the
         // "exceeded time budget" branch had no deterministic test (audit test-gap #6). Its siblings
@@ -882,7 +885,16 @@ object CleanupWaterfallExecutor {
             }
 
             performStep(step, text, prompt, localPrompt, localVocabulary, credentialLookup, entryCredentialLookup, vaultCredentialLookup, stepTransport, localInference, localModelPath, cancelHolder, stepDeadlineAtMs, nowMs, temperatureCacheContext, isLastStep = index == steps.lastIndex, localStepBudgetMs = localStepBudgetMs, localPace = localPace, perProviderCapMs = perProviderCapMs) { stepOutcome ->
-                val guardedOutcome = if (fidelityGuard) guardCloudOutput(step, text, stepOutcome) else stepOutcome
+                val effectiveVocab = if (vocabularyTerms.isNotEmpty()) vocabularyTerms else localVocabulary
+                val skipSafetyGuard = isPureTranslationPrompt(prompt)
+                val guardedOutcome = guardCloudOutput(
+                    step = step,
+                    rawText = text,
+                    outcome = stepOutcome,
+                    fidelityGuard = fidelityGuard,
+                    vocabularyTerms = effectiveVocab,
+                    skipSafetyGuard = skipSafetyGuard,
+                )
                 logStepOutcome(step, startedAtMs, guardedOutcome, benchmarkContext, benchmarkCorrelationId)
                 if (stepDisqualificationKey != null && lastHttpCode != null && CloudErrorClassifier.isAccountDeadError(lastHttpCode)) {
                     disqualifiedAccounts += stepDisqualificationKey
@@ -914,13 +926,41 @@ object CleanupWaterfallExecutor {
         attempt(startIndex, null, null)
     }
 
-    /** Applies [CloudCleanupFidelityGuard] to a cloud step's successful output (never LOCAL_LLM). */
-    internal fun guardCloudOutput(step: CleanupStep, rawText: String, outcome: CleanupStepOutcome): CleanupStepOutcome {
+    private val TRANSLATE_ONLY_HEAD: String =
+        PostProcessor.TRANSLATE_ONLY_PROMPT.substringBefore(PostProcessor.VOCABULARY_PLACEHOLDER).trim()
+
+    private fun isPureTranslationPrompt(prompt: String): Boolean =
+        prompt.trimStart().startsWith(TRANSLATE_ONLY_HEAD)
+
+    /**
+     * Applies [CloudCleanupFidelityGuard] to a cloud step's successful output (never LOCAL_LLM):
+     * - When [fidelityGuard] is true (wording-preserving styles): runs full [CloudCleanupFidelityGuard.check]
+     *   plus always-on [CloudCleanupFidelityGuard.checkSafety].
+     * - When [fidelityGuard] is false (rewriting/custom/per-app styles): still runs always-on
+     *   [CloudCleanupFidelityGuard.checkSafety] unless [skipSafetyGuard] is true (pure translation-only).
+     */
+    internal fun guardCloudOutput(
+        step: CleanupStep,
+        rawText: String,
+        outcome: CleanupStepOutcome,
+        fidelityGuard: Boolean = true,
+        vocabularyTerms: List<String> = emptyList(),
+        skipSafetyGuard: Boolean = false,
+    ): CleanupStepOutcome {
         if (outcome !is CleanupStepOutcome.Success || step.group == CleanupStepGroup.LOCAL_LLM) return outcome
-        return when (val verdict = CloudCleanupFidelityGuard.check(rawText, outcome.text)) {
-            is FidelityVerdict.Ok -> outcome
-            is FidelityVerdict.Rejected -> CleanupStepOutcome.Rejected(verdict.reason)
+        if (fidelityGuard) {
+            val fullVerdict = CloudCleanupFidelityGuard.check(rawText, outcome.text)
+            if (fullVerdict is FidelityVerdict.Rejected) {
+                return CleanupStepOutcome.Rejected(fullVerdict.reason)
+            }
         }
+        if (!skipSafetyGuard) {
+            val safetyVerdict = CloudCleanupFidelityGuard.checkSafety(rawText, outcome.text, vocabularyTerms)
+            if (safetyVerdict is FidelityVerdict.Rejected) {
+                return CleanupStepOutcome.Rejected(safetyVerdict.reason)
+            }
+        }
+        return outcome
     }
 
     /**

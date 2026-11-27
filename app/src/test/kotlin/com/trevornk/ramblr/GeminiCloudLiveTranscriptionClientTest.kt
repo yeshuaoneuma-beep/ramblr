@@ -257,6 +257,7 @@ class GeminiCloudLiveTranscriptionClientTest {
         return when {
             realtime.has("activityStart") -> "activityStart"
             realtime.has("activityEnd") -> "activityEnd"
+            realtime.has("audioStreamEnd") -> "audioStreamEnd"
             else -> "audio:" + realtime.getJSONObject("audio").getString("data")
         }
     }
@@ -472,43 +473,37 @@ class GeminiCloudLiveTranscriptionClientTest {
         assertTrue(smart.getJSONObject("realtimeInputConfig").getJSONObject("automaticActivityDetection").getBoolean("disabled"))
     }
 
-    @Test fun `setupJson for gemini-3_8-live uses AUDIO modality and forbids unsupported fields`() {
-        val setup = JSONObject(
-            GeminiCloudLiveTranscriptionClient.setupJson(
-                model = GeminiCloudLiveTranscriptionClient.SECONDARY_MODEL,
-                languageCodes = listOf("en-US"),
-                customVocabulary = listOf("Ramblr"),
-                mode = LiveTranscriptionMode.SMART,
-            )
-        ).getJSONObject("setup")
-        assertEquals("models/gemini-3.8-live", setup.getString("model"))
-        val genConfig = setup.getJSONObject("generationConfig")
-        assertEquals(listOf("AUDIO"), genConfig.getJSONArray("responseModalities").toStringList())
-        assertFalse(genConfig.has("thinkingConfig"))
-        assertFalse(setup.has("proactiveAudio"))
-        assertFalse(setup.has("proactive_audio"))
-        assertFalse(setup.has("enableAffectiveDialog"))
-        assertFalse(setup.has("enable_affective_dialog"))
-        val tx = setup.getJSONObject("inputAudioTranscription")
-        assertFalse("gemini-3.8-live must never send mode", tx.has("mode"))
-        assertEquals(listOf("en-US"), tx.getJSONArray("languageCodes").toStringList())
-        assertEquals(listOf("Ramblr"), tx.getJSONArray("customVocabulary").toStringList())
-        assertTrue(setup.getJSONObject("realtimeInputConfig").getJSONObject("automaticActivityDetection").getBoolean("disabled"))
-
-        // Empty language/vocab omits empty arrays on gemini-3.8-live.
-        val minimal = JSONObject(
-            GeminiCloudLiveTranscriptionClient.setupJson(
-                model = GeminiCloudLiveTranscriptionClient.SECONDARY_MODEL,
-                languageCodes = emptyList(),
-                customVocabulary = emptyList(),
-            )
-        ).getJSONObject("setup").getJSONObject("inputAudioTranscription")
-        assertFalse(minimal.has("languageCodes"))
-        assertFalse(minimal.has("customVocabulary"))
-        assertFalse(minimal.has("mode"))
+    @Test fun `setupJson for AUDIO-modality live models uses automatic VAD and clean inputAudioTranscription`() {
+        val audioModels = listOf(
+            "gemini-3.8-live",
+            "gemini-2.5-flash-native-audio-latest",
+            "gemini-2.5-flash-native-audio-preview-09-2025",
+            "gemini-2.5-flash-native-audio-preview-12-2025",
+            "gemini-3.1-flash-live-preview",
+            "gemini-3.8-live-extended-thinking",
+        )
+        for (modelId in audioModels) {
+            assertTrue("Expected supported live model: $modelId", GeminiCloudLiveTranscriptionClient.isSupportedLiveModel(modelId))
+            assertFalse("Expected AUDIO protocol for $modelId", GeminiCloudLiveTranscriptionClient.usesTranscribeTextProtocol(modelId))
+            val setup = JSONObject(
+                GeminiCloudLiveTranscriptionClient.setupJson(
+                    model = modelId,
+                    languageCodes = listOf("en-US"),
+                    customVocabulary = listOf("Ramblr"),
+                    mode = LiveTranscriptionMode.SMART,
+                )
+            ).getJSONObject("setup")
+            assertEquals("models/$modelId", setup.getString("model"))
+            val genConfig = setup.getJSONObject("generationConfig")
+            assertEquals(listOf("AUDIO"), genConfig.getJSONArray("responseModalities").toStringList())
+            assertFalse(genConfig.has("thinkingConfig"))
+            assertFalse("AUDIO-modality models must omit realtimeInputConfig for server VAD", setup.has("realtimeInputConfig"))
+            val tx = setup.getJSONObject("inputAudioTranscription")
+            assertEquals("inputAudioTranscription must be clean {}", 0, tx.length())
+        }
     }
 
-    @Test fun `gemini-3_8-live accumulates raw inputTranscription fragments ignores modelTurn and finalizes on turnComplete`() {
+    @Test fun `gemini-3_8-live uses server VAD without activityStart, sends audioStreamEnd, and flushes cleanly post-VAD`() {
         val listener = RecordingListener()
         val socket = GatedWebSocket(gateOn = "\u0000never")
         val client = FakeWebSocketClient(socket)
@@ -519,32 +514,42 @@ class GeminiCloudLiveTranscriptionClientTest {
             model = GeminiCloudLiveTranscriptionClient.SECONDARY_MODEL,
             callbackExecutor = Executor { it.run() },
             scheduler = scheduler,
+            finalTimeoutMs = 100,
             allowTestEndpoint = true,
         ).create(listener)
 
         session.connect()
         val wsListener = requireNotNull(client.socketListener)
         wsListener.onOpen(socket, upgradeResponse())
-        session.startActivity()
+        assertTrue(session.startActivity())
+        assertEquals("onConnected must not fire before setupComplete", 0, listener.connectedCount)
         wsListener.onMessage(socket, "{\"setupComplete\":{}}")
-        // Ignore audio output and outputTranscription, preserve leading/trailing spaces between input fragments.
+        assertEquals("onConnected must fire once on setupComplete", 1, listener.connectedCount)
+        // Ignore audio output and outputTranscription, preserve spaces across mid-recording turnComplete.
         wsListener.onMessage(socket, "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"audio/pcm\",\"data\":\"AAAA\"}}]},\"outputTranscription\":{\"text\":\"spoken reply\"}}}")
         wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Hello\"}}}")
         wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\" world\"}}}")
         // turnComplete while still recording must NOT finalize yet.
         wsListener.onMessage(socket, "{\"serverContent\":{\"turnComplete\":true}}")
         assertNull(listener.result)
-        assertEquals(listOf("Hello", "Hello world"), listener.interims)
+        // New turn after turnComplete joins cleanly with a single space.
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Next sentence.\"}}} ")
+        wsListener.onMessage(socket, "{\"serverContent\":{\"turnComplete\":true}}")
+        assertEquals(listOf("Hello", "Hello world", "Hello world Next sentence."), listener.interims)
 
-        session.endActivity()
-        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"!\",\"finished\":true}}}")
+        // End activity: sends audioStreamEnd (not activityEnd) and flushes via short post-VAD grace timer.
+        assertTrue(session.endActivity())
+        socket.awaitSent(2) // setup + audioStreamEnd (no activityStart!)
+        val kinds = socket.sent.map(::wireKind)
+        assertFalse("AUDIO-modality model must not send activityStart", kinds.contains("activityStart"))
+        assertTrue("AUDIO-modality model must send audioStreamEnd", kinds.contains("audioStreamEnd"))
 
         assertTrue(listener.done.await(5, TimeUnit.SECONDS))
-        assertEquals("Hello world!", (listener.result as CloudLiveTerminal.Success).text)
+        assertEquals("Hello world Next sentence.", (listener.result as CloudLiveTerminal.Success).text)
         assertEquals(1, listener.terminals)
     }
 
-    @Test fun `gemini-3_8-live flushes accumulated buffer on finalTimeout instead of failing`() {
+    @Test fun `AUDIO-modality model fails with FINAL_TIMEOUT if speech arrived after last turnComplete and never finalized`() {
         val listener = RecordingListener()
         val socket = GatedWebSocket(gateOn = "\u0000never")
         val client = FakeWebSocketClient(socket)
@@ -564,14 +569,18 @@ class GeminiCloudLiveTranscriptionClientTest {
         wsListener.onOpen(socket, upgradeResponse())
         session.startActivity()
         wsListener.onMessage(socket, "{\"setupComplete\":{}}")
-        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"buffered text\"}}}")
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"partial words\"}}}")
+        wsListener.onMessage(socket, "{\"serverContent\":{\"turnComplete\":true}}")
+        // Send loud speech PCM after turnComplete so server VAD has unfinalized audio.
+        val loudPcm = ByteArray(3200) { idx -> if (idx % 2 == 0) 0x00 else 0x10 }
+        assertTrue(session.sendPcm(loudPcm, loudPcm.size))
         session.endActivity()
 
         assertTrue(listener.done.await(5, TimeUnit.SECONDS))
-        assertEquals("buffered text", (listener.result as CloudLiveTerminal.Success).text)
+        assertEquals(CloudLiveFailureReason.FINAL_TIMEOUT, (listener.result as CloudLiveTerminal.Failure).reason)
     }
 
-    @Test fun `gemini-3_5-transcribe-live buffers active-speech inputTranscription and flushes on finalTimeout`() {
+    @Test fun `gemini-3_5-transcribe-live fails with FINAL_TIMEOUT instead of silently truncating buffered text`() {
         val listener = RecordingListener()
         val socket = GatedWebSocket(gateOn = "\u0000never")
         val client = FakeWebSocketClient(socket)
@@ -599,7 +608,129 @@ class GeminiCloudLiveTranscriptionClientTest {
 
         session.endActivity()
         assertTrue(listener.done.await(5, TimeUnit.SECONDS))
-        assertEquals("First sentence. Second sentence.", (listener.result as CloudLiveTerminal.Success).text)
+        assertEquals(CloudLiveFailureReason.FINAL_TIMEOUT, (listener.result as CloudLiveTerminal.Failure).reason)
+    }
+
+    @Test fun `goAway fails cleanly with SESSION_LIMIT`() {
+        val listener = RecordingListener()
+        val socket = GatedWebSocket(gateOn = "\u0000never")
+        val client = FakeWebSocketClient(socket)
+        val session = factory(httpClient = client).create(listener)
+        session.connect()
+        val wsListener = requireNotNull(client.socketListener)
+        wsListener.onOpen(socket, upgradeResponse())
+        session.startActivity()
+        wsListener.onMessage(socket, "{\"setupComplete\":{}}")
+        wsListener.onMessage(socket, "{\"goAway\":{\"timeLeft\":\"10s\"}}")
+
+        assertTrue(listener.done.await(5, TimeUnit.SECONDS))
+        val failure = listener.result as CloudLiveTerminal.Failure
+        assertEquals(CloudLiveFailureReason.SESSION_LIMIT, failure.reason)
+        assertTrue(failure.message.contains("goAway"))
+    }
+
+    @Test fun `stall watchdog triggers STREAM_STALLED on continuous speech with zero inbound frames and never on silence`() {
+        // 1. Continuous loud speech with 0 inbound frames -> STREAM_STALLED.
+        val speechListener = RecordingListener()
+        val speechSocket = GatedWebSocket(gateOn = "\u0000never")
+        val speechClient = FakeWebSocketClient(speechSocket)
+        var clock1 = 1_000L
+        val speechSession = GeminiCloudLiveTranscriptionClient(
+            httpClient = speechClient,
+            endpoint = server.url(GeminiCloudLiveTranscriptionClient.ENDPOINT_PATH),
+            apiKey = "test-key",
+            callbackExecutor = Executor { it.run() },
+            scheduler = scheduler,
+            stallTimeoutMs = 1_000L,
+            stallCheckIntervalMs = 20L,
+            nowMs = { clock1 },
+            allowTestEndpoint = true,
+        ).create(speechListener)
+        speechSession.connect()
+        speechClient.socketListener!!.onOpen(speechSocket, upgradeResponse())
+        speechSession.startActivity()
+        speechClient.socketListener!!.onMessage(speechSocket, "{\"setupComplete\":{}}")
+
+        val loudPcm = ByteArray(3200) { idx -> if (idx % 2 == 0) 0x00 else 0x12 }
+        assertTrue(GeminiCloudLiveTranscriptionClient.hasSpeechEnergy(loudPcm, loudPcm.size))
+        speechSession.sendPcm(loudPcm, loudPcm.size)
+        clock1 += 1_200L
+        speechSession.sendPcm(loudPcm, loudPcm.size)
+
+        assertTrue(speechListener.done.await(5, TimeUnit.SECONDS))
+        assertEquals(CloudLiveFailureReason.STREAM_STALLED, (speechListener.result as CloudLiveTerminal.Failure).reason)
+
+        // 2. Pure silence MUST NOT trigger STREAM_STALLED.
+        val silenceListener = RecordingListener()
+        val silenceSocket = GatedWebSocket(gateOn = "\u0000never")
+        val silenceClient = FakeWebSocketClient(silenceSocket)
+        var clock2 = 1_000L
+        val silenceSession = GeminiCloudLiveTranscriptionClient(
+            httpClient = silenceClient,
+            endpoint = server.url(GeminiCloudLiveTranscriptionClient.ENDPOINT_PATH),
+            apiKey = "test-key",
+            callbackExecutor = Executor { it.run() },
+            scheduler = scheduler,
+            stallTimeoutMs = 100L,
+            stallCheckIntervalMs = 20L,
+            nowMs = { clock2 },
+            allowTestEndpoint = true,
+        ).create(silenceListener)
+        silenceSession.connect()
+        silenceClient.socketListener!!.onOpen(silenceSocket, upgradeResponse())
+        silenceSession.startActivity()
+        silenceClient.socketListener!!.onMessage(silenceSocket, "{\"setupComplete\":{}}")
+
+        val silentPcm = ByteArray(3200)
+        assertFalse(GeminiCloudLiveTranscriptionClient.hasSpeechEnergy(silentPcm, silentPcm.size))
+        silenceSession.sendPcm(silentPcm, silentPcm.size)
+        clock2 += 5_000L
+        silenceSession.sendPcm(silentPcm, silentPcm.size)
+        Thread.sleep(150)
+        assertNull("Pure silence must never trigger STREAM_STALLED", silenceListener.result)
+        silenceSession.cancel()
+    }
+
+    @Test fun `SMART mode preserves earlier paragraphs across new segments and interimInputTranscription keeps committed prefix`() {
+        val listener = RecordingListener()
+        val socket = GatedWebSocket(gateOn = "\u0000never")
+        val client = FakeWebSocketClient(socket)
+        val session = GeminiCloudLiveTranscriptionClient(
+            httpClient = client,
+            endpoint = server.url(GeminiCloudLiveTranscriptionClient.ENDPOINT_PATH),
+            apiKey = "test-key",
+            model = GeminiCloudLiveTranscriptionClient.DEFAULT_MODEL,
+            mode = LiveTranscriptionMode.SMART,
+            callbackExecutor = Executor { it.run() },
+            scheduler = scheduler,
+            allowTestEndpoint = true,
+        ).create(listener)
+
+        session.connect()
+        val wsListener = requireNotNull(client.socketListener)
+        wsListener.onOpen(socket, upgradeResponse())
+        session.startActivity()
+        wsListener.onMessage(socket, "{\"setupComplete\":{}}")
+
+        // First paragraph committed
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"First paragraph about the release schedule.\"}}}")
+        // Cumulative re-edit of first paragraph replaces cleanly
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"First paragraph about the release schedule for Friday.\"}}}")
+        // Interim for second paragraph retains first paragraph prefix instead of wiping it
+        wsListener.onMessage(socket, "{\"serverContent\":{\"interimInputTranscription\":{\"text\":\"Also tell Sarah\"}}}")
+        // Second distinct paragraph appends instead of wiping first paragraph
+        wsListener.onMessage(socket, "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Also tell Sarah to verify the invoice.\"}}}")
+
+        assertEquals(
+            listOf(
+                "First paragraph about the release schedule.",
+                "First paragraph about the release schedule for Friday.",
+                "First paragraph about the release schedule for Friday. Also tell Sarah",
+                "First paragraph about the release schedule for Friday. Also tell Sarah to verify the invoice.",
+            ),
+            listener.interims,
+        )
+        session.cancel()
     }
 
     @Test fun `silent PCM keepalive sends after idle interval and stops after endActivity`() {
@@ -738,8 +869,10 @@ class GeminiCloudLiveTranscriptionClientTest {
     private class RecordingListener : CloudLiveTranscriptionListener {
         val interims = Collections.synchronizedList(mutableListOf<String>())
         val done = CountDownLatch(1)
+        @Volatile var connectedCount = 0
         @Volatile var result: CloudLiveTerminal? = null
         @Volatile var terminals = 0
+        override fun onConnected() { connectedCount++ }
         override fun onInterim(text: String, timing: CloudLiveTiming) { interims += text }
         override fun onTerminal(result: CloudLiveTerminal) { terminals++; this.result = result; done.countDown() }
     }

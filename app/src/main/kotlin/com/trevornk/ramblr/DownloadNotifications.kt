@@ -22,7 +22,9 @@ object DownloadNotifications {
      *  is worth surfacing, but not urgent enough to justify a second channel in this first pass. */
     fun ensureChannel(ctx: Context) {
         ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Model downloads", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_ID, "Model downloads", NotificationManager.IMPORTANCE_LOW).apply {
+                setShowBadge(false)
+            }
         )
     }
 

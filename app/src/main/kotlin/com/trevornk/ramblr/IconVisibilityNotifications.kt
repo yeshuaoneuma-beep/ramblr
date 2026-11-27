@@ -24,7 +24,9 @@ object IconVisibilityNotifications {
      *  should interrupt or make sound -- same bar as [DownloadNotifications.CHANNEL_ID]. */
     fun ensureChannel(ctx: Context) {
         ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Icon visibility", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_ID, "Icon visibility", NotificationManager.IMPORTANCE_LOW).apply {
+                setShowBadge(false)
+            }
         )
     }
 

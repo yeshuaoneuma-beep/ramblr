@@ -18,6 +18,18 @@ enum class LiveDisconnectPolicy {
 }
 
 /**
+ * Mutually exclusive Live session recovery mode:
+ * - [PARALLEL_BATCH_FALLBACK]: keeps local PCM capture running alongside Live so disconnects or
+ *   the 9:00 cutoff finish seamlessly over Batch STT according to [LiveDisconnectPolicy].
+ * - [CONTINUE_LIVE_SESSION]: disables parallel Batch fallback; pauses capture on disconnect/cutoff
+ *   so the user can explicitly Continue (new Live session appending below), Cleanup, Insert raw, or Discard.
+ */
+enum class LiveRecoveryMode {
+    PARALLEL_BATCH_FALLBACK,
+    CONTINUE_LIVE_SESSION,
+}
+
+/**
  * One post-cleanup cloud slot executed after a Live dictation stops (when Post-Cleanup is ON).
  * Shares the same 3-attempt pool rules ([AttemptBudgetCalculator]) as Batch Cleanup, with a hard
  * maximum of [LiveTranscriptionConfig.MAX_LIVE_POST_CLEANUP_SLOTS] (3) slots.
@@ -49,6 +61,7 @@ data class LiveTranscriptionConfig(
     val smartDisconnectHapticEnabled: Boolean = true,
     val liveWindowEnabled: Boolean = true,
     val disconnectPolicy: LiveDisconnectPolicy = LiveDisconnectPolicy.AUTO_REPLACE_WITH_BATCH,
+    val recoveryMode: LiveRecoveryMode = LiveRecoveryMode.PARALLEL_BATCH_FALLBACK,
 ) {
     fun effectiveVaultKeyId(): String =
         vaultKeyId?.takeIf { it.isNotBlank() } ?: ProviderCapabilityRegistry.canonicalVaultKeyId(providerId)
@@ -99,6 +112,7 @@ object LiveTranscriptionConfigStore {
         put("smartDisconnectHapticEnabled", config.smartDisconnectHapticEnabled)
         put("liveWindowEnabled", config.liveWindowEnabled)
         put("disconnectPolicy", config.disconnectPolicy.name)
+        put("recoveryMode", config.recoveryMode.name)
         val slotsArray = JSONArray()
         config.postCleanupSlots.take(LiveTranscriptionConfig.MAX_LIVE_POST_CLEANUP_SLOTS).forEach { slot ->
             slotsArray.put(JSONObject().apply {
@@ -133,6 +147,13 @@ object LiveTranscriptionConfigStore {
                 )
             } catch (_: IllegalArgumentException) {
                 LiveDisconnectPolicy.AUTO_REPLACE_WITH_BATCH
+            }
+            val recoveryMode = try {
+                LiveRecoveryMode.valueOf(
+                    obj.optString("recoveryMode", LiveRecoveryMode.PARALLEL_BATCH_FALLBACK.name)
+                )
+            } catch (_: IllegalArgumentException) {
+                LiveRecoveryMode.PARALLEL_BATCH_FALLBACK
             }
             val rawSlots = mutableListOf<LivePostCleanupSlot>()
             val slotsArray = obj.optJSONArray("postCleanupSlots")
@@ -180,6 +201,7 @@ object LiveTranscriptionConfigStore {
                 smartDisconnectHapticEnabled = obj.optBoolean("smartDisconnectHapticEnabled", true),
                 liveWindowEnabled = obj.optBoolean("liveWindowEnabled", true),
                 disconnectPolicy = disconnectPolicy,
+                recoveryMode = recoveryMode,
             )
         } catch (_: Exception) {
             null

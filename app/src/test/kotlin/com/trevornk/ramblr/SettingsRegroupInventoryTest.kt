@@ -129,6 +129,8 @@ class SettingsRegroupInventoryTest {
             "Auto-hide delay", "Peeked sliver size", "Silence threshold", "Icon size",
             "Border color", "Fill color (idle only)", "Microphone icon color",
             "Custom icon image", "Remove custom icon",
+            "Parallel audio fallback (Batch STT)",
+            "Continue / restart Live session",
             "Auto-replace with Batch + swap chip",
             "Ask me (Keep Live or Use Batch)",
             "Keep Live text only",
@@ -142,6 +144,8 @@ class SettingsRegroupInventoryTest {
             // Live transcription
             "Live cloud transcription",
             "Live transcript window",
+            "Parallel audio fallback (Batch STT)",
+            "Continue / restart Live session",
             "Auto-replace with Batch + swap chip",
             "Ask me (Keep Live or Use Batch)",
             "Keep Live text only",
@@ -150,6 +154,7 @@ class SettingsRegroupInventoryTest {
             // Cleanup styles
             "Improve my dictation with AI", "Preview before inserting",
             "Remember cleanup style per app", "Offer raw text after cleanup",
+            "Smart self-correction", "Spoken emoji commands",
             // Cloud providers & Fallback
             "API keys", "+ Add provider", "Compress audio before cloud upload",
             "Fall back to on-device if cloud fails", "Fall back to cloud if on-device fails",

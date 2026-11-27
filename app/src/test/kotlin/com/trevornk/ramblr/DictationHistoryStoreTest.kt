@@ -220,6 +220,38 @@ class DictationHistoryStoreTest {
         assertEquals(1, reopened.all().size)
         assertEquals("final", reopened.all().single().cleanedText)
     }
+
+    @Test fun `round-trips liveText and insertedSource with legacy fallback and distinctHistoryVersions`() {
+        val file = tempFile()
+        val store = DictationHistoryStore(file)
+        store.add(
+            DictationHistoryEntry(
+                timestamp = 10L,
+                rawText = "raw batch",
+                cleanedText = "Polished batch.",
+                paidFallbackGroup = CleanupStepGroup.OPENAI_DIRECT,
+                liveText = "live draft",
+                insertedSource = "live",
+            )
+        )
+        val loaded = DictationHistoryStore(file).all().single()
+        assertEquals("live draft", loaded.liveText)
+        assertEquals("live", loaded.insertedSource)
+        assertEquals("live draft", loaded.displayedText())
+
+        val versions = distinctHistoryVersions(loaded)
+        assertEquals(3, versions.size)
+        assertEquals(listOf("Post-processed", "Live", "Raw"), versions.map { it.label })
+        assertEquals(listOf(false, true, false), versions.map { it.wasInserted })
+
+        // Pre-3B.3 legacy line without liveText / insertedSource parses cleanly.
+        val legacyFile = tempFile()
+        legacyFile.appendText("""{"timestamp":2,"rawText":"raw","cleanedText":"Cleaned."}""" + "\n")
+        val legacy = DictationHistoryStore(legacyFile).all().single()
+        assertNull(legacy.liveText)
+        assertNull(legacy.insertedSource)
+        assertEquals("Cleaned.", legacy.displayedText())
+    }
 }
 
 class DictationHistoryStoreAtomicWriteTest {

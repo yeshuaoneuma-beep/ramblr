@@ -142,7 +142,43 @@ class LiveTranscriptionActivity : BaseSettingsActivity() {
             }
         )
 
+        bodyContainer.addView(subsectionHeader("Live recovery mode", indent = 0))
+        val recoveryOptions = listOf(
+            Triple(
+                LiveRecoveryMode.PARALLEL_BATCH_FALLBACK,
+                "Parallel audio fallback (Batch STT)",
+                "Records audio locally alongside Live so disconnects or the 9:00 cutoff finish over Batch STT",
+            ),
+            Triple(
+                LiveRecoveryMode.CONTINUE_LIVE_SESSION,
+                "Continue / restart Live session",
+                "Disables parallel Batch fallback; pauses on disconnect with Continue, Cleanup, Insert, and Discard controls",
+            ),
+        )
+        recoveryOptions.forEach { (mode, title, subtitle) ->
+            val dot = OneUiComponents.selectionDot(
+                context = this,
+                selected = config.recoveryMode == mode,
+                contentDescription = title,
+            )
+            bodyContainer.addView(
+                settingsRow(
+                    title = title,
+                    subtitle = subtitle,
+                    widget = dot,
+                ) {
+                    saveConfig(config.copy(recoveryMode = mode))
+                }
+            )
+        }
+
+        val isParallelBatch = config.recoveryMode == LiveRecoveryMode.PARALLEL_BATCH_FALLBACK
         bodyContainer.addView(subsectionHeader("On live disconnect", indent = 0))
+        if (!isParallelBatch) {
+            bodyContainer.addView(
+                explainer("Only applies in Parallel audio fallback (Batch STT) mode.")
+            )
+        }
         val disconnectOptions = listOf(
             Triple(
                 LiveDisconnectPolicy.AUTO_REPLACE_WITH_BATCH,
@@ -166,15 +202,21 @@ class LiveTranscriptionActivity : BaseSettingsActivity() {
                 selected = config.disconnectPolicy == policy,
                 contentDescription = title,
             )
-            bodyContainer.addView(
-                settingsRow(
-                    title = title,
-                    subtitle = subtitle,
-                    widget = dot,
-                ) {
+            val row = settingsRow(
+                title = title,
+                subtitle = subtitle,
+                widget = dot,
+            ) {
+                if (isParallelBatch) {
                     saveConfig(config.copy(disconnectPolicy = policy))
                 }
-            )
+            }
+            if (!isParallelBatch) {
+                row.alpha = 0.45f
+                row.isClickable = false
+                row.isEnabled = false
+            }
+            bodyContainer.addView(row)
         }
 
         // 5. Post-Cleanup After Live section
@@ -341,7 +383,7 @@ class LiveTranscriptionActivity : BaseSettingsActivity() {
         bodyContainer.addView(
             settingsRow(
                 title = "Live transcript window",
-                subtitle = "Shows a floating live text window while speaking. Tap \u2715 to collapse anytime, or reopen from the bubble",
+                subtitle = "Shows a floating live text window with Insert raw, Continue (in Continue mode), and Discard controls. Tap \u2715 to collapse anytime",
                 widget = liveWindowSwitch,
             ) {
                 saveConfig(config.copy(liveWindowEnabled = !config.liveWindowEnabled))

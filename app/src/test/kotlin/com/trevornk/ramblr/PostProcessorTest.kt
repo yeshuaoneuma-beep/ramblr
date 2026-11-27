@@ -304,7 +304,7 @@ class PostProcessorTest {
     fun interpolateVocabularyReplacesPlaceholderWithClause() {
         val prompt = "Fix spelling.${PostProcessor.VOCABULARY_PLACEHOLDER} Done."
         val result = PostProcessor.interpolateVocabulary(prompt, listOf("FastHTML"))
-        assertEquals("Fix spelling. Watch for these project names and personal vocabulary terms, which speech-to-text often mishears: FastHTML. Done.", result)
+        assertEquals("Fix spelling. Spelling hints ONLY (never invent, add, or mention these unless the speaker actually said them): FastHTML. Done.", result)
     }
 
     @Test
