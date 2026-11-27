@@ -57,8 +57,23 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
      * one of them calls this with a root ScrollView.
      */
     override fun setContentView(view: View) {
-        super.setContentView(view)
-        applyContentInsets(view)
+        // Phase 3B.4: legacy screens (Home, Behavior, Data & logs, Invocation, Setup) pass a bare
+        // ScrollView. Scrolled rows used to slide under the status-bar clock/icons, so the view is
+        // wrapped under an opaque status-bar spacer while the bottom stays edge-to-edge.
+        val spacer = View(this).apply {
+            tag = STATUS_BAR_SPACER_TAG
+            setBackgroundColor(attrColor(android.R.attr.colorBackground))
+            layoutParams = LinearLayout.LayoutParams(LP_MATCH, 0)
+        }
+        view.layoutParams = LinearLayout.LayoutParams(LP_MATCH, 0, 1f)
+        val wrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = ViewGroup.LayoutParams(LP_MATCH, LP_MATCH)
+            addView(spacer)
+            addView(view)
+        }
+        super.setContentView(wrapper)
+        applyContentInsets(wrapper, spacer, view)
         // Rows appear, disappear and move between sections at runtime (refresh() toggles
         // visibility), so "is this the last row of its list" is re-evaluated on every layout.
         view.viewTreeObserver.addOnGlobalLayoutListener { updateRowDividers(view) }
@@ -83,14 +98,15 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
         }
     }
 
-    private fun applyContentInsets(content: View) {
-        // Padding, not margin: the bars should show the scrolling content behind them (that is the
-        // point of edge-to-edge), while the content's own resting position stays clear of them.
+    private fun applyContentInsets(wrapper: View, spacer: View, content: View) {
+        // Padding, not margin: the navigation bar should show the scrolling content behind it
+        // (edge-to-edge), while the content's own resting position stays clear of it.
         // clipToPadding=false keeps that true for a ScrollView, whose default would otherwise clip
-        // the scrolled content at the padding box and undo the effect.
+        // the scrolled content at the padding box and undo the effect. The top inset is taken by
+        // the opaque spacer instead, so scrolled content clips cleanly below the status bar.
         (content as? ViewGroup)?.clipToPadding = false
 
-        ViewCompat.setOnApplyWindowInsetsListener(content) { v, insets ->
+        ViewCompat.setOnApplyWindowInsetsListener(wrapper) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
@@ -100,8 +116,13 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
                 cutoutLeft = cutout.left, cutoutRight = cutout.right,
                 imeBottom = ime.bottom,
             )
+            val lp = spacer.layoutParams
+            if (lp.height != p.top) {
+                lp.height = p.top
+                spacer.layoutParams = lp
+            }
             // Extra room under the last item so it never sits flush against the navigation bar.
-            v.setPadding(p.left, p.top, p.right, p.bottom + dp(BOTTOM_SPACE_DP))
+            content.setPadding(p.left, 0, p.right, p.bottom + dp(BOTTOM_SPACE_DP))
 
             // Consume nothing: return the insets unchanged so any child that wants to react to the
             // keyboard still can. Returning CONSUMED here would silently break those.
@@ -110,7 +131,7 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
         // The listener above only fires on the next inset dispatch. A view added after the window
         // already has its insets (which is every one of these, since setContentView runs well
         // after attach on a warm activity) would otherwise sit unpadded until something moved.
-        ViewCompat.requestApplyInsets(content)
+        ViewCompat.requestApplyInsets(wrapper)
     }
 
     /**
@@ -162,6 +183,7 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
                 isClickable = true
                 isFocusable = true
                 setOnClickListener {
+                    UiTapHaptics.tick(it)
                     if (onBack != null) onBack() else finish()
                 }
             }
@@ -270,12 +292,17 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Phase 3B.4: cancel a sibling Settings screen's pending "not foreground" so in-app
+        // Activity-to-Activity navigation never flashes the Edge-Dock Pill for one frame.
+        cancelPendingForegroundClear()
         WhisperAccessibilityService.setMainActivityForeground(true)
     }
 
     override fun onPause() {
         super.onPause()
-        WhisperAccessibilityService.setMainActivityForeground(false)
+        val h = mainForegroundHandler()
+        h.removeCallbacks(clearForegroundRunnable)
+        h.postDelayed(clearForegroundRunnable, PAUSE_DEBOUNCE_MS)
     }
 
     // --- UI Helpers (moved verbatim from the old single-Activity MainActivity, #93) ---
@@ -487,5 +514,31 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
         const val ICON_GAP_DP = 20
         const val DISABLED_ALPHA = 0.38f
         const val DETAILS_ALPHA = 0.8f
+
+        /** Phase 3B.4: how long a paused Settings screen waits before telling the overlay that
+         *  Settings has left the foreground. Long enough to cover the pause→resume gap of an
+         *  in-app Activity switch; short enough that leaving the app still restores the ring
+         *  promptly. */
+        const val PAUSE_DEBOUNCE_MS = 150L
+
+        // Lazy so pure-JVM tests referencing subclass companions (e.g. CloudProviderActivity)
+        // never hit Looper.getMainLooper() during BaseSettingsActivity static initialization.
+        private var foregroundHandler: android.os.Handler? = null
+
+        private fun mainForegroundHandler(): android.os.Handler =
+            foregroundHandler ?: android.os.Handler(android.os.Looper.getMainLooper()).also {
+                foregroundHandler = it
+            }
+
+        internal val clearForegroundRunnable = Runnable {
+            WhisperAccessibilityService.setMainActivityForeground(false)
+        }
+
+        internal fun cancelPendingForegroundClear() {
+            foregroundHandler?.removeCallbacks(clearForegroundRunnable)
+        }
+
+        /** Status-bar spacer tag used by [setContentView]'s legacy-screen wrapper. */
+        const val STATUS_BAR_SPACER_TAG = "status_bar_spacer"
     }
 }

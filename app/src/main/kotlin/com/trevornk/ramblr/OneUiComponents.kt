@@ -95,11 +95,68 @@ object OneUiComponents {
         if (strokeWidthPx > 0) setStroke(strokeWidthPx, strokeColor)
     }
 
+    /** Phase 3B.4 concentric ring-with-core indicator geometry (matches Home's `Floating icon`
+     *  emblem, `ic_settings_radio_button_checked.xml`). */
+    const val INDICATOR_TOUCH_DP = 44
+    const val INDICATOR_RING_DP = 20
+    const val INDICATOR_RING_STROKE_DP = 1.75f
+    const val INDICATOR_CORE_DP = 9
+    const val TAG_DOT_RING = "dot_ring"
+    const val TAG_DOT_CORE = "dot_core"
+
+    /** Neutral (off/unselected) outer ring color: `#71717A` dark / `#9CA3AF` light. */
+    fun indicatorNeutralRing(context: Context): Int = resColor(context, R.color.oneui_indicator_ring)
+
+    private fun buildIndicator(context: Context): FrameLayout {
+        val ring = View(context).apply {
+            tag = TAG_DOT_RING
+            layoutParams = FrameLayout.LayoutParams(dp(context, INDICATOR_RING_DP), dp(context, INDICATOR_RING_DP), Gravity.CENTER)
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val core = View(context).apply {
+            tag = TAG_DOT_CORE
+            layoutParams = FrameLayout.LayoutParams(dp(context, INDICATOR_CORE_DP), dp(context, INDICATOR_CORE_DP), Gravity.CENTER)
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            visibility = View.GONE
+        }
+        return FrameLayout(context).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(context, INDICATOR_TOUCH_DP), dp(context, INDICATOR_TOUCH_DP))
+            setBackgroundColor(Color.TRANSPARENT)
+            addView(ring)
+            addView(core)
+        }
+    }
+
+    /** Paints a ring-with-core indicator: hollow neutral ring when off; [activeColor] ring + solid
+     *  [activeColor] core when on. */
+    private fun paintIndicator(container: FrameLayout, active: Boolean, activeColor: Int) {
+        val context = container.context
+        val ring = container.findViewWithTag<View>(TAG_DOT_RING)
+        val core = container.findViewWithTag<View>(TAG_DOT_CORE)
+        ring?.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.TRANSPARENT)
+            setStroke(
+                dpFloat(context, INDICATOR_RING_STROKE_DP),
+                if (active) activeColor else indicatorNeutralRing(context),
+            )
+        }
+        core?.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(activeColor)
+        }
+        core?.visibility = if (active) View.VISIBLE else View.GONE
+    }
+
     /**
-     * Sleek circular lock indicator: `34dp x 40dp` transparent touch target containing a centered
-     * `18dp x 18dp` empty round circle (NO `✓`, NO `○`).
-     *  - Off: `1.5dp` muted grey ring
-     *  - Locked: solid `@color/oneui_locked_green`
+     * Concentric ring-with-core lock indicator: `44dp x 44dp` transparent touch target containing a
+     * centered `20dp` outer ring (`1.75dp` stroke, transparent fill) and a `9dp` inner core.
+     *  - Off: neutral hollow ring, core `GONE`
+     *  - Locked: `@color/oneui_locked_green` ring + solid green core
      */
     fun lockCircle(
         context: Context,
@@ -108,28 +165,16 @@ object OneUiComponents {
         contentDescription: String,
         onClick: () -> Unit,
     ): FrameLayout {
-        val dot = View(context).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(context, 18), dp(context, 18), Gravity.CENTER)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                if (locked && enabled) {
-                    setColor(resColor(context, R.color.oneui_locked_green))
-                } else {
-                    setColor(Color.TRANSPARENT)
-                    setStroke(dpFloat(context, 1.5f), resColor(context, R.color.oneui_unlocked_grey))
-                }
-            }
-        }
-        return FrameLayout(context).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(context, 34), dp(context, 40))
+        val isLocked = locked && enabled
+        return buildIndicator(context).apply {
             this.contentDescription = contentDescription
-            tag = if (locked && enabled) "locked" else "unlocked"
-            isSelected = locked && enabled
+            tag = if (isLocked) "locked" else "unlocked"
+            isSelected = isLocked
             isEnabled = enabled
             isClickable = enabled
             isFocusable = enabled
             alpha = if (enabled) 1f else 0.4f
-            addView(dot)
+            paintIndicator(this, isLocked, resColor(context, R.color.oneui_locked_green))
             if (enabled) setOnClickListener {
                 UiTapHaptics.tick(this)
                 onClick()
@@ -138,24 +183,18 @@ object OneUiComponents {
     }
 
     /**
-     * Sleek circular selection indicator replacing EVERY `RadioButton`/`MaterialRadioButton`:
-     * `36dp x 40dp` transparent touch target containing a centered `18dp x 18dp` empty round circle.
-     *  - Off: `1.5dp` muted grey ring
-     *  - Selected: solid `colorPrimary` (`@color/oneui_accent_cobalt`)
+     * Concentric ring-with-core selection indicator replacing EVERY `RadioButton`/`MaterialRadioButton`:
+     * `44dp x 44dp` transparent touch target, centered `20dp` outer ring + `9dp` inner core.
+     *  - Off: neutral hollow ring, core `GONE`
+     *  - Selected: `colorPrimary` ring + solid `colorPrimary` core
      */
     fun selectionDot(
         context: Context,
         selected: Boolean,
         contentDescription: String? = null,
     ): FrameLayout {
-        val dot = View(context).apply {
-            tag = "dot_circle"
-            layoutParams = FrameLayout.LayoutParams(dp(context, 18), dp(context, 18), Gravity.CENTER)
-        }
-        return FrameLayout(context).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(context, 36), dp(context, 40))
+        return buildIndicator(context).apply {
             if (!contentDescription.isNullOrBlank()) this.contentDescription = contentDescription
-            addView(dot)
             setSelectionDotChecked(this, selected)
         }
     }
@@ -163,16 +202,7 @@ object OneUiComponents {
     /** Updates a [selectionDot] indicator's checked state in place. */
     fun setSelectionDotChecked(container: FrameLayout, selected: Boolean) {
         val context = container.context
-        val circle = container.findViewWithTag<View>("dot_circle") ?: container.getChildAt(0)
-        circle?.background = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            if (selected) {
-                setColor(attrColor(context, com.google.android.material.R.attr.colorPrimary))
-            } else {
-                setColor(Color.TRANSPARENT)
-                setStroke(dpFloat(context, 1.5f), resColor(context, R.color.oneui_unlocked_grey))
-            }
-        }
+        paintIndicator(container, selected, attrColor(context, com.google.android.material.R.attr.colorPrimary))
         container.isSelected = selected
         container.tag = if (selected) "selected" else "unselected"
     }
@@ -333,7 +363,17 @@ object OneUiComponents {
         if (onCancel != null) {
             builder.setOnCancelListener { onCancel() }
         }
-        dialog = builder.show()
+        dialog = builder.create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.let { cancelBtn ->
+                cancelBtn.setOnClickListener {
+                    UiTapHaptics.tick(cancelBtn)
+                    onCancel?.invoke()
+                    dialog.dismiss()
+                }
+            }
+        }
+        dialog.show()
         dialog.window?.setDimAmount(0.6f)
         return dialog
     }
@@ -567,6 +607,175 @@ object OneUiComponents {
         return container
     }
 
+    const val TAG_KEEP_AWAKE_PRESET = "keep_awake_preset"
+    const val TAG_KEEP_AWAKE_HOURS = "keep_awake_hours"
+    const val TAG_KEEP_AWAKE_MINUTES = "keep_awake_minutes"
+    const val TAG_KEEP_AWAKE_SAVE = "keep_awake_save"
+
+    /**
+     * Phase 3B.4 `Custom timer` picker for "Keep screen awake": flat theme-aware bottom sheet with
+     * quick preset rows (save + dismiss immediately) and an Hours (0..2) + Minutes (0..59)
+     * [android.widget.NumberPicker] pair clamped to `1 min..2 hrs`, plus a flat Save action.
+     */
+    fun showKeepAwakeTimerSheet(
+        context: Context,
+        currentMs: Long,
+        onSave: (Long) -> Unit,
+    ): BottomSheetDialog {
+        val dialog = BottomSheetDialog(context)
+        val primaryText = attrColor(context, android.R.attr.textColorPrimary)
+        val secondaryText = attrColor(context, android.R.attr.textColorSecondary)
+        val accent = attrColor(context, com.google.android.material.R.attr.colorPrimary)
+        val clampedCurrent = KeepScreenAwakePrefs.clampCustomMs(currentMs)
+
+        val root = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_bottom_sheet_surface)
+            setPadding(0, dp(context, 18), 0, dp(context, 20))
+        }
+        root.addView(TextView(context).apply {
+            text = "Custom timer"
+            textSize = 18f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(primaryText)
+            setPadding(dp(context, 24), 0, dp(context, 24), dp(context, 4))
+        })
+        root.addView(TextView(context).apply {
+            text = "Keep the screen awake during dictation for up to this long (1 min to 2 hr)."
+            textSize = 13f
+            setTextColor(secondaryText)
+            setPadding(dp(context, 24), 0, dp(context, 24), dp(context, 12))
+        })
+        root.addView(hairlineDivider(context, insetStartDp = 24, insetEndDp = 24))
+
+        KeepScreenAwakePrefs.PRESET_MS.forEachIndexed { idx, presetMs ->
+            val isSelected = presetMs == clampedCurrent
+            val row = LinearLayout(context).apply {
+                tag = TAG_KEEP_AWAKE_PRESET
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(context, 24), dp(context, 6), dp(context, 16), dp(context, 6))
+                minimumHeight = dp(context, 48)
+                isClickable = true
+                isFocusable = true
+                applySelectableRipple(this)
+                setOnClickListener {
+                    UiTapHaptics.tick(this)
+                    onSave(presetMs)
+                    dialog.dismiss()
+                }
+            }
+            row.addView(TextView(context).apply {
+                text = KeepScreenAwakePrefs.formatDuration(presetMs)
+                textSize = 15f
+                typeface = Typeface.create("sans-serif-medium", if (isSelected) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(if (isSelected) accent else primaryText)
+                layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f).apply { marginEnd = dp(context, 12) }
+            })
+            row.addView(selectionDot(context, isSelected))
+            root.addView(row)
+            if (idx < KeepScreenAwakePrefs.PRESET_MS.lastIndex) {
+                root.addView(hairlineDivider(context, insetStartDp = 24, insetEndDp = 24))
+            }
+        }
+        root.addView(hairlineDivider(context, insetStartDp = 24, insetEndDp = 24))
+
+        val totalMin = (clampedCurrent / 60_000L).toInt()
+        val hoursPicker = android.widget.NumberPicker(context).apply {
+            tag = TAG_KEEP_AWAKE_HOURS
+            minValue = 0
+            maxValue = 2
+            value = (totalMin / 60).coerceIn(0, 2)
+            wrapSelectorWheel = false
+            contentDescription = "Hours"
+        }
+        val minutesPicker = android.widget.NumberPicker(context).apply {
+            tag = TAG_KEEP_AWAKE_MINUTES
+            minValue = 0
+            maxValue = 59
+            value = (totalMin % 60).coerceIn(0, 59)
+            wrapSelectorWheel = true
+            contentDescription = "Minutes"
+        }
+        // Enforce 1 min..2 hr: 2 hr forces 0 min; 0 hr forbids 0 min.
+        fun enforceBounds() {
+            if (hoursPicker.value >= 2 && minutesPicker.value != 0) minutesPicker.value = 0
+            if (hoursPicker.value == 0 && minutesPicker.value == 0) minutesPicker.value = 1
+        }
+        enforceBounds()
+        hoursPicker.setOnValueChangedListener { picker, _, _ ->
+            UiTapHaptics.tick(picker)
+            enforceBounds()
+        }
+        minutesPicker.setOnValueChangedListener { picker, _, _ ->
+            UiTapHaptics.tick(picker)
+            enforceBounds()
+        }
+
+        val pickerRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(context, 24), dp(context, 8), dp(context, 24), dp(context, 4))
+        }
+        fun labeled(picker: View, label: String) = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(0, LP_WRAP, 1f)
+            addView(picker)
+            addView(TextView(context).apply {
+                text = label
+                textSize = 12f
+                gravity = Gravity.CENTER
+                setTextColor(secondaryText)
+            })
+        }
+        pickerRow.addView(labeled(hoursPicker, "Hours"))
+        pickerRow.addView(labeled(minutesPicker, "Minutes"))
+        root.addView(pickerRow)
+
+        root.addView(TextView(context).apply {
+            tag = TAG_KEEP_AWAKE_SAVE
+            text = "Save"
+            textSize = 15f
+            gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(accent)
+            minimumHeight = dp(context, 48)
+            setPadding(dp(context, 24), dp(context, 12), dp(context, 24), dp(context, 12))
+            isClickable = true
+            isFocusable = true
+            applySelectableRipple(this)
+            setOnClickListener {
+                UiTapHaptics.tick(this)
+                enforceBounds()
+                onSave(KeepScreenAwakePrefs.pickerToMs(hoursPicker.value, minutesPicker.value))
+                dialog.dismiss()
+            }
+        })
+
+        val baseBottom = dp(context, 20)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val navBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+            v.setPadding(0, dp(context, 18), 0, baseBottom + navBottom)
+            insets
+        }
+        dialog.setContentView(ScrollView(context).apply { addView(root) })
+        dialog.setOnShowListener {
+            dialog.window?.setDimAmount(0.6f)
+            dialog.window?.navigationBarColor = resColor(context, R.color.popup_surface)
+            val sheet = dialog.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
+            if (sheet != null) {
+                sheet.setBackgroundColor(Color.TRANSPARENT)
+                val behavior = BottomSheetBehavior.from(sheet)
+                behavior.state = BottomSheetBehavior.STATE_EXPANDED
+                behavior.skipCollapsed = true
+            }
+            ViewCompat.requestApplyInsets(root)
+        }
+        dialog.show()
+        return dialog
+    }
+
     /** Flat hairline action row (e.g. `+ Add provider`, `+ Add cleanup slot`, `+ Add Custom OpenAI-Compatible`). */
     fun flatActionRow(
         context: Context,
@@ -699,6 +908,7 @@ object OneUiComponents {
                     setPadding(dp(context, 8), dp(context, 6), dp(context, 4), dp(context, 6))
                     applySelectableRipple(this)
                     setOnClickListener { btn ->
+                        UiTapHaptics.tick(btn)
                         btn.isEnabled = false
                         refreshSpinner.visibility = View.VISIBLE
                         refreshStatus.visibility = View.GONE

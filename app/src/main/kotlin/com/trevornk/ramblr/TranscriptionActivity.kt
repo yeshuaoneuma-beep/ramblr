@@ -224,12 +224,18 @@ class TranscriptionActivity : BaseSettingsActivity() {
             text = "\u2193"
             textSize = 18f
             setTextColor(attrColor(com.google.android.material.R.attr.colorPrimary))
-            setOnClickListener { onModelAction(model) }
+            setOnClickListener {
+                UiTapHaptics.tick(it)
+                onModelAction(model)
+            }
         }
         val deleteBtn = MaterialButton(this, null, com.google.android.material.R.attr.materialIconButtonStyle).apply {
             text = "\uD83D\uDDD1"
             textSize = 16f
-            setOnClickListener { confirmDeleteModel(model) }
+            setOnClickListener {
+                UiTapHaptics.tick(it)
+                confirmDeleteModel(model)
+            }
         }
 
         val progress = LinearProgressIndicator(this).apply {

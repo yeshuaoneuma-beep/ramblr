@@ -40,6 +40,7 @@ class NotificationsActivity : BaseSettingsActivity() {
             isFocusable = true
             OneUiComponents.applySelectableRipple(this)
             setOnClickListener {
+                UiTapHaptics.tick(it)
                 AppNotificationStore.clear(this@NotificationsActivity)
                 toast("Notifications cleared")
                 render()

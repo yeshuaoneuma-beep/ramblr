@@ -326,10 +326,20 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
             )
         }
 
+        // Phase 3B.4: Show/Hide may programmatically populate/clear keyInput with the saved secret
+        // so it can be revealed; those writes must never mark the card dirty.
+        var suppressWatcher = false
+        var revealingSavedSecret = false
+
         val watcher = object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
+                if (suppressWatcher) return
+                if (revealingSavedSecret && s?.toString() == existingSecret) {
+                    refreshVisuals()
+                    return
+                }
                 dirtyCardIds.add(initialEntry.id)
                 refreshVisuals()
             }
@@ -355,19 +365,36 @@ class ApiKeysVaultActivity : BaseSettingsActivity() {
                 isClickable = true
                 isFocusable = true
                 OneUiComponents.applySelectableRipple(this)
-                setOnClickListener { onClick(this) }
+                setOnClickListener {
+                    UiTapHaptics.tick(this)
+                    onClick(this)
+                }
             }
 
         actionRow.addView(flatTextAction("Show", secondaryText) { btn ->
             keyVisible = !keyVisible
-            val sel = keyInput.selectionEnd
-            keyInput.inputType = if (keyVisible) {
-                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-            } else {
-                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            suppressWatcher = true
+            try {
+                if (keyVisible) {
+                    if (hasSavedSecret && keyInput.text.isNullOrEmpty()) {
+                        keyInput.setText(existingSecret)
+                        revealingSavedSecret = true
+                    }
+                    keyInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                    btn.text = "Hide"
+                } else {
+                    keyInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                    btn.text = "Show"
+                    if (revealingSavedSecret && keyInput.text?.toString() == existingSecret) {
+                        keyInput.setText("")
+                    }
+                    revealingSavedSecret = false
+                }
+                keyInput.setSelection(keyInput.text?.length ?: 0)
+            } finally {
+                suppressWatcher = false
             }
-            if (sel >= 0) keyInput.setSelection(sel.coerceAtMost(keyInput.text?.length ?: 0))
-            btn.text = if (keyVisible) "Hide" else "Show"
+            refreshVisuals()
         })
 
         actionRow.addView(View(this).apply {

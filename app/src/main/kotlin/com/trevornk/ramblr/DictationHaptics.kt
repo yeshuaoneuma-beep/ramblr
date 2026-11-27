@@ -211,9 +211,12 @@ class DictationHaptics(
 
 /** Crisp, lightweight haptic tick for in-app taps, toggles, and selections. */
 object UiTapHaptics {
+    @Volatile internal var onTickForTest: ((View) -> Unit)? = null
+
     fun tick(view: View) {
         runCatching {
             if (!HapticPrefs.isUiTapsEnabled(view.context)) return
+            onTickForTest?.invoke(view)
             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         }
     }

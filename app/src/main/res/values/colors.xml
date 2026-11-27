@@ -13,6 +13,8 @@
     <color name="oneui_locked_green">#16A34A</color>
     <color name="oneui_locked_green_bg">#DCFCE7</color>
     <color name="oneui_unlocked_grey">#71717A</color>
+    <!-- Phase 3B.4: neutral outer ring of the concentric ring-with-core indicators -->
+    <color name="oneui_indicator_ring">#9CA3AF</color>
     <color name="oneui_unlocked_grey_bg">#F1F5F9</color>
     <color name="oneui_pill_surface">#F1F5F9</color>
     <color name="oneui_warning_amber">#D97706</color>

@@ -293,7 +293,10 @@ class CloudProviderActivity : BaseSettingsActivity() {
                 alpha = if (enabled) 0.9f else 0.3f
                 if (enabled) {
                     OneUiComponents.applySelectableRipple(this)
-                    setOnClickListener { onClick() }
+                    setOnClickListener {
+                        UiTapHaptics.tick(it)
+                        onClick()
+                    }
                 }
             }
 

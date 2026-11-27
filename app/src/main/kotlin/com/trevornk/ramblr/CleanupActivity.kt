@@ -90,12 +90,15 @@ class CleanupActivity : BaseSettingsActivity() {
             text = "\u2193"
             textSize = 18f
             setTextColor(attrColor(com.google.android.material.R.attr.colorPrimary))
-            setOnClickListener { onCleanupModelAction(model) }
+            setOnClickListener { UiTapHaptics.tick(it); onCleanupModelAction(model) }
         }
         val deleteBtn = MaterialButton(this, null, com.google.android.material.R.attr.materialIconButtonStyle).apply {
             text = "\uD83D\uDDD1"
             textSize = 16f
-            setOnClickListener { confirmDeleteCleanupModel(model) }
+            setOnClickListener {
+                UiTapHaptics.tick(it)
+                confirmDeleteCleanupModel(model)
+            }
         }
         val rightContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -195,7 +198,7 @@ class CleanupActivity : BaseSettingsActivity() {
                 views.dlBtn.visibility = View.VISIBLE
                 views.dlBtn.isEnabled = true
                 views.dlBtn.text = "\u2715"
-                views.dlBtn.setOnClickListener { ModelDownloadWorker.cancel(this, model) }
+                views.dlBtn.setOnClickListener { UiTapHaptics.tick(it); ModelDownloadWorker.cancel(this, model) }
                 views.progress.visibility = View.VISIBLE
                 val phase = info.progress.getString(ModelDownloadWorker.KEY_PHASE)
                 val retryText = ModelDownloadWorker.retryStatusFor(info.state, info.progress)
@@ -227,7 +230,7 @@ class CleanupActivity : BaseSettingsActivity() {
                 views.progress.visibility = View.GONE
                 views.dlBtn.isEnabled = true
                 views.dlBtn.text = "\u2193"
-                views.dlBtn.setOnClickListener { onCleanupModelAction(model) }
+                views.dlBtn.setOnClickListener { UiTapHaptics.tick(it); onCleanupModelAction(model) }
                 val err = info.outputData.getString(ModelDownloadWorker.KEY_ERROR) ?: "Unknown error"
                 views.subtitle.text = "Error: $err"
             }
@@ -242,7 +245,7 @@ class CleanupActivity : BaseSettingsActivity() {
     private fun refreshCleanupModelRow(model: Model) {
         val views = cleanupModelRows[model.archive] ?: return
         views.dlBtn.text = "\u2193"
-        views.dlBtn.setOnClickListener { onCleanupModelAction(model) }
+        views.dlBtn.setOnClickListener { UiTapHaptics.tick(it); onCleanupModelAction(model) }
         val active = selectedCleanupModel().archive == model.archive
         val installed = ModelDownloader.isInstalled(this, model)
         val sideloadOnly = ModelDownloader.isSideloadOnly(model)

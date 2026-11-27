@@ -229,6 +229,13 @@ android {
         }
     }
 
+    lint {
+        baseline = file("lint-baseline.xml")
+        abortOnError = true
+        checkDependencies = false
+        warningsAsErrors = false
+    }
+
     // F-Droid reproducible-build requirement (MR !42401): AGP's dependency metadata block
     // embeds the exact git revision the APK was built from (and the Play Store SDK/library
     // dependency list) into a signed block inside the APK. F-Droid's own from-source rebuild

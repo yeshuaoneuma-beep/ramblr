@@ -74,6 +74,21 @@ class BehaviorActivity : BaseSettingsActivity() {
 
     private val placed = mutableMapOf<Section, MutableList<Pair<Int, View>>>()
 
+    // Phase 3B.4 "Keep screen awake" rows.
+    internal val keepAwakeDots = mutableMapOf<KeepScreenAwakeMode, android.widget.FrameLayout>()
+    private var keepAwakeCustomSub: TextView? = null
+    internal var keepAwakeTimerSheet: com.google.android.material.bottomsheet.BottomSheetDialog? = null
+
+    private fun keepAwakeCustomSubtitle(): String =
+        "Keeps the screen awake during dictation for up to " +
+            "${KeepScreenAwakePrefs.formatDuration(KeepScreenAwakePrefs.customDurationMs(this))} (tap to edit)"
+
+    private fun refreshKeepAwakeRows() {
+        val current = KeepScreenAwakePrefs.loadMode(this)
+        keepAwakeDots.forEach { (mode, dot) -> OneUiComponents.setSelectionDotChecked(dot, mode == current) }
+        keepAwakeCustomSub?.text = keepAwakeCustomSubtitle()
+    }
+
     private fun place(section: Section, order: Int, view: View) {
         placed.getOrPut(section) { mutableListOf() } += order to view
     }
@@ -350,6 +365,40 @@ class BehaviorActivity : BaseSettingsActivity() {
         }
         place(Section.DICTATION, 16, uiTapHapticsRow)
 
+        // Phase 3B.4: "Keep screen awake" -- four flat selectionDot rows (zero RadioButtons). The
+        // flag lives on the overlay window itself (FLAG_KEEP_SCREEN_ON), so it needs no permission.
+        place(Section.DICTATION, 20, subsectionHeader("Keep screen awake", indent = 0))
+        val keepAwakeOptions = listOf(
+            Triple(KeepScreenAwakeMode.OFF, "Off", "Follow your phone's normal screen timeout"),
+            Triple(KeepScreenAwakeMode.WHILE_RECORDING, "While recording", "Keeps the screen awake while you are speaking; releases on Stop"),
+            Triple(
+                KeepScreenAwakeMode.AUTO_UNTIL_INSERTED,
+                "Auto (until inserted)",
+                "Keeps the screen awake through recording, transcription, and cleanup, then releases once text is inserted",
+            ),
+            Triple(KeepScreenAwakeMode.CUSTOM_TIMER, "Custom timer", keepAwakeCustomSubtitle()),
+        )
+        keepAwakeOptions.forEachIndexed { idx, (mode, title, subtitle) ->
+            val dot = OneUiComponents.selectionDot(this, KeepScreenAwakePrefs.loadMode(this) == mode, title)
+            keepAwakeDots[mode] = dot
+            val row = settingsRow(title, subtitle, dot) {
+                KeepScreenAwakePrefs.saveMode(this, mode)
+                refreshKeepAwakeRows()
+                if (mode == KeepScreenAwakeMode.CUSTOM_TIMER) {
+                    keepAwakeTimerSheet = OneUiComponents.showKeepAwakeTimerSheet(
+                        this,
+                        KeepScreenAwakePrefs.customDurationMs(this),
+                    ) { ms ->
+                        KeepScreenAwakePrefs.saveCustomDurationMs(this, ms)
+                        KeepScreenAwakePrefs.saveMode(this, KeepScreenAwakeMode.CUSTOM_TIMER)
+                        refreshKeepAwakeRows()
+                    }
+                }
+            }
+            if (mode == KeepScreenAwakeMode.CUSTOM_TIMER) keepAwakeCustomSub = row.findViewWithTag("subtitle")
+            place(Section.DICTATION, 21 + idx, row)
+        }
+
         // Fallback restore path (#Feature B): if the icon is currently hidden -- including for
         // someone who turns the toggle above off while already hidden -- give them a way back
         // that doesn't depend on the notification still being around.
@@ -474,6 +523,7 @@ class BehaviorActivity : BaseSettingsActivity() {
         silenceAutoStopSwitch.isChecked = SilenceAutoStopToggle.isEnabled(this)
         hapticsSwitch.isChecked = HapticPrefs.load(this).enabled
         uiTapHapticsSwitch.isChecked = HapticPrefs.isUiTapsEnabled(this)
+        refreshKeepAwakeRows()
         hapticsStrengthRow.findViewWithTag<TextView>("subtitle").text = hapticsStrengthSummary()
         hapticsLengthRow.findViewWithTag<TextView>("subtitle").text = hapticsLengthSummary()
         setRowEnabled(hapticsStrengthRow, hapticsSwitch.isChecked)

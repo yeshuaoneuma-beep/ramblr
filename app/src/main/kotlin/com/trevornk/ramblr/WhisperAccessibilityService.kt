@@ -248,9 +248,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
         /** Called from MainActivity's onResume/onPause so the floating overlay never covers its own
          *  Settings switches (#35). Safe to call whether or not the service is currently connected. */
         fun setMainActivityForeground(foreground: Boolean) {
+            BaseSettingsActivity.cancelPendingForegroundClear()
             mainActivityForeground = foreground
             instance?.let { service -> service.handler.post { service.applyOverlayVisibility() } }
         }
+
+        internal fun isMainActivityForegroundForTest(): Boolean = mainActivityForeground
 
         /** Nudges the live overlay immediately when [RingVisibilityMode] changes in Settings. */
         fun notifyRingVisibilityChanged() {
@@ -433,6 +436,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
 
         override fun onRecordingStarted() {
             setBusy(false)
+            applyKeepScreenAwakeOnRecordingStarted()
             deferUntilPeekAnimationDone {
                 setAppearance(COLOR_RECORDING)
                 startPulse()
@@ -469,6 +473,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
             }
             // #284: remember where this dictation was started, now, while the user is still there.
             captureDictationTarget()
+            applyKeepScreenAwakeOnTranscribing()
             handler.post {
                 collapseRecordingCapsuleIfExpanded()
                 clearDiscardHoldFeedback(restoreRecordingUi = false)
@@ -503,6 +508,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
 
         override fun onIdleUi() {
+            releaseKeepScreenAwake()
             cancelPendingRingHoldRunnables()
             clearRecordingCountdownUi()
             clearStageStatusPill()
@@ -1558,6 +1564,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         pendingPreview = null
         pendingPreviewTarget?.node?.recycle()
         pendingPreviewTarget = null
+        releaseKeepScreenAwake()
         cancelPendingRingHoldRunnables()
         cancelInsertFlash()
         collapseRecordingCapsuleIfExpanded()
@@ -1792,13 +1799,17 @@ open class WhisperAccessibilityService : AccessibilityService() {
 
         // A drag finished (or was cancelled by the system): settle the ring on the nearest edge.
         fun settleRingAfterDrag(v: View) {
-            params.x = if (params.x + ringSize / 2 > screenW / 2)
-                screenW - ringSize - margin else screenLeft + margin
+            // Phase 3B.4: snap/clamp with the window's CURRENT size, so a dragged (wider)
+            // recording capsule settles flush on an edge instead of using the ring's size.
+            val curW = params.width
+            val curH = params.height
+            val snappedRight = params.x + curW / 2 > screenW / 2
+            params.x = if (snappedRight) screenW - curW - margin else screenLeft + margin
             // Clamp y into the on-screen band too (M1): FLAG_LAYOUT_NO_LIMITS disables
             // WindowManager's own clamping (needed for peek), so a drag that ends near
             // the top/bottom edge could otherwise park the ring wholly off-screen with
             // no on-screen affordance left to recover it.
-            params.y = params.y.coerceIn(margin, (screenH - ringSize - margin).coerceAtLeast(margin))
+            params.y = params.y.coerceIn(margin, (screenH - curH - margin).coerceAtLeast(margin))
             wm.updateViewLayout(v, params)
             feedbackLayoutParams?.let { lp ->
                 feedbackContainer?.let { fc ->
@@ -1812,7 +1823,13 @@ open class WhisperAccessibilityService : AccessibilityService() {
             // object. Deliberately NOT called from ACTION_MOVE (would fire on every
             // drag frame) -- only here, once the gesture has actually finalized a
             // resting position.
-            persistOverlayPosition(params.x, params.y)
+            if (capsuleExpanded && preCapsuleRingSize > 0) {
+                // Collapsing after a capsule drag must land the ring on the newly dragged side.
+                preCapsuleDockedX = if (snappedRight) screenW - preCapsuleRingSize - margin else screenLeft + margin
+                persistOverlayPosition(preCapsuleDockedX, params.y)
+            } else {
+                persistOverlayPosition(params.x, params.y)
+            }
         }
 
         overlay.setOnTouchListener { v, ev ->
@@ -2650,6 +2667,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         pendingPostPeekAction = null
         peekAnimator?.cancel()
         peekAnimator = null
+        releaseKeepScreenAwake()
         cancelPendingRingHoldRunnables()
         cancelInsertFlash()
         stopCapsuleTimer()
@@ -3944,6 +3962,59 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
+    // --- Phase 3B.4: Keep screen awake (FLAG_KEEP_SCREEN_ON on the overlay window) ---
+
+    private val keepScreenAwakeTimeoutRunnable = Runnable { setOverlayKeepScreenOn(false) }
+
+    /** True while the overlay window currently carries FLAG_KEEP_SCREEN_ON. */
+    internal fun isOverlayKeepScreenOnForTest(): Boolean =
+        ((layoutParams?.flags ?: 0) and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0
+
+    /** Idempotently adds/clears FLAG_KEEP_SCREEN_ON on the overlay window. Needs no permission:
+     *  the flag only keeps the display on while this (always-attached, VISIBLE) window is shown. */
+    internal fun setOverlayKeepScreenOn(keepOn: Boolean) {
+        val overlay = overlayView ?: return
+        val params = layoutParams ?: return
+        val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        val newFlags = if (keepOn) params.flags or flag else params.flags and flag.inv()
+        if (newFlags == params.flags) return
+        params.flags = newFlags
+        try {
+            (getSystemService(WINDOW_SERVICE) as WindowManager).updateViewLayout(overlay, params)
+        } catch (_: IllegalArgumentException) {
+        }
+    }
+
+    private inline fun runOnMainThread(crossinline block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else handler.post { block() }
+    }
+
+    private fun applyKeepScreenAwakeOnRecordingStarted() = runOnMainThread {
+        handler.removeCallbacks(keepScreenAwakeTimeoutRunnable)
+        when (KeepScreenAwakePrefs.loadMode(this)) {
+            KeepScreenAwakeMode.OFF -> setOverlayKeepScreenOn(false)
+            KeepScreenAwakeMode.WHILE_RECORDING,
+            KeepScreenAwakeMode.AUTO_UNTIL_INSERTED -> setOverlayKeepScreenOn(true)
+            KeepScreenAwakeMode.CUSTOM_TIMER -> {
+                setOverlayKeepScreenOn(true)
+                handler.postDelayed(keepScreenAwakeTimeoutRunnable, KeepScreenAwakePrefs.customDurationMs(this))
+            }
+        }
+    }
+
+    private fun applyKeepScreenAwakeOnTranscribing() = runOnMainThread {
+        if (KeepScreenAwakePrefs.loadMode(this) == KeepScreenAwakeMode.WHILE_RECORDING) {
+            handler.removeCallbacks(keepScreenAwakeTimeoutRunnable)
+            setOverlayKeepScreenOn(false)
+        }
+        // AUTO_UNTIL_INSERTED / CUSTOM_TIMER stay on until onIdleUi() or the timer fires.
+    }
+
+    private fun releaseKeepScreenAwake() = runOnMainThread {
+        handler.removeCallbacks(keepScreenAwakeTimeoutRunnable)
+        setOverlayKeepScreenOn(false)
+    }
+
     private fun buildRecordingCapsule(): LinearLayout {
         val dot = View(this).apply {
             background = GradientDrawable().apply {
@@ -4014,8 +4085,9 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 setStroke((1 * dp).toInt().coerceAtLeast(1), overlayPopupBorder())
             }
             visibility = View.GONE
-            isClickable = true
-            setOnClickListener { onTap() }
+            // Phase 3B.4: NOT clickable -- touches on the capsule body fall through to the
+            // overlay's OnTouchListener (RingGestureTracker drag / tap / 3s hold), so the capsule
+            // is draggable. Only cancelBtn stays clickable for its ✕.
             addView(dot)
             addView(liveLbl)
             addView(bars)

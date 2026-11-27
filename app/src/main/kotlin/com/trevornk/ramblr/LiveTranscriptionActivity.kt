@@ -336,7 +336,10 @@ class LiveTranscriptionActivity : BaseSettingsActivity() {
                     isClickable = true
                     isFocusable = true
                     OneUiComponents.applySelectableRipple(this)
-                    setOnClickListener { saveConfig(config.copy(mode = mode)) }
+                    setOnClickListener {
+                        UiTapHaptics.tick(it)
+                        saveConfig(config.copy(mode = mode))
+                    }
                 }
                 tabCol.addView(TextView(this).apply {
                     text = label
@@ -491,6 +494,7 @@ class LiveTranscriptionActivity : BaseSettingsActivity() {
             layoutParams = LinearLayout.LayoutParams(dp(34), dp(32))
             OneUiComponents.applySelectableRipple(this)
             setOnClickListener {
+                UiTapHaptics.tick(it)
                 val remaining = config.postCleanupSlots.toMutableList().apply { removeAt(index) }
                 saveConfig(config.copy(postCleanupSlots = remaining))
             }

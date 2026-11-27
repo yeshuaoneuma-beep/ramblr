@@ -1,0 +1,24 @@
+title = "Rhema Cadence Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exclude unit tests and vendored C++ submodules"
+paths = [
+  '''^app/src/test/''',
+  '''^llama\.cpp/''',
+  '''^sherpa-onnx/''',
+  '''^app/src/main/cpp/sherpa_onnx/deps/''',
+]
+
+[[allowlists]]
+description = "F-Droid public APK signing-key SHA-256 certificate fingerprint"
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''^fdroid-submission-notes/metadata-draft\.yml$''',
+]
+regexes = [
+  '''^AllowedAPKSigningKeys:\s*[0-9a-f]{64}$''',
+]

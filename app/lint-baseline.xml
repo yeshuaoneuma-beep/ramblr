@@ -1,0 +1,3795 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<issues format="6" by="lint 9.4.1" type="baseline" client="gradle" dependencies="false" name="AGP (9.4.1)" variant="all" version="9.4.1">
+
+    <issue
+        id="ApplySharedPref"
+        message="Consider using `apply()` instead; `commit` writes its data to persistent storage immediately, whereas `apply` will handle it in the background"
+        errorLine1="            editor.commit()"
+        errorLine2="                   ~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/BackupManager.kt"
+            line="259"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 33 (current min is 30): `android.Manifest.permission#POST_NOTIFICATIONS`"
+        errorLine1="                needed += Manifest.permission.POST_NOTIFICATIONS"
+        errorLine2="                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="292"
+            column="27"/>
+    </issue>
+
+    <issue
+        id="OldTargetApi"
+        message="Not targeting the latest versions of Android; compatibility modes apply. Consider testing and updating this version. Consult the `android.os.Build.VERSION_CODES` javadoc for details."
+        errorLine1="        targetSdk = 36"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="109"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RedundantLabel"
+        message="Redundant label can be removed"
+        errorLine1="            android:label=&quot;@string/app_name&quot;"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="157"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="AndroidGradlePluginVersion"
+        message="A newer version of Gradle than 9.8.1 is available: 9.9.3"
+        errorLine1="distributionUrl=https\://services.gradle.org/distributions/gradle-9.8.1-bin.zip"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="../gradle/wrapper/gradle-wrapper.properties"
+            line="4"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of `compileSdk` than 36 is available: 37"
+        errorLine1="    compileSdk = 36"
+        errorLine2="    ~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="49"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.core:core-ktx than 1.13.1 is available: 1.19.1"
+        errorLine1="    implementation(&quot;androidx.core:core-ktx:1.13.1&quot;)"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="292"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.appcompat:appcompat than 1.7.0 is available: 1.8.0"
+        errorLine1="    implementation(&quot;androidx.appcompat:appcompat:1.7.0&quot;)"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="293"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of com.google.android.material:material than 1.12.0 is available: 1.14.0"
+        errorLine1="    implementation(&quot;com.google.android.material:material:1.12.0&quot;)"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="294"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.security:security-crypto than 1.1.0-alpha07 is available: 1.1.0"
+        errorLine1="    implementation(&quot;androidx.security:security-crypto:1.1.0-alpha07&quot;)"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="296"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.work:work-runtime-ktx than 2.11.2 is available: 2.12.0"
+        errorLine1="    implementation(&quot;androidx.work:work-runtime-ktx:2.11.2&quot;)"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="297"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.test.ext:junit than 1.2.1 is available: 1.3.0"
+        errorLine1="    androidTestImplementation(&quot;androidx.test.ext:junit:1.2.1&quot;)"
+        errorLine2="                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="319"
+            column="31"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.test:runner than 1.6.2 is available: 1.7.0"
+        errorLine1="    androidTestImplementation(&quot;androidx.test:runner:1.6.2&quot;)"
+        errorLine2="                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="320"
+            column="31"/>
+    </issue>
+
+    <issue
+        id="NewerVersionAvailable"
+        message="A newer version of com.squareup.okhttp3:okhttp than 5.4.0 is available: 5.5.1"
+        errorLine1="    implementation(&quot;com.squareup.okhttp3:okhttp:5.4.0&quot;)"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="291"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="NewerVersionAvailable"
+        message="A newer version of com.microsoft.onnxruntime:onnxruntime-android than 1.24.3 is available: 1.32.0"
+        errorLine1="    implementation(&quot;com.microsoft.onnxruntime:onnxruntime-android:$onnxRuntimeVersion&quot;)"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="301"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="NewerVersionAvailable"
+        message="A newer version of com.microsoft.onnxruntime:onnxruntime-android than 1.24.3 is available: 1.32.0"
+        errorLine1="    onnxRuntimeAar(&quot;com.microsoft.onnxruntime:onnxruntime-android:$onnxRuntimeVersion@aar&quot;)"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="304"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="NewerVersionAvailable"
+        message="A newer version of org.json:json than 20240303 is available: 20260814"
+        errorLine1="    testImplementation(&quot;org.json:json:20240303&quot;)"
+        errorLine2="                       ~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="307"
+            column="24"/>
+    </issue>
+
+    <issue
+        id="NewerVersionAvailable"
+        message="A newer version of com.squareup.okhttp3:mockwebserver3 than 5.4.0 is available: 5.5.1"
+        errorLine1="    testImplementation(&quot;com.squareup.okhttp3:mockwebserver3:5.4.0&quot;)"
+        errorLine2="                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="308"
+            column="24"/>
+    </issue>
+
+    <issue
+        id="NewerVersionAvailable"
+        message="A newer version of org.robolectric:robolectric than 4.16 is available: 4.18.1"
+        errorLine1="    testImplementation(&quot;org.robolectric:robolectric:4.16&quot;)"
+        errorLine2="                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="313"
+            column="24"/>
+    </issue>
+
+    <issue
+        id="DiscouragedApi"
+        message="Use of `scheduleAtFixedRate` is strongly discouraged because it can lead to unexpected behavior when Android processes become cached (tasks may unexpectedly execute hundreds or thousands of times in quick succession when a process changes from cached to uncached); prefer using `scheduleWithFixedDelay`"
+        errorLine1="                        keepaliveTask = scheduler.scheduleAtFixedRate("
+        errorLine2="                                        ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/GeminiCloudLiveTranscriptionClient.kt"
+            line="277"
+            column="41"/>
+    </issue>
+
+    <issue
+        id="DiscouragedApi"
+        message="Use of `scheduleAtFixedRate` is strongly discouraged because it can lead to unexpected behavior when Android processes become cached (tasks may unexpectedly execute hundreds or thousands of times in quick succession when a process changes from cached to uncached); prefer using `scheduleWithFixedDelay`"
+        errorLine1="                        stallWatchdogTask = scheduler.scheduleAtFixedRate("
+        errorLine2="                                            ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/GeminiCloudLiveTranscriptionClient.kt"
+            line="285"
+            column="45"/>
+    </issue>
+
+    <issue
+        id="DiscouragedApi"
+        message="Use of this function is discouraged because resource reflection makes it harder to perform build optimizations and compile-time verification of code. It is much more efficient to retrieve resources by identifier (e.g. `R.foo.bar`) than by name (e.g. `getIdentifier(&quot;bar&quot;, &quot;foo&quot;, null)`)."
+        errorLine1="        val id = resources.getIdentifier(&quot;input_method_navigation_bar_view&quot;, &quot;id&quot;, &quot;android&quot;)"
+        errorLine2="                           ~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/RamblrImeService.kt"
+            line="1023"
+            column="28"/>
+    </issue>
+
+    <issue
+        id="UseCompatLoadingForDrawables"
+        message="Use `AppCompatResources.getDrawable()`"
+        errorLine1="                    val cleanupIcon = getDrawable(R.drawable.ic_cleanup)?.mutate()?.apply {"
+        errorLine2="                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="4709"
+            column="39"/>
+    </issue>
+
+    <issue
+        id="UseCompatTextViewDrawableApis"
+        message="Use `TextViewCompat.setCompoundDrawableTintList()`"
+        errorLine1="        compoundDrawableTintList = android.content.res.ColorStateList.valueOf(colors.onSurface)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/RamblrImeService.kt"
+            line="771"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="PluralsCandidate"
+        message="Formatting %d followed by words (&quot;saved&quot;): This should probably be a plural rather than a string"
+        errorLine1="    &lt;string name=&quot;audio_files_row_status&quot;>%1$d in progress · %2$d saved&lt;/string>"
+        errorLine2="    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="136"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="PluralsCandidate"
+        message="Formatting %d followed by words (&quot;files&quot;): This should probably be a plural rather than a string"
+        errorLine1="    &lt;string name=&quot;audio_files_share_too_many&quot;>Only the first %1$d files were added&lt;/string>"
+        errorLine2="    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="156"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="PluralsCandidate"
+        message="Formatting %d followed by words (&quot;sections&quot;): This should probably be a plural rather than a string"
+        errorLine1="    &lt;string name=&quot;audio_status_done_cleanup_partial&quot;>Done · partly cleaned (%1$d of %2$d sections), in History&lt;/string>"
+        errorLine2="    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="166"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="PluralsCandidate"
+        message="Formatting %d followed by words (&quot;waiting&quot;): This should probably be a plural rather than a string"
+        errorLine1="    &lt;string name=&quot;audio_notif_working_text_many&quot;>Rhema Cadence is working on your audio files (%1$d waiting).&lt;/string>"
+        errorLine2="    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="197"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="PluralsCandidate"
+        message="Formatting %d followed by words (&quot;sections&quot;): This should probably be a plural rather than a string"
+        errorLine1="    &lt;string name=&quot;audio_notif_done_text_cleanup_partial&quot;>Your audio was transcribed. Cleanup worked on %1$d of %2$d sections; the rest is raw text.&lt;/string>"
+        errorLine2="    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="203"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="ChromeOsAbiSupport"
+        message="Missing x86_64 ABI support for ChromeOS"
+        errorLine1="        ndk { abiFilters += &quot;arm64-v8a&quot; }"
+        errorLine2="                            ~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="121"
+            column="29"/>
+    </issue>
+
+    <issue
+        id="ExportedReceiver"
+        message="Exported receiver does not require permission"
+        errorLine1="        &lt;receiver"
+        errorLine2="         ~~~~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="439"
+            column="10"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is always >= 30"
+        errorLine1="            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0,"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/AudioRecorderService.kt"
+            line="55"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is always >= 30"
+        errorLine1="            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/AudioTranscriptionService.kt"
+            line="225"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is always >= 30"
+        errorLine1="        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {"
+        errorLine2="                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/BackgroundTranscriptionService.kt"
+            line="115"
+            column="24"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="This folder configuration (`v26`) is unnecessary; `minSdkVersion` is 30. Merge all the resources in this folder into `mipmap-anydpi`.">
+        <location
+            file="src/main/res/mipmap-anydpi-v26"/>
+    </issue>
+
+    <issue
+        id="StaticFieldLeak"
+        message="Do not place Android context classes in static fields (static reference to `AudioJobRunner` which has field `context` pointing to `Context`); this is a memory leak"
+        errorLine1="        @Volatile private var runner: AudioJobRunner? = null"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/AudioTranscriptionService.kt"
+            line="281"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.color.primary` appears to be unused"
+        errorLine1="    &lt;color name=&quot;primary&quot;>#2563EB&lt;/color>"
+        errorLine2="           ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/colors.xml"
+            line="3"
+            column="12"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.color.primary_container` appears to be unused"
+        errorLine1="    &lt;color name=&quot;primary_container&quot;>#DBEAFE&lt;/color>"
+        errorLine2="           ~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/colors.xml"
+            line="4"
+            column="12"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.color.oneui_locked_green_bg` appears to be unused"
+        errorLine1="    &lt;color name=&quot;oneui_locked_green_bg&quot;>#DCFCE7&lt;/color>"
+        errorLine2="           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/colors.xml"
+            line="14"
+            column="12"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.color.oneui_unlocked_grey_bg` appears to be unused"
+        errorLine1="    &lt;color name=&quot;oneui_unlocked_grey_bg&quot;>#F1F5F9&lt;/color>"
+        errorLine2="           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/colors.xml"
+            line="18"
+            column="12"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.color.oneui_pill_surface` appears to be unused"
+        errorLine1="    &lt;color name=&quot;oneui_pill_surface&quot;>#F1F5F9&lt;/color>"
+        errorLine2="           ~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/colors.xml"
+            line="19"
+            column="12"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.drawable.ic_launcher_foreground_inset` appears to be unused"
+        errorLine1="&lt;inset xmlns:android=&quot;http://schemas.android.com/apk/res/android&quot;"
+        errorLine2="^">
+        <location
+            file="src/main/res/drawable/ic_launcher_foreground_inset.xml"
+            line="2"
+            column="1"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.drawable.ic_launcher_monochrome_inset` appears to be unused"
+        errorLine1="&lt;inset xmlns:android=&quot;http://schemas.android.com/apk/res/android&quot;"
+        errorLine2="^">
+        <location
+            file="src/main/res/drawable/ic_launcher_monochrome_inset.xml"
+            line="2"
+            column="1"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.audio_files_history_off_notice` appears to be unused"
+        errorLine1="    &lt;string name=&quot;audio_files_history_off_notice&quot;>History is off, so the text was copied to your clipboard&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="152"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UsableSpace"
+        message="Consider also using `StorageManager#getAllocatableBytes` and `allocateBytes` which will consider clearable cached data"
+        errorLine1="        val availableBytes = minOf(ctx.cacheDir.usableSpace, ctx.filesDir.usableSpace)"
+        errorLine2="                                                ~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ModelDownloader.kt"
+            line="658"
+            column="49"/>
+    </issue>
+
+    <issue
+        id="UsableSpace"
+        message="Consider also using `StorageManager#getAllocatableBytes` and `allocateBytes` which will consider clearable cached data"
+        errorLine1="        val availableBytes = minOf(ctx.cacheDir.usableSpace, ctx.filesDir.usableSpace)"
+        errorLine2="                                                                          ~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ModelDownloader.kt"
+            line="658"
+            column="75"/>
+    </issue>
+
+    <issue
+        id="TypographyDashes"
+        message="Replace &quot;--&quot; with an &quot;em dash&quot; character (—, &amp;#8212;) ?"
+        errorLine1="    &lt;string name=&quot;accessibility_description&quot;>Dictation: records audio, transcribes, and inserts text into focused fields. Note: Android may also show its own system Accessibility Button shortcut for Rhema Cadence in Settings > Accessibility -- that\&apos;s a separate OS-level shortcut, not Rhema Cadence\&apos;s own floating mic button.&lt;/string>"
+        errorLine2="                                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="15"
+            column="46"/>
+    </issue>
+
+    <issue
+        id="ViewConstructor"
+        message="Custom view `BoundedScrollView` is missing constructor used by tools: `(Context)` or `(Context,AttributeSet)` or `(Context,AttributeSet,int)`"
+        errorLine1="class BoundedScrollView("
+        errorLine2="      ~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/BoundedScrollView.kt"
+            line="11"
+            column="7"/>
+    </issue>
+
+    <issue
+        id="ViewConstructor"
+        message="Custom view `MaxWidthLinearLayout` is missing constructor used by tools: `(Context)` or `(Context,AttributeSet)` or `(Context,AttributeSet,int)`"
+        errorLine1="internal class MaxWidthLinearLayout(context: Context, private val maxWidthPx: Int) : LinearLayout(context) {"
+        errorLine2="               ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ImeStylePickerView.kt"
+            line="31"
+            column="16"/>
+    </issue>
+
+    <issue
+        id="ViewConstructor"
+        message="Custom view `ImeStylePickerView` is missing constructor used by tools: `(Context)` or `(Context,AttributeSet)` or `(Context,AttributeSet,int)`"
+        errorLine1="internal class ImeStylePickerView("
+        errorLine2="               ~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ImeStylePickerView.kt"
+            line="59"
+            column="16"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ActiveRecordingCapsuleToggle.kt"
+            line="18"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putString(KEY_VAULT, serialize(entries)).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ApiKeyVault.kt"
+            line="347"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putInt(KEY_MIGRATION_VERSION, MIGRATION_VERSION).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ApiKeyVault.kt"
+            line="704"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(appCtx).edit().putString(KEY_NOTIFICATIONS, serialize(updated)).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/AppNotificationStore.kt"
+            line="121"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs(appCtx).edit().putString(KEY_NOTIFICATIONS, serialize(updated)).apply()"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/AppNotificationStore.kt"
+            line="134"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(appCtx).edit().remove(KEY_NOTIFICATIONS).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/AppNotificationStore.kt"
+            line="142"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `String.toUri` instead?"
+        errorLine1="        val uri = job.sourceUri?.let { Uri.parse(it) } ?: throw Stop(JobFailure.UNREADABLE)"
+        errorLine2="                                       ~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/AudioJobRunner.kt"
+            line="264"
+            column="40"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putInt(KEY, seconds.coerceIn(MIN_SECONDS, MAX_SECONDS)).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/AutoPeekDelay.kt"
+            line="26"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/AutoPeekToggle.kt"
+            line="24"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/AutomationOffHook.kt"
+            line="54"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            val editor = prefs.edit().clear()"
+        errorLine2="                         ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/BackupManager.kt"
+            line="248"
+            column="26"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension property `View.isGone` instead?"
+        errorLine1="            if (child.visibility == View.GONE) continue"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/BaseSettingsActivity.kt"
+            line="89"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `Int.toDrawable` instead?"
+        errorLine1="        val divider = LayerDrawable(arrayOf(ColorDrawable(withAlpha(attrColor(android.R.attr.textColorPrimary), 0x40)))).apply {"
+        errorLine2="                                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/BaseSettingsActivity.kt"
+            line="397"
+            column="45"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().apply {"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/BubbleShortcut.kt"
+            line="31"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putString(KEY, if (language in SUPPORTED) language else DEFAULT).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CanaryLanguage.kt"
+            line="58"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().remove(KEY).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CanaryLanguage.kt"
+            line="63"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putString(KEY_LOCAL_CLEANUP_MODEL_NAME, archive).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupActivity.kt"
+            line="143"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                prefs().edit().putBoolean(&quot;use_post_processing&quot;, false).apply()"
+        errorLine2="                ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupActivity.kt"
+            line="173"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension property `View.isGone` instead?"
+        errorLine1="        if (views.progress.visibility == View.GONE) {"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupActivity.kt"
+            line="258"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY_SMART_SELF_CORRECTION, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupModifiersPrefs.kt"
+            line="26"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY_SPOKEN_EMOJI_COMMANDS, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupModifiersPrefs.kt"
+            line="40"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        store.edit().putString(KEY_STATUS, serialize(updated)).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupStepStatusStore.kt"
+            line="54"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupStyleMenu.kt"
+            line="92"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs().edit()"
+        errorLine2="            ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupStylesActivity.kt"
+            line="194"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs().edit()"
+        errorLine2="            ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupStylesActivity.kt"
+            line="203"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                prefs().edit()"
+        errorLine2="                ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupStylesActivity.kt"
+            line="218"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_CLOUD_CLEANUP_ENABLED, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CloudFeatureToggle.kt"
+            line="32"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CloudLiveToggle.kt"
+            line="30"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CompressedUploadToggle.kt"
+            line="27"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putString(KEY_CUSTOM_PERSONAS, serialize(personas)).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CustomPersonaStore.kt"
+            line="60"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        store.edit().putBoolean(KEY_LEGACY_SEEDED, true).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CustomPersonaStore.kt"
+            line="99"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs().edit().putBoolean(KEY_HISTORY_ENABLED, true).apply()"
+        errorLine2="            ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DataLogsActivity.kt"
+            line="342"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                prefs().edit().putBoolean(KEY_HISTORY_ENABLED, false).apply()"
+        errorLine2="                ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DataLogsActivity.kt"
+            line="350"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                prefs().edit().putBoolean(KEY_HISTORY_ENABLED, false).apply()"
+        errorLine2="                ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DataLogsActivity.kt"
+            line="356"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DebugVisibilityToggle.kt"
+            line="21"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            p.edit().putInt(KEY_UNREAD_COUNT, p.getInt(KEY_UNREAD_COUNT, 0) + 1).apply()"
+        errorLine2="            ~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DiagnosticErrorLog.kt"
+            line="73"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        (context.applicationContext ?: context)"
+        errorLine2="        ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DiagnosticErrorLog.kt"
+            line="88"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            p.edit().putInt(KEY_UNREAD_COUNT, p.getInt(KEY_UNREAD_COUNT, 0) + 1).apply()"
+        errorLine2="            ~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DictationHistoryStore.kt"
+            line="137"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)"
+        errorLine2="            ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DictationHistoryStore.kt"
+            line="142"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putString(KEY, language?.takeIf { it in SUPPORTED } ?: AUTO).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DictationLanguage.kt"
+            line="58"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs().edit().putBoolean(&quot;use_local&quot;, !newCloud).apply()"
+        errorLine2="            ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DictationModeActivity.kt"
+            line="76"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_ALLOW_LOCAL_FALLBACK, allowed).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DictationModeToggle.kt"
+            line="42"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_ALLOW_CLOUD_FALLBACK, allowed).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DictationModeToggle.kt"
+            line="49"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                prefs(context).edit().putBoolean(&quot;use_local&quot;, true).apply()"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DictationModeToggle.kt"
+            line="113"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY_ENABLED, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/HapticPrefs.kt"
+            line="50"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putString(KEY_STRENGTH, strength.name).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/HapticPrefs.kt"
+            line="54"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putInt(KEY_LENGTH_MS, clampLengthMs(ms)).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/HapticPrefs.kt"
+            line="58"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY_UI_TAPS_ENABLED, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/HapticPrefs.kt"
+            line="65"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/HideIconToggle.kt"
+            line="22"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, hidden).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/IconHiddenState.kt"
+            line="24"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/IdleQuickMenuToggle.kt"
+            line="19"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationGuardRail.kt"
+            line="33"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_RECOVERY_NOTIFICATION_DISMISSED, true).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationGuardRail.kt"
+            line="49"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_USER_TURNED_OFF, true).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationGuardRail.kt"
+            line="60"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_STALE_BANNER_DISMISSED, true).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationGuardRail.kt"
+            line="65"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_BANNER_DISMISSED, true).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationGuardRail.kt"
+            line="86"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putString(KEY_MODE, mode.name).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/KeepScreenAwakePrefs.kt"
+            line="34"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putLong(KEY_CUSTOM_MS, clampCustomMs(ms)).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/KeepScreenAwakePrefs.kt"
+            line="43"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs(context).edit().putString(KEY, theme.key).apply()"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/KeyboardTheme.kt"
+            line="38"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        val editor = prefs(context).edit().putString(KEY_LANGUAGES, kept.joinToString(&quot;,&quot;) { it.code })"
+        errorLine2="                     ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/KeyboardTranslation.kt"
+            line="74"
+            column="22"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().apply { if (code == null) remove(KEY_TARGET) else putString(KEY_TARGET, code) }.apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/KeyboardTranslation.kt"
+            line="86"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_CONSENT, true).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/KeyboardTranslationRouting.kt"
+            line="93"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LiveModelCatalog.kt"
+            line="477"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putBoolean(KEY_STREAMING_PREVIEW, enabling).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="114"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putString(KEY_STREAMING_MODEL_NAME, archive).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="168"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension property `View.isGone` instead?"
+        errorLine1="        if (views.progress.visibility == View.GONE) {"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="257"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LiveTranscriptionConfig.kt"
+            line="239"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putInt(KEY, threads.coerceIn(MIN_THREADS, MAX_THREADS)).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LocalTranscriptionThreads.kt"
+            line="49"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LongPressCancelUndoToggle.kt"
+            line="26"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putString(KEY_ONBOARDING_SETUP_MODE, mode.name).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="507"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().remove(KEY_ONBOARDING_SETUP_MODE).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="681"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putString(KEY_ONBOARDING_STEP, step).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="719"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putBoolean(KEY_ONBOARDING_DISMISSED, true).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="748"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putBoolean(KEY_ONBOARDING_COMPLETE, true).remove(KEY_ONBOARDING_STEP).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="754"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                prefs().edit().putBoolean(&quot;use_local&quot;, true).apply()"
+        errorLine2="                ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="945"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                prefs().edit().putBoolean(&quot;use_local&quot;, false).apply()"
+        errorLine2="                ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="957"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="1143"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="1163"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="1227"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putString(&quot;model_name&quot;, archive).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="1308"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `Canvas.withClip` instead?"
+        errorLine1="        canvas.save()"
+        errorLine2="        ~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MicWaveView.kt"
+            line="124"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ModelCatalogStore.kt"
+            line="81"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(key(model), true).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ModelLicenseConsent.kt"
+            line="49"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().remove(key(model)).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ModelLicenseConsent.kt"
+            line="58"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `String.toUri` instead?"
+        errorLine1="                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(model.license.url)))"
+        errorLine2="                                                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ModelLicensePrompt.kt"
+            line="67"
+            column="58"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_ASKED, true).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/NotificationPermissionAsk.kt"
+            line="21"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `Int.toDrawable` instead?"
+        errorLine1="        LayerDrawable(arrayOf(ColorDrawable(color))).apply {"
+        errorLine2="                              ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="81"
+            column="31"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `ViewGroup.isNotEmpty` instead?"
+        errorLine1="        if (labelRow.childCount > 0) col.addView(labelRow)"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="543"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putInt(KEY_RING_SIZE_DP, clampRingSizeDp(dp)).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearancePrefs.kt"
+            line="68"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY_HAS_CUSTOM_ICON, has).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearancePrefs.kt"
+            line="76"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        val editor = prefs.edit()"
+        errorLine2="                     ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearancePrefs.kt"
+            line="86"
+            column="22"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `Bitmap.scale` instead?"
+        errorLine1="            val scaled = Bitmap.createScaledBitmap(square, STORED_SIZE_PX, STORED_SIZE_PX, true)"
+        errorLine2="                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayIconStore.kt"
+            line="80"
+            column="26"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putInt(KEY, dp.coerceIn(MIN_DP, MAX_DP)).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/PeekVisibleSize.kt"
+            line="28"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putString(KEY_EXCLUDED_PACKAGES, serialize(packages)).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/PerAppExclusionStore.kt"
+            line="54"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        store.edit().putString(KEY_PER_APP_PERSONA, serialize(updated)).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/PerAppPersonaStore.kt"
+            line="47"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/PerAppPersonaToggle.kt"
+            line="21"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/PostProcessingToggle.kt"
+            line="20"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/PreviewBeforeInjectToggle.kt"
+            line="21"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putInt(KEY_MIGRATION_VERSION, MIGRATION_VERSION).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ProviderAccountMigration.kt"
+            line="115"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putInt(KEY_MIGRATION_VERSION, MIGRATION_VERSION).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ProviderChainMigration.kt"
+            line="175"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putString(KEY_ENTRIES, serialize(chain)).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ProviderChainStore.kt"
+            line="109"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        securePrefs(context).edit().putString(key, value).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ProviderCredentialStore.kt"
+            line="70"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        securePrefs(context).edit().remove(key).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ProviderCredentialStore.kt"
+            line="75"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        securePrefs(context).edit().putString(key, value).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ProviderCredentialStore.kt"
+            line="117"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        securePrefs(context).edit().remove(key).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ProviderCredentialStore.kt"
+            line="132"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        securePrefs(context).edit().putString(key, value).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ProviderCredentialStore.kt"
+            line="176"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        securePrefs(context).edit().remove(key).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ProviderCredentialStore.kt"
+            line="184"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_ENABLED, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/QualityLogger.kt"
+            line="69"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putString(KEY_SELECTION, serialize(keys.take(MAX_ENTRIES))).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/QuickMenuPersonaStore.kt"
+            line="56"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putString(KEY_SELECTION, serialize(current.filterNot { it == key })).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/QuickMenuPersonaStore.kt"
+            line="64"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension property `View.isVisible` instead?"
+        errorLine1="        return if (bar.visibility == View.VISIBLE) bar.height else 0"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/RamblrImeService.kt"
+            line="1026"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/RawTextRetryToggle.kt"
+            line="25"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs.edit().putString(KEY, mode.name).apply()"
+        errorLine2="            ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/RingVisibilityMode.kt"
+            line="31"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdateChecker.kt"
+            line="68"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `String.toUri` instead?"
+        errorLine1="        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(update.releaseUrl))"
+        errorLine2="                                                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdateNotifications.kt"
+            line="45"
+            column="49"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `String.toUri` instead?"
+        errorLine1="            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl))"
+        errorLine2="                                                    ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdateNotifications.kt"
+            line="210"
+            column="53"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `String.toUri` instead?"
+        errorLine1="            Uri.parse(&quot;package:${ctx.packageName}&quot;),"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdateNotifications.kt"
+            line="255"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_NOTIFY_ENABLED, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdatePrefs.kt"
+            line="30"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_AUTO_INSTALL_ENABLED, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdatePrefs.kt"
+            line="41"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit().putBoolean(KEY_INSTALL_BLOCKED_ON_PERMISSION, blocked).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdatePrefs.kt"
+            line="75"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putInt(KEY, deciseconds.coerceIn(MIN_DECISECONDS, MAX_DECISECONDS)).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/SilenceAutoStopThreshold.kt"
+            line="33"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/SilenceAutoStopToggle.kt"
+            line="29"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/SingleTapRestoreToggle.kt"
+            line="31"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putString(KEY_SNIPPETS, serialize(entries)).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/SnippetsStore.kt"
+            line="63"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/SnippetsStore.kt"
+            line="111"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                { prefs.edit().putString(&quot;temperature_capabilities&quot;, it).apply() },"
+        errorLine2="                  ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TemperatureCapabilityStore.kt"
+            line="88"
+            column="19"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putString(&quot;model_name&quot;, archive).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TranscriptionActivity.kt"
+            line="338"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putString(&quot;model_name&quot;, newSelection).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TranscriptionActivity.kt"
+            line="362"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension property `View.isGone` instead?"
+        errorLine1="        if (views.progress.visibility == View.GONE) {"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TranscriptionActivity.kt"
+            line="378"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                prefs.edit().putString(&quot;model_name&quot;, fallback.archive).apply()"
+        errorLine2="                ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TranscriptionActivity.kt"
+            line="400"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs(context).edit()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/VocabularyEditor.kt"
+            line="32"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                prefs(activity).edit()"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/VocabularyEditor.kt"
+            line="95"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().remove(CANDIDATES_KEY).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/VocabularySuggestionStore.kt"
+            line="167"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs.edit()"
+        errorLine2="            ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/VocabularySuggestionStore.kt"
+            line="177"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putString(DISMISSED_KEY, VocabularyTerms.serialize(remaining)).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/VocabularySuggestionStore.kt"
+            line="192"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putString(CANDIDATES_KEY, json.toString()).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/VocabularySuggestionStore.kt"
+            line="251"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putBoolean(KEY, enabled).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/VocabularySuggestionsToggle.kt"
+            line="27"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension property `View.isVisible` instead?"
+        errorLine1="            if (liveWindowBodyScroll === scroll &amp;&amp; scroll.visibility == View.VISIBLE) {"
+        errorLine2="                                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3657"
+            column="52"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs().edit().putBoolean(&quot;use_local&quot;, false).apply()"
+        errorLine2="            ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="5037"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putBoolean(&quot;streaming_preview_enabled&quot;, enabling).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="5096"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs().edit().putInt(PREF_OVERLAY_X, x).putInt(PREF_OVERLAY_Y, y).apply()"
+        errorLine2="        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="6659"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="ClickableViewAccessibility"
+        message="Custom view ``FrameLayout`` has `setOnTouchListener` called on it but does not override `performClick`"
+        errorLine1="        overlay.setOnTouchListener { v, ev ->"
+        errorLine2="        ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="1835"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="ClickableViewAccessibility"
+        message="`onTouch` lambda should call `View#performClick` when a click is detected"
+        errorLine1="        overlay.setOnTouchListener { v, ev ->"
+        errorLine2="                                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="1835"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    btn.text = &quot;Hide&quot;"
+        errorLine2="                                ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ApiKeysVaultActivity.kt"
+            line="384"
+            column="33"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    btn.text = &quot;Show&quot;"
+        errorLine2="                                ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ApiKeysVaultActivity.kt"
+            line="387"
+            column="33"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Number formatting does not take into account locale settings. Consider using `String.format` instead."
+        errorLine1="            setText(AutoPeekDelay.secondsOrDefault(this@BehaviorActivity).toString())"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/BehaviorActivity.kt"
+            line="744"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Number formatting does not take into account locale settings. Consider using `String.format` instead."
+        errorLine1="            setText(PeekVisibleSize.dpOrDefault(this@BehaviorActivity).toString())"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/BehaviorActivity.kt"
+            line="768"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;\uD83D\uDDD1&quot;"
+        errorLine2="                   ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupActivity.kt"
+            line="96"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    views.subtitle.text = &quot;Installing...&quot;"
+        errorLine2="                                           ~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupActivity.kt"
+            line="207"
+            column="44"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                views.subtitle.text = &quot;Error: $err&quot;"
+        errorLine2="                                      ~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupActivity.kt"
+            line="235"
+            column="39"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                views.subtitle.text = &quot;Error: $err&quot;"
+        errorLine2="                                       ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CleanupActivity.kt"
+            line="235"
+            column="40"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;Priority ${displayPos + 1}&quot;"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CloudProviderActivity.kt"
+            line="275"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;Priority ${displayPos + 1}&quot;"
+        errorLine2="                               ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CloudProviderActivity.kt"
+            line="275"
+            column="32"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Priority ${displayPos + 1}&quot;"
+        errorLine2="                    ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CloudProviderActivity.kt"
+            line="275"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                text = &quot;STT \u00b7 Cleanup only (no audio transcription)&quot;"
+        errorLine2="                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CloudProviderActivity.kt"
+            line="356"
+            column="24"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                text = &quot;STT \u00b7 Cleanup only (no audio transcription)&quot;"
+        errorLine2="                        ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CloudProviderActivity.kt"
+            line="356"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                text = &quot;STT \u00b7 Cleanup only (no audio transcription)&quot;"
+        errorLine2="                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/CloudProviderActivity.kt"
+            line="356"
+            column="35"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                backupRowSub.text = &quot;Backed up: ${written.joinToString(&quot;, &quot;)}&quot;"
+        errorLine2="                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DataLogsActivity.kt"
+            line="258"
+            column="37"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                backupRowSub.text = &quot;Backed up: ${written.joinToString(&quot;, &quot;)}&quot;"
+        errorLine2="                                     ~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DataLogsActivity.kt"
+            line="258"
+            column="38"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                text = &quot;No dictations yet&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DataLogsActivity.kt"
+            line="374"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                text = &quot;Copy&quot;"
+        errorLine2="                        ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DataLogsActivity.kt"
+            line="456"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;Paid fallback · ${groupLabel(group)}&quot;"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DataLogsActivity.kt"
+            line="492"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Paid fallback · ${groupLabel(group)}&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DataLogsActivity.kt"
+            line="492"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;Custom \u2014 transcription and cleanup are set independently under Mix and match.&quot;"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DictationModeActivity.kt"
+            line="59"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Custom \u2014 transcription and cleanup are set independently under Mix and match.&quot;"
+        errorLine2="                    ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DictationModeActivity.kt"
+            line="59"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Custom \u2014 transcription and cleanup are set independently under Mix and match.&quot;"
+        errorLine2="                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/DictationModeActivity.kt"
+            line="59"
+            column="34"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;App exclusions&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="37"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;This suppresses Rhema Cadence&apos;s behavior in the apps you list below — no new &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="46"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;This suppresses Rhema Cadence&apos;s behavior in the apps you list below — no new &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="46"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;This suppresses Rhema Cadence&apos;s behavior in the apps you list below — no new &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="46"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;This suppresses Rhema Cadence&apos;s behavior in the apps you list below — no new &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="46"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;This suppresses Rhema Cadence&apos;s behavior in the apps you list below — no new &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="46"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;This suppresses Rhema Cadence&apos;s behavior in the apps you list below — no new &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="46"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;This suppresses Rhema Cadence&apos;s behavior in the apps you list below — no new &quot; +"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="46"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;recording starts, and no dictated text is inserted while one of these apps is &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="47"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;in the foreground. It does not detach the accessibility service: Rhema Cadence stays &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="48"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;enabled and bound like normal, and this list does not bypass or weaken your &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="49"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;bank&apos;s own security detections. If you want Rhema Cadence fully off before opening a &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="50"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                &quot;sensitive app, use Settings > Privacy > \&quot;Turn Rhema Cadence off\&quot;, or switch to &quot; +"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="51"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;sensitive app, use Settings > Privacy > \&quot;Turn Rhema Cadence off\&quot;, or switch to &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="51"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;sensitive app, use Settings > Privacy > \&quot;Turn Rhema Cadence off\&quot;, or switch to &quot; +"
+        errorLine2="                                                           ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="51"
+            column="60"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;sensitive app, use Settings > Privacy > \&quot;Turn Rhema Cadence off\&quot;, or switch to &quot; +"
+        errorLine2="                                                                                   ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="51"
+            column="84"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;Floating icon mode&apos;s off switch.&quot;"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="52"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;The floating ring hides for an excluded app the next time Rhema Cadence checks &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="63"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;The floating ring hides for an excluded app the next time Rhema Cadence checks &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="63"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;The floating ring hides for an excluded app the next time Rhema Cadence checks &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="63"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;The floating ring hides for an excluded app the next time Rhema Cadence checks &quot; +"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="63"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;(switching apps, screen on/off, or unlocking) — not necessarily the instant you &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="64"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;switch. Starting a new recording and inserting the finished text are always &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="65"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;blocked immediately, with no such delay.&quot;"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="66"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Add&quot;"
+        errorLine2="                    ~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="82"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;No apps excluded yet&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/ExclusionListActivity.kt"
+            line="101"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = (if (granted) &quot;\u2705 Active. Mode switches happen seamlessly (no system &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationActivity.kt"
+            line="486"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = (if (granted) &quot;\u2705 Active. Mode switches happen seamlessly (no system &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationActivity.kt"
+            line="486"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = (if (granted) &quot;\u2705 Active. Mode switches happen seamlessly (no system &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationActivity.kt"
+            line="486"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = (if (granted) &quot;\u2705 Active. Mode switches happen seamlessly (no system &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationActivity.kt"
+            line="486"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                &quot;$command\n\n&quot; +"
+        errorLine2="                ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationActivity.kt"
+            line="492"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;With it granted, mode switches complete in-app without the system Settings &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationActivity.kt"
+            line="493"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;round-trip, the shortcut rows switch instantly, and if the service ever gets &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationActivity.kt"
+            line="494"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;turned off by the system switch, Rhema Cadence can turn itself back on with one tap.&quot;"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/InvocationActivity.kt"
+            line="495"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Live Preview&quot;"
+        errorLine2="                    ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="44"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;Shows live partial text in the focused field as you speak, from a separate &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="51"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;Shows live partial text in the focused field as you speak, from a separate &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="51"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;Shows live partial text in the focused field as you speak, from a separate &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="51"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Shows live partial text in the focused field as you speak, from a separate &quot; +"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="51"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;on-device streaming model or from Cloud Live transcription. The final text (after you tap to stop) still comes &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="52"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;from your regular transcription + cleanup settings — this only changes &quot; +"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="53"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;what&apos;s shown while recording.&quot;"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="54"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    views.subtitle.text = &quot;Extracting...&quot;"
+        errorLine2="                                           ~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="211"
+            column="44"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                views.subtitle.text = &quot;Error: $err&quot;"
+        errorLine2="                                      ~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="237"
+            column="39"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                views.subtitle.text = &quot;Error: $err&quot;"
+        errorLine2="                                       ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="237"
+            column="40"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            views.subtitle.text = &quot;${model.quality} · ${model.sizeMb} MB&quot;"
+        errorLine2="                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="258"
+            column="35"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            views.subtitle.text = &quot;${model.quality} · ${model.sizeMb} MB&quot;"
+        errorLine2="                                                                     ~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LivePreviewActivity.kt"
+            line="258"
+            column="70"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                text = &quot;Live transcription mode&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LiveTranscriptionActivity.kt"
+            line="319"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;${index + 1}. $providerName&quot;"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LiveTranscriptionActivity.kt"
+            line="476"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;${index + 1}. $providerName&quot;"
+        errorLine2="                      ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/LiveTranscriptionActivity.kt"
+            line="476"
+            column="23"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Rhema Cadence was turned off by the system shortcut switch&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="559"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Dismiss&quot;"
+        errorLine2="                    ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="574"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Rhema Cadence&apos;s accessibility service was turned off&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="616"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Dismiss&quot;"
+        errorLine2="                    ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/MainActivity.kt"
+            line="628"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Clear all&quot;"
+        errorLine2="                    ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/NotificationsActivity.kt"
+            line="34"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                text = &quot;No notifications yet&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/NotificationsActivity.kt"
+            line="75"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Number formatting does not take into account locale settings. Consider using `String.format` instead."
+        errorLine1="            text = clamped.toString()"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="229"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Select attempts&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="399"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Locked slots across this lane share a 3-attempt pool. 1 = 1 call total.&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="406"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;Pool $usedAttempts/$maxAttempts&quot;"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="592"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Pool $usedAttempts/$maxAttempts&quot;"
+        errorLine2="                    ~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="592"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Custom timer&quot;"
+        errorLine2="                    ~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="637"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Keep the screen awake during dictation for up to this long (1 min to 2 hr).&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="644"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Save&quot;"
+        errorLine2="                    ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="738"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    text = &quot;Refresh&quot;"
+        errorLine2="                            ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="904"
+            column="29"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                        text = &quot;No matching items.&quot;"
+        errorLine2="                                ~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="1015"
+            column="33"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    text = &quot;Use&quot;"
+        errorLine2="                            ~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OneUiComponents.kt"
+            line="1137"
+            column="29"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Size and colors&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearanceActivity.kt"
+            line="62"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;Change how the floating button looks. A custom image replaces the whole &quot; +"
+        errorLine2="                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearanceActivity.kt"
+            line="68"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Change how the floating button looks. A custom image replaces the whole &quot; +"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearanceActivity.kt"
+            line="68"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                &quot;button, so the colors below stop applying.&quot;"
+        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearanceActivity.kt"
+            line="69"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            val valueLabel = TextView(this).apply { text = &quot;$labelText: $initialProgress&quot; }"
+        errorLine2="                                                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearanceActivity.kt"
+            line="247"
+            column="60"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                        valueLabel.text = &quot;$labelText: $progress&quot;"
+        errorLine2="                                          ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearanceActivity.kt"
+            line="254"
+            column="43"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                    label.text = &quot;$name: $progress&quot;"
+        errorLine2="                                 ~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearanceActivity.kt"
+            line="293"
+            column="34"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                text = &quot;Hex&quot;"
+        errorLine2="                        ~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/OverlayAppearanceActivity.kt"
+            line="311"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Updates&quot;"
+        errorLine2="                    ~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdateSettingsActivity.kt"
+            line="43"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            installNowRowSub.text = &quot;Download and install v${cached.versionName} now&quot;"
+        errorLine2="                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdateSettingsActivity.kt"
+            line="147"
+            column="37"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            installNowRowSub.text = &quot;Download and install v${cached.versionName} now&quot;"
+        errorLine2="                                     ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdateSettingsActivity.kt"
+            line="147"
+            column="38"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            installNowRowSub.text = &quot;Download and install v${cached.versionName} now&quot;"
+        errorLine2="                                                                                ~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdateSettingsActivity.kt"
+            line="147"
+            column="81"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="        statusRowSub.text = &quot;Checking…&quot;"
+        errorLine2="                             ~~~~~~~~~">
+        <location
+            file="src/github/kotlin/com/trevornk/ramblr/SelfUpdateSettingsActivity.kt"
+            line="175"
+            column="30"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Setup&quot;"
+        errorLine2="                    ~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/SetupActivity.kt"
+            line="28"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Snippets&quot;"
+        errorLine2="                    ~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/SnippetManagerActivity.kt"
+            line="37"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;No snippets configured yet.&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/SnippetManagerActivity.kt"
+            line="70"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;\uD83D\uDDD1&quot;"
+        errorLine2="                   ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/SnippetManagerActivity.kt"
+            line="124"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Manage styles&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/StyleManagerActivity.kt"
+            line="43"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="        quickMenuCountLabel.text = &quot;Long-press quick menu: $count/${QuickMenuPersonaStore.MAX_ENTRIES} selected&quot; +"
+        errorLine2="                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/StyleManagerActivity.kt"
+            line="136"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="        quickMenuCountLabel.text = &quot;Long-press quick menu: $count/${QuickMenuPersonaStore.MAX_ENTRIES} selected&quot; +"
+        errorLine2="                                   ^">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/StyleManagerActivity.kt"
+            line="136"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="        quickMenuCountLabel.text = &quot;Long-press quick menu: $count/${QuickMenuPersonaStore.MAX_ENTRIES} selected&quot; +"
+        errorLine2="                                    ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/StyleManagerActivity.kt"
+            line="136"
+            column="37"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="        quickMenuCountLabel.text = &quot;Long-press quick menu: $count/${QuickMenuPersonaStore.MAX_ENTRIES} selected&quot; +"
+        errorLine2="                                                                                                      ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/StyleManagerActivity.kt"
+            line="136"
+            column="103"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;\uD83D\uDDD1&quot;"
+        errorLine2="                   ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TranscriptionActivity.kt"
+            line="233"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    views.subtitle.text = &quot;Extracting...&quot;"
+        errorLine2="                                           ~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TranscriptionActivity.kt"
+            line="301"
+            column="44"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                views.subtitle.text = &quot;Error: $err&quot;"
+        errorLine2="                                      ~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TranscriptionActivity.kt"
+            line="327"
+            column="39"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                views.subtitle.text = &quot;Error: $err&quot;"
+        errorLine2="                                       ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TranscriptionActivity.kt"
+            line="327"
+            column="40"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            views.subtitle.text = &quot;${model.quality} \u00b7 ${model.sizeMb} MB&quot;"
+        errorLine2="                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TranscriptionActivity.kt"
+            line="379"
+            column="35"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            views.subtitle.text = &quot;${model.quality} \u00b7 ${model.sizeMb} MB&quot;"
+        errorLine2="                                                                          ~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/TranscriptionActivity.kt"
+            line="379"
+            column="75"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Use live&quot;"
+        errorLine2="                    ~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="2011"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Use raw&quot;"
+        errorLine2="                    ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="2025"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;LIVE \u00b7 0:00&quot;"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="2978"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;LIVE \u00b7 0:00&quot;"
+        errorLine2="                    ~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="2978"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;LIVE \u00b7 0:00&quot;"
+        errorLine2="                               ~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="2978"
+            column="32"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Show live&quot;"
+        errorLine2="                    ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="2988"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            text = &quot;Listening\u2026&quot;"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3032"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Listening\u2026&quot;"
+        errorLine2="                    ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3032"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Show live&quot;"
+        errorLine2="                    ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3175"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;Show&quot;"
+        errorLine2="                    ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3193"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                primaryBtn.text = &quot;Live cut \u00b7 Continue&quot;"
+        errorLine2="                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3256"
+            column="35"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                primaryBtn.text = &quot;Live cut \u00b7 Continue&quot;"
+        errorLine2="                                   ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3256"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                primaryBtn.text = &quot;Live cut \u00b7 Continue&quot;"
+        errorLine2="                                                  ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3256"
+            column="51"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                secondaryBtn.text = &quot;Show&quot;"
+        errorLine2="                                     ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3258"
+            column="38"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                primaryBtn.text = &quot;Live cut \u00b7 Batch&quot;"
+        errorLine2="                                  ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3263"
+            column="35"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                primaryBtn.text = &quot;Live cut \u00b7 Batch&quot;"
+        errorLine2="                                   ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3263"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                primaryBtn.text = &quot;Live cut \u00b7 Batch&quot;"
+        errorLine2="                                                  ~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3263"
+            column="51"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                secondaryBtn.text = &quot;Show&quot;"
+        errorLine2="                                     ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3265"
+            column="38"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                primaryBtn.text = &quot;Show live&quot;"
+        errorLine2="                                   ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3270"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                secondaryBtn.text = &quot;Discard&quot;"
+        errorLine2="                                     ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3288"
+            column="38"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    primaryBtn.text = &quot;Insert&quot;"
+        errorLine2="                                       ~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3294"
+            column="40"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                secondaryBtn.text = &quot;Discard&quot;"
+        errorLine2="                                     ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3300"
+            column="38"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    primaryBtn.text = &quot;Use live&quot;"
+        errorLine2="                                       ~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3306"
+            column="40"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                secondaryBtn.text = &quot;Discard&quot;"
+        errorLine2="                                     ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3312"
+            column="38"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                primaryBtn.text = &quot;Continue&quot;"
+        errorLine2="                                   ~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3317"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    tertiaryBtn.text = &quot;Cleanup&quot;"
+        errorLine2="                                        ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3321"
+            column="41"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    quaternaryBtn.text = &quot;Insert&quot;"
+        errorLine2="                                          ~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3326"
+            column="43"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                secondaryBtn.text = &quot;Discard&quot;"
+        errorLine2="                                     ~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3330"
+            column="38"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                primaryBtn.text = &quot;Keep Live&quot;"
+        errorLine2="                                   ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3335"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                primaryBtn.text = &quot;Keep Live&quot;"
+        errorLine2="                                   ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3343"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                secondaryBtn.text = &quot;Use Batch&quot;"
+        errorLine2="                                     ~~~~~~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="3346"
+            column="38"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;LIVE&quot;"
+        errorLine2="                    ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="4029"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            text = &quot;0:00&quot;"
+        errorLine2="                    ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="4048"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="        capsuleTimerText?.text = &quot;0:00&quot;"
+        errorLine2="                                  ~~~~">
+        <location
+            file="src/main/kotlin/com/trevornk/ramblr/WhisperAccessibilityService.kt"
+            line="4188"
+            column="35"/>
+    </issue>
+
+</issues>

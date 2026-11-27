@@ -577,12 +577,16 @@ class MainActivity : BaseSettingsActivity() {
             setTextColor(attrColor(com.google.android.material.R.attr.colorPrimary))
             setPadding(dp(8), dp(8), dp(8), dp(4))
             setOnClickListener {
+                UiTapHaptics.tick(it)
                 InvocationGuardRail.dismissBanner(this@MainActivity)
                 refresh()
             }
         }
         banner.addView(dismiss)
-        banner.setOnClickListener { onServiceKilledBannerTapped() }
+        banner.setOnClickListener {
+            UiTapHaptics.tick(it)
+            onServiceKilledBannerTapped()
+        }
         return banner
     }
 
@@ -627,6 +631,7 @@ class MainActivity : BaseSettingsActivity() {
             setTextColor(attrColor(com.google.android.material.R.attr.colorPrimary))
             setPadding(dp(8), dp(8), dp(8), dp(4))
             setOnClickListener {
+                UiTapHaptics.tick(it)
                 InvocationGuardRail.dismissStaleBanner(this@MainActivity)
                 refresh()
             }
@@ -634,7 +639,10 @@ class MainActivity : BaseSettingsActivity() {
         // Same recovery target as the #156 banner: advanced tier re-enables in one tap, base tier
         // deep-links to the service's Accessibility page. Reused rather than duplicated -- the
         // two banners differ in WHY the service is off, not in how to turn it back on.
-        banner.setOnClickListener { onServiceKilledBannerTapped() }
+        banner.setOnClickListener {
+            UiTapHaptics.tick(it)
+            onServiceKilledBannerTapped()
+        }
         return banner
     }
 
