@@ -340,7 +340,16 @@ Output: The meeting has been moved to Thursday at 2 PM. Please confirm whether y
         "Spoken emoji commands: Convert ONLY explicit spoken commands ending in \"emoji\" or \"emojis\" " +
             "into the corresponding Unicode emoji(s) (e.g., \"three laughing emojis\" -> \"\uD83D\uDE02\uD83D\uDE02\uD83D\uDE02\", " +
             "\"fire emoji\" -> \"\uD83D\uDD25\", \"thumbs up emoji\" -> \"\uD83D\uDC4D\"). " +
+            "NEVER deduplicate, collapse, or reduce repeated emojis (e.g., \u2764\uFE0F\u2764\uFE0F\u2764\uFE0F, " +
+            "\uD83D\uDC94\uD83D\uDC94\uD83D\uDC94, \uD83D\uDE02\uD83D\uDE02\uD83D\uDE02 must preserve their exact repetition count) " +
+            "and NEVER drop or refuse emoji-only messages. " +
             "NEVER convert casual mentions of the word emoji (e.g., \"I don't use laughing emojis\", \"that crying emoji is funny\")."
+
+    /**
+     * Resolves explicit spoken emoji commands before cloud cleanup when [spokenEmojiCommands] is enabled.
+     */
+    fun prepareCleanupInput(text: String, spokenEmojiCommands: Boolean): String =
+        if (spokenEmojiCommands) SpokenEmojiResolver.resolve(text) else text
 
     /**
      * Composes optional cleanup modifier clauses onto [prompt] dynamically without mutating saved

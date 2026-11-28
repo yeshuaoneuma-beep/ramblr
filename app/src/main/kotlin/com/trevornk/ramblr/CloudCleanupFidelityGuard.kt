@@ -72,9 +72,9 @@ object CloudCleanupFidelityGuard {
         RegexOption.IGNORE_CASE,
     )
 
-    // Explicit spoken emoji command spans (e.g. "three laughing emojis", "fire emoji", "thumbs up emoji").
+    // Explicit spoken emoji command spans (e.g. "three laughing emojis", "fire emoji", "tears of joy emojis").
     internal val SPOKEN_EMOJI_COMMAND = Regex(
-        "\\b(?:(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+)?(?!(?:am|pm|a\\.m\\.|p\\.m\\.)\\b)(?:[\\p{L}]+\\s+){1,2}emojis?\\b",
+        "\\b(?:(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+)?(?!(?:am|pm|a\\.m\\.|p\\.m\\.)\\b)(?:[\\p{L}\\p{N}]+\\s+){1,3}emojis?\\b",
         RegexOption.IGNORE_CASE,
     )
 
@@ -134,6 +134,10 @@ object CloudCleanupFidelityGuard {
 
         if (isMetaReply(rawText, outText)) return FidelityVerdict.Rejected(FidelityViolation.META_REPLY)
 
+        if (isEmojiOnly(outText) && (isEmojiOnly(rawText) || SPOKEN_EMOJI_COMMAND.containsMatchIn(rawText))) {
+            return FidelityVerdict.Ok
+        }
+
         val emojiExempt = (spokenEmojiCommands || hasUnicodeEmoji(outText)) &&
             SPOKEN_EMOJI_COMMAND.containsMatchIn(rawText) &&
             hasUnicodeEmoji(outText)
@@ -182,6 +186,8 @@ object CloudCleanupFidelityGuard {
         if (COMMAND_REQUEST.containsMatchIn(rawText)) return FidelityVerdict.Ok
 
         if (isMetaReply(rawText, outText)) return FidelityVerdict.Rejected(FidelityViolation.META_REPLY)
+
+        if (isEmojiOnly(outText)) return FidelityVerdict.Ok
 
         val rawWords = rawText.split(Regex("\\s+")).size
         val outWords = outText.split(Regex("\\s+")).size
@@ -251,14 +257,139 @@ object CloudCleanupFidelityGuard {
         return false
     }
 
+    private fun isEmojiStarter(cp: Int): Boolean =
+        cp in 0x1F300..0x1FAFF ||
+            cp in 0x2600..0x27BF ||
+            cp in 0x2B05..0x2B55 ||
+            cp in 0x231A..0x23FA
+
+    private fun isEmojiJoinOrModifier(cp: Int): Boolean =
+        cp == 0xFE0F || cp == 0x200D || cp == 0x20E3 || cp in 0x1F3FB..0x1F3FF
+
     private fun hasUnicodeEmoji(text: String): Boolean {
         var i = 0
         while (i < text.length) {
             val cp = text.codePointAt(i)
             i += Character.charCount(cp)
-            if (cp in 0x1F300..0x1FAFF || cp in 0x2600..0x27BF || cp == 0xFE0F) return true
+            if (isEmojiStarter(cp) || cp == 0xFE0F) return true
         }
         return false
+    }
+
+    /** True when [text] contains at least one Unicode emoji and nothing else besides whitespace. */
+    internal fun isEmojiOnly(text: String): Boolean {
+        if (text.isBlank()) return false
+        var hasEmoji = false
+        var i = 0
+        while (i < text.length) {
+            val cp = text.codePointAt(i)
+            i += Character.charCount(cp)
+            when {
+                Character.isWhitespace(cp) -> Unit
+                isEmojiStarter(cp) -> hasEmoji = true
+                isEmojiJoinOrModifier(cp) -> Unit
+                else -> return false
+            }
+        }
+        return hasEmoji
+    }
+
+    private data class EmojiRun(
+        val base: String,
+        val unit: String,
+        val count: Int,
+        val start: Int,
+        val end: Int,
+    )
+
+    private fun nextEmojiAtomEnd(text: String, start: Int): Int? {
+        if (start >= text.length) return null
+        val firstCp = text.codePointAt(start)
+        if (!isEmojiStarter(firstCp)) return null
+        var idx = start + Character.charCount(firstCp)
+        while (idx < text.length) {
+            val cp = text.codePointAt(idx)
+            when {
+                cp == 0xFE0F || cp == 0x20E3 || cp in 0x1F3FB..0x1F3FF -> {
+                    idx += Character.charCount(cp)
+                }
+                cp == 0x200D -> {
+                    val afterZwj = idx + Character.charCount(cp)
+                    if (afterZwj >= text.length) break
+                    val joinedCp = text.codePointAt(afterZwj)
+                    idx = afterZwj + Character.charCount(joinedCp)
+                    while (idx < text.length) {
+                        val modCp = text.codePointAt(idx)
+                        if (modCp == 0xFE0F || modCp == 0x20E3 || modCp in 0x1F3FB..0x1F3FF) {
+                            idx += Character.charCount(modCp)
+                        } else {
+                            break
+                        }
+                    }
+                }
+                else -> break
+            }
+        }
+        return idx
+    }
+
+    private fun extractEmojiRuns(text: String): List<EmojiRun> {
+        val runs = mutableListOf<EmojiRun>()
+        var i = 0
+        while (i < text.length) {
+            val atomEnd: Int = nextEmojiAtomEnd(text, i) ?: run {
+                i += Character.charCount(text.codePointAt(i))
+                continue
+            }
+            val unit = text.substring(i, atomEnd)
+            val base = unit.replace("\uFE0F", "")
+            val runStart = i
+            var runEnd: Int = atomEnd
+            var count = 1
+            while (runEnd < text.length) {
+                val nextEnd = nextEmojiAtomEnd(text, runEnd) ?: break
+                val nextUnit = text.substring(runEnd, nextEnd)
+                if (nextUnit.replace("\uFE0F", "") != base) break
+                count++
+                runEnd = nextEnd
+            }
+            runs += EmojiRun(base = base, unit = unit, count = count, start = runStart, end = runEnd)
+            i = runEnd
+        }
+        return runs
+    }
+
+    /**
+     * Repairs cloud cleanup outputs that collapsed an explicit repeated emoji run from [raw]
+     * (e.g. `❤️❤️❤️` -> `❤️`) back to [raw]'s exact repetition count.
+     */
+    fun restoreCollapsedEmojiRuns(raw: String, output: String): String {
+        val rawRuns = extractEmojiRuns(raw)
+        if (rawRuns.none { it.count >= 2 } || output.isEmpty()) return output
+
+        val rawQueues = linkedMapOf<String, ArrayDeque<EmojiRun>>()
+        for (run in rawRuns) {
+            rawQueues.getOrPut(run.base) { ArrayDeque() }.addLast(run)
+        }
+        val outRuns = extractEmojiRuns(output)
+        if (outRuns.isEmpty()) return output
+
+        val sb = StringBuilder(output.length + 16)
+        var cursor = 0
+        var changed = false
+        for (outRun in outRuns) {
+            val queue = rawQueues[outRun.base]
+            val target = if (queue != null && queue.isNotEmpty()) queue.removeFirst() else null
+            if (target != null && target.count >= 2 && outRun.count < target.count) {
+                sb.append(output, cursor, outRun.start)
+                sb.append(target.unit.repeat(target.count))
+                cursor = outRun.end
+                changed = true
+            }
+        }
+        if (!changed) return output
+        sb.append(output, cursor, output.length)
+        return sb.toString()
     }
 
     private fun normalizeApostrophes(s: String) = s.replace('\u2019', '\'').replace('\u2018', '\'')

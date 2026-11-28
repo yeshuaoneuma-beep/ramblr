@@ -296,12 +296,36 @@ class DictationRuntime internal constructor(
         /** Proactive 9:00 cutoff ahead of Gemini Live's 10-minute WebSocket limit. */
         internal const val CLOUD_LIVE_SESSION_CUTOFF_MS = GeminiCloudLiveTranscriptionClient.DEFAULT_MAX_SESSION_MS
 
-        internal fun appendLiveSegments(prefix: String, segment: String): String {
-            val p = prefix.trim()
-            val s = segment.trim()
-            if (p.isEmpty()) return s
-            if (s.isEmpty()) return p
-            return "$p $s"
+        internal fun appendLiveSegments(prefix: String, segment: String): String =
+            stitchLiveEditSegments(prefix = prefix, spoken = segment, suffix = "")
+
+        private val EDIT_CLOSING_PUNCT = setOf(',', '.', '!', '?', ';', ':', ')', ']', '}', '\u2026', '%')
+        private val EDIT_OPENING_CHARS = setOf('(', '[', '{', '\u201C', '\n', '\r')
+
+        private fun joinEditBoundary(left: String, right: String): String {
+            if (left.isEmpty()) return right
+            if (right.isEmpty()) return left
+            val lLast = left.last()
+            val rFirst = right.first()
+            return if (rFirst in EDIT_CLOSING_PUNCT || rFirst == '\n' || lLast in EDIT_OPENING_CHARS) {
+                "$left$right"
+            } else {
+                "$left $right"
+            }
+        }
+
+        /**
+         * Composes prefix + newly spoken segment + suffix around a cursor or selection inside
+         * the Live preview editor, normalizing single-space boundaries without gluing words or
+         * splitting closing punctuation.
+         */
+        internal fun stitchLiveEditSegments(prefix: String, spoken: String, suffix: String): String {
+            val p = prefix.trim(' ', '\t', '\r').trimStart('\n')
+            val m = spoken.trim()
+            val s = suffix.trim(' ', '\t', '\r').trimEnd('\n')
+            val left = if (p.isBlank()) m else joinEditBoundary(p, m)
+            val combined = if (s.isBlank()) left else joinEditBoundary(left, s)
+            return combined.trim()
         }
         /** Final 60s pre-cutoff tick starting at 8:00 (480s). */
         internal const val CLOUD_LIVE_CUTOFF_WARNING_MS = 60_000L
@@ -418,12 +442,14 @@ class DictationRuntime internal constructor(
         val accumulatedLiveText: String,
         val startedAtMs: Long,
         val disconnectEvent: LiveDisconnectEvent,
+        val suffixText: String = "",
     )
 
     @Volatile private var cloudLiveAttempt: CloudLiveAttempt? = null
     @Volatile private var pendingReconciliation: PendingLiveReconciliation? = null
     @Volatile private var pendingLiveContinue: PendingLiveContinue? = null
     @Volatile private var preservedLivePrefix: String = ""
+    @Volatile private var preservedLiveSuffix: String = ""
     private var reconciliationTimeoutRunnable: Runnable? = null
     /** Captured non-blank live text / raw STT text for the in-flight post-recording pipeline so
      *  a 3-second cancel hold during fallback or cleanup can preserve already-recognized text. */
@@ -435,7 +461,8 @@ class DictationRuntime internal constructor(
     internal fun hasPendingContinue(): Boolean = pendingLiveContinue != null
 
     private fun combinedLiveText(attempt: CloudLiveAttempt?): String? =
-        appendLiveSegments(preservedLivePrefix, attempt?.latestLiveText.orEmpty()).takeIf { it.isNotBlank() }
+        stitchLiveEditSegments(preservedLivePrefix, attempt?.latestLiveText.orEmpty(), preservedLiveSuffix)
+            .takeIf { it.isNotBlank() }
 
     /** Releases only the exact session captured by the caller; stale callbacks are harmless. */
     private fun releaseSessionLease(lease: DictationSessionLease?) {
@@ -908,6 +935,7 @@ class DictationRuntime internal constructor(
         }
         sessionLease = lease
         preservedLivePrefix = ""
+        preservedLiveSuffix = ""
         pendingLiveContinue = null
         startRecordingWithLease(lease, continuingPrefix = null)
     }
@@ -915,6 +943,7 @@ class DictationRuntime internal constructor(
     private fun startRecordingWithLease(
         lease: DictationSessionLease,
         continuingPrefix: String?,
+        continuingSuffix: String = "",
     ): Boolean {
         // #305: activity -- the idle window is over. Cancelled BEFORE warmUpTranscribersIfTrimmed
         // so a timer that already fired is the only release that can precede the reload.
@@ -925,6 +954,12 @@ class DictationRuntime internal constructor(
             if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
                 != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 toast("Grant audio permission in Rhema Cadence app"); return false
+            }
+
+            if (continuingPrefix != null) {
+                recordingEngine?.let { prev ->
+                    if (prev.isReaderTeardownPending()) prev.awaitTeardown(250L)
+                }
             }
 
             warmUpLocalCleanupModelIfNeeded()
@@ -939,7 +974,10 @@ class DictationRuntime internal constructor(
                 listener.onRecordingStartRequested()
             } else {
                 preservedLivePrefix = continuingPrefix
-                runCatching { listener.onCloudLiveContinued(continuingPrefix) }
+                preservedLiveSuffix = continuingSuffix
+                runCatching {
+                    listener.onCloudLiveContinued(stitchLiveEditSegments(continuingPrefix, "", continuingSuffix))
+                }
             }
             liveAttempt = beginCloudLiveAttempt(lease)
             val streamingActive = liveAttempt == null && streamingTranscriberSlot.get() != null
@@ -1111,7 +1149,7 @@ class DictationRuntime internal constructor(
                             if (normalized.isNotBlank()) {
                                 attempt.latestLiveText = normalized
                             }
-                            val combined = appendLiveSegments(preservedLivePrefix, normalized)
+                            val combined = stitchLiveEditSegments(preservedLivePrefix, normalized, preservedLiveSuffix)
                             listener.onCloudLiveInterim(
                                 combined,
                                 bufferOnly = attempt.config.postCleanupEnabled,
@@ -1248,7 +1286,13 @@ class DictationRuntime internal constructor(
         attempt: CloudLiveAttempt,
         failure: CloudLiveTerminal.Failure,
     ) {
-        val accumulated = appendLiveSegments(preservedLivePrefix, attempt.latestLiveText.orEmpty())
+        val accumulated = stitchLiveEditSegments(
+            preservedLivePrefix,
+            attempt.latestLiveText.orEmpty(),
+            preservedLiveSuffix,
+        )
+        preservedLivePrefix = ""
+        preservedLiveSuffix = ""
         attempt.claimed = true
         attempt.liveStreamEnded = true
         attempt.finalWait?.let(handler::removeCallbacks)
@@ -1530,8 +1574,11 @@ class DictationRuntime internal constructor(
             RecordingStateMachine.State.RECORDING -> {
                 val lease = sessionLease ?: return
                 val attempt = cloudLiveAttempt?.takeIf { it.lease === lease }
-                val liveText = appendLiveSegments(preservedLivePrefix, attempt?.latestLiveText.orEmpty())
-                    .takeIf { it.isNotBlank() } ?: return
+                val liveText = stitchLiveEditSegments(
+                    preservedLivePrefix,
+                    attempt?.latestLiveText.orEmpty(),
+                    preservedLiveSuffix,
+                ).takeIf { it.isNotBlank() } ?: return
                 cancelRecordingCountdown()
                 cancelCloudLiveAttempt(attempt)
                 inFlightLiveText = null
@@ -1577,11 +1624,140 @@ class DictationRuntime internal constructor(
         val pending = pendingLiveContinue ?: return
         if (sessionLease !== pending.lease) return
         pendingLiveContinue = null
-        val started = startRecordingWithLease(pending.lease, continuingPrefix = pending.accumulatedLiveText)
+        val started = startRecordingWithLease(
+            pending.lease,
+            continuingPrefix = pending.accumulatedLiveText,
+            continuingSuffix = pending.suffixText,
+        )
         if (!started) {
             // Preserve the user's captured text if mic failed to reopen.
             pendingLiveContinue = pending
+            preservedLivePrefix = ""
+            preservedLiveSuffix = ""
             runCatching { listener.onCloudLivePausedForContinue(pending.accumulatedLiveText, pending.disconnectEvent) }
+        }
+    }
+
+    /**
+     * Pauses an active Cloud Live streaming session cleanly for inline editing inside the Live
+     * Window without triggering a disconnect alert/error or releasing [sessionLease].
+     */
+    fun pauseLiveForEdit(): String? {
+        pendingLiveContinue?.let { return it.accumulatedLiveText }
+        if (stateMachine.current() != RecordingStateMachine.State.RECORDING) return null
+        val lease = sessionLease ?: return null
+        val attempt = cloudLiveAttempt?.takeIf { it.lease === lease }
+        val accumulated = stitchLiveEditSegments(
+            preservedLivePrefix,
+            attempt?.latestLiveText.orEmpty(),
+            preservedLiveSuffix,
+        )
+        if (accumulated.isBlank()) return null
+
+        if (attempt != null) {
+            attempt.claimed = true
+            attempt.liveStreamEnded = true
+            attempt.finalWait?.let(handler::removeCallbacks)
+            attempt.finalWait = null
+            attempt.sessionCutoff?.let(handler::removeCallbacks)
+            attempt.sessionCutoff = null
+            attempt.sessionCutoffWarning?.let(handler::removeCallbacks)
+            attempt.sessionCutoffWarning = null
+            if (cloudLiveAttempt === attempt) cloudLiveAttempt = null
+            runCatching { attempt.session?.close() }
+        }
+        cancelRecordingCountdown()
+        preservedLivePrefix = ""
+        preservedLiveSuffix = ""
+        haptics.reset()
+
+        val cfg = attempt?.config ?: liveConfigProvider()
+        val startedAt = attempt?.startedAtMs ?: nowMs()
+        val elapsedSec = ((nowMs() - startedAt).coerceAtLeast(0L) / 1000L).toInt()
+        pendingLiveContinue = PendingLiveContinue(
+            lease = lease,
+            config = cfg,
+            accumulatedLiveText = accumulated,
+            startedAtMs = startedAt,
+            disconnectEvent = LiveDisconnectEvent(
+                reason = "user_edit_pause",
+                elapsedSec = elapsedSec,
+                continuingLocalRecording = false,
+            ),
+            suffixText = "",
+        )
+        stateMachine.reset()
+        return accumulated
+    }
+
+    /** Persists edited transcript text back into the paused Live continuation state. */
+    fun commitEditedLiveText(editedText: String) {
+        val pending = pendingLiveContinue ?: return
+        if (sessionLease !== pending.lease) return
+        pendingLiveContinue = PendingLiveContinue(
+            lease = pending.lease,
+            config = pending.config,
+            accumulatedLiveText = editedText.trim(),
+            startedAtMs = pending.startedAtMs,
+            disconnectEvent = pending.disconnectEvent,
+            suffixText = "",
+        )
+    }
+
+    /**
+     * Resumes Live dictation at the cursor or selection range `[selectionStart, selectionEnd]`
+     * inside [fullText], stitching newly spoken words between prefix and suffix.
+     */
+    fun continueLiveAtCursor(fullText: String, selectionStart: Int, selectionEnd: Int) {
+        val pending = pendingLiveContinue ?: return
+        if (sessionLease !== pending.lease) return
+        val safeStart = minOf(selectionStart, selectionEnd).coerceIn(0, fullText.length)
+        val safeEnd = maxOf(selectionStart, selectionEnd).coerceIn(safeStart, fullText.length)
+        val prefix = fullText.substring(0, safeStart)
+        val suffix = fullText.substring(safeEnd)
+        val fallbackPending = PendingLiveContinue(
+            lease = pending.lease,
+            config = pending.config,
+            accumulatedLiveText = stitchLiveEditSegments(prefix, "", suffix),
+            startedAtMs = pending.startedAtMs,
+            disconnectEvent = pending.disconnectEvent,
+            suffixText = suffix,
+        )
+        pendingLiveContinue = null
+        val started = startRecordingWithLease(
+            pending.lease,
+            continuingPrefix = prefix,
+            continuingSuffix = suffix,
+        )
+        if (!started) {
+            pendingLiveContinue = fallbackPending
+            preservedLivePrefix = ""
+            preservedLiveSuffix = ""
+            runCatching {
+                listener.onCloudLivePausedForContinue(
+                    fallbackPending.accumulatedLiveText,
+                    fallbackPending.disconnectEvent,
+                )
+            }
+        }
+    }
+
+    /** Commits [editedText] and finishes through standard cleanup/raw insertion + History. */
+    fun finishContinueFromEdit(editedText: String) {
+        commitEditedLiveText(editedText)
+        val pending = pendingLiveContinue ?: return
+        if (sessionLease !== pending.lease) return
+        if (pending.accumulatedLiveText.isBlank()) {
+            pendingLiveContinue = null
+            pipelineTiming.abandon()
+            toast(NO_SPEECH_MESSAGE)
+            resetToIdle(pending.lease)
+            return
+        }
+        if (pending.config.postCleanupEnabled) {
+            finishContinueWithPostCleanup()
+        } else {
+            finishContinueInsertRaw()
         }
     }
 
@@ -1949,6 +2125,7 @@ class DictationRuntime internal constructor(
             pendingReconciliation = null
             pendingLiveContinue = null
             preservedLivePrefix = ""
+            preservedLiveSuffix = ""
             haptics.reset()
             cancelCloudLiveAttempt()
             inFlightLiveText = null
@@ -2013,9 +2190,11 @@ class DictationRuntime internal constructor(
         if (result.discarded) {
             result.pcmFile?.delete()
             result.compressedFile?.delete()
-            // In CONTINUE_LIVE_SESSION pause, the mic was intentionally stopped while keeping
-            // sessionLease alive for explicit Continue / Cleanup / Insert / Discard.
-            if (pendingLiveContinue?.lease === lease) {
+            // In CONTINUE_LIVE_SESSION pause (or a new resumed RecordingEngine on the same lease),
+            // the mic was intentionally paused/restarted while keeping sessionLease alive.
+            if (pendingLiveContinue?.lease === lease ||
+                (recordingEngine != null && recordingEngine !== engine && sessionLease === lease)
+            ) {
                 return
             }
             // The attempt is abandoned with it: nothing downstream will ever claim or time it out
@@ -2187,12 +2366,12 @@ class DictationRuntime internal constructor(
         if (attempt.claimed || cloudLiveAttempt !== attempt || sessionLease !== attempt.lease) return
         when (terminal) {
             is CloudLiveTerminal.Success -> {
-                val combinedText = appendLiveSegments(preservedLivePrefix, terminal.text)
-                val hasPreservedPrefix = preservedLivePrefix.isNotBlank()
+                val combinedText = stitchLiveEditSegments(preservedLivePrefix, terminal.text, preservedLiveSuffix)
+                val hasPreservedText = preservedLivePrefix.isNotBlank() || preservedLiveSuffix.isNotBlank()
                 // #306: a live final that is just the vocabulary list is not a transcript --
                 // take the batch fallback, which re-checks the audio and its own output.
                 if (combinedText.isBlank() ||
-                    (!hasPreservedPrefix && (result.pcmFile == null || isBelowMinimumDuration(result.pcmFile.length(), SAMPLE_RATE))) ||
+                    (!hasPreservedText && (result.pcmFile == null || isBelowMinimumDuration(result.pcmFile.length(), SAMPLE_RATE))) ||
                     VocabularyEchoGuard.isEcho(combinedText, vocabularyTerms())) {
                     startCloudLiveBatchFallback(attempt, CloudLiveOutcome.BATCH_SERVED_UNUSABLE_FINAL)
                     return
@@ -2251,8 +2430,11 @@ class DictationRuntime internal constructor(
         if (attempt.claimed || cloudLiveAttempt !== attempt || sessionLease !== attempt.lease) return
         attempt.claimed = true
         attempt.liveStreamEnded = true
-        val capturedLiveText = appendLiveSegments(preservedLivePrefix, attempt.latestLiveText.orEmpty())
-            .takeIf { it.isNotBlank() }
+        val capturedLiveText = stitchLiveEditSegments(
+            preservedLivePrefix,
+            attempt.latestLiveText.orEmpty(),
+            preservedLiveSuffix,
+        ).takeIf { it.isNotBlank() }
         if (capturedLiveText != null) inFlightLiveText = capturedLiveText
         attempt.finalWait?.let(handler::removeCallbacks)
         attempt.finalWait = null
@@ -2292,6 +2474,8 @@ class DictationRuntime internal constructor(
                     errorCode = failure?.errorCode,
                 )
                 val accumulated = usableLiveText.orEmpty()
+                preservedLivePrefix = ""
+                preservedLiveSuffix = ""
                 pendingLiveContinue = PendingLiveContinue(
                     lease = attempt.lease,
                     config = attempt.config,
@@ -2728,8 +2912,14 @@ class DictationRuntime internal constructor(
      * runtime method, so this one call site is the entire production integration; no per-host
      * duplication is possible.
      */
+    private fun resolveSpokenEmojisIfEnabled(text: String): String =
+        PostProcessor.prepareCleanupInput(text, CleanupModifiersPrefs.isSpokenEmojiCommandsEnabled(context))
+
     internal fun finalizeForDelivery(text: String): String =
-        SnippetRuntimeSupport.expand(context, ShortUtterancePunctuation.stripTrailingPeriod(text))
+        SnippetRuntimeSupport.expand(
+            context,
+            ShortUtterancePunctuation.stripTrailingPeriod(resolveSpokenEmojisIfEnabled(text)),
+        )
 
     private fun emitStageStatus(token: Int, statusText: String) {
         handler.post {
@@ -3314,11 +3504,14 @@ class DictationRuntime internal constructor(
             )
         }
 
-        if (!config.postCleanupEnabled || isJunkTranscript(text)) {
+        val spokenEmojiEnabled = CleanupModifiersPrefs.isSpokenEmojiCommandsEnabled(context)
+        val preparedText = PostProcessor.prepareCleanupInput(text, spokenEmojiEnabled)
+
+        if (!config.postCleanupEnabled || isJunkTranscript(preparedText)) {
             handler.post {
                 if (!guard.isCurrent(token)) return@post
                 listener.deliverText(
-                    finalizeForDelivery(text),
+                    finalizeForDelivery(preparedText),
                     rawText = null,
                     paidFallbackGroup = null,
                     cleanupError = null,
@@ -3335,7 +3528,7 @@ class DictationRuntime internal constructor(
             handler.post {
                 if (!guard.isCurrent(token)) return@post
                 listener.deliverText(
-                    finalizeForDelivery(text),
+                    finalizeForDelivery(preparedText),
                     rawText = null,
                     paidFallbackGroup = null,
                     cleanupError = null,
@@ -3368,14 +3561,14 @@ class DictationRuntime internal constructor(
         val prompt = PostProcessor.withCleanupModifiers(
             prompt = PostProcessor.withKeepLanguage(PostProcessor.interpolateVocabulary(rawPrompt, vocabulary)),
             smartSelfCorrection = CleanupModifiersPrefs.isSmartSelfCorrectionEnabled(context),
-            spokenEmojiCommands = CleanupModifiersPrefs.isSpokenEmojiCommandsEnabled(context),
+            spokenEmojiCommands = spokenEmojiEnabled,
         )
 
         if (!guard.isCurrent(token)) return
         handler.post { if (guard.isCurrent(token)) listener.onCleaningStarted() }
         Log.i(TAG, "Live post-cleanup via ${liveWaterfall.steps.size} locked slot(s): ${liveWaterfall.steps.map { it.group }}")
         CleanupWaterfallExecutor.execute(
-            text = text,
+            text = preparedText,
             prompt = prompt,
             waterfall = liveWaterfall,
             cursor = livePostCleanupCursor,
@@ -3461,18 +3654,20 @@ class DictationRuntime internal constructor(
             return
         }
         inFlightRawSttText = text
+        val spokenEmojiEnabled = CleanupModifiersPrefs.isSpokenEmojiCommandsEnabled(context)
+        val preparedText = PostProcessor.prepareCleanupInput(text, spokenEmojiEnabled)
 
         // M3b (#192): a non-blank but content-free transcript (ASR hallucinations like "." or
         // "you"-length fragments) has nothing for a cleanup model to improve -- running the full
         // waterfall (network calls, LOCAL_LLM load) on it is pure waste. Inject it raw directly.
-        if (isJunkTranscript(text)) {
-            Log.i(TAG, "Transcript is content-free (len=${text.length}); skipping cleanup waterfall")
+        if (isJunkTranscript(preparedText)) {
+            Log.i(TAG, "Transcript is content-free (len=${preparedText.length}); skipping cleanup waterfall")
             handler.post {
                 if (!guard.isCurrent(token)) return@post
                 deliverBatchResultOrHoldForReconciliation(
                     token = token,
                     lease = lease,
-                    text = finalizeForDelivery(text),
+                    text = finalizeForDelivery(preparedText),
                     rawText = null,
                     paidFallbackGroup = null,
                     cleanupError = null,
@@ -3602,7 +3797,7 @@ class DictationRuntime internal constructor(
                 PostProcessor.withCleanupModifiers(
                     prompt = basePrompt,
                     smartSelfCorrection = CleanupModifiersPrefs.isSmartSelfCorrectionEnabled(context),
-                    spokenEmojiCommands = CleanupModifiersPrefs.isSpokenEmojiCommandsEnabled(context),
+                    spokenEmojiCommands = spokenEmojiEnabled,
                 )
             } else {
                 basePrompt
@@ -3613,7 +3808,7 @@ class DictationRuntime internal constructor(
             Log.i(TAG, "Cleanup via ProviderChain entries=${providerChain.entries.map { it.kind }} executableSteps=${cleanupWaterfall.steps.map { it.group }}")
             releaseBatchTranscriberBeforeLocalCleanupIfNeeded(cleanupWaterfall) {
                 PostProcessor.processProviderChain(
-                    text = text,
+                    text = preparedText,
                     prompt = prompt,
                     chain = providerChain,
                     cursor = activeCursor,

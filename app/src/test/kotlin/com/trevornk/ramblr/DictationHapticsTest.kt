@@ -177,12 +177,12 @@ class DictationHapticsTest {
         haptics(on.copy(enabled = false), out).onLiveDisconnected()
         assertEquals(1, out.played.size)
         val wave = out.played.single() as HapticEffectSpec.Waveform
-        assertEquals(listOf(0L, 35L, 65L, 35L), wave.timings)
-        assertEquals(listOf(0, 190, 0, 190), wave.amplitudes)
+        assertEquals(listOf(0L, 55L, 70L, 55L), wave.timings)
+        assertEquals(listOf(0, 175, 0, 175), wave.amplitudes)
 
         val noAmp = FakeOutput(caps = HapticCapabilities(hasAmplitudeControl = false, predefinedSupported = true))
         haptics(on, noAmp).onLiveDisconnected()
-        assertEquals(HapticEffectSpec.Waveform(listOf(0L, 35L, 65L, 35L), null), noAmp.played.single())
+        assertEquals(HapticEffectSpec.Waveform(listOf(0L, 55L, 70L, 55L), null), noAmp.played.single())
 
         val muted = FakeOutput(caps = null)
         haptics(on, muted).onLiveDisconnected()

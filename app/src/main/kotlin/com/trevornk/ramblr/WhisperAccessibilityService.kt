@@ -20,6 +20,7 @@ import android.net.Network
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.util.Log
 import android.view.Display
 import android.view.Gravity
@@ -29,10 +30,13 @@ import android.view.ViewConfiguration
 import android.view.ViewOutlineProvider
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -1065,10 +1069,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
     internal var liveWindowCloseButton: TextView? = null
     internal var liveWindowBodyScroll: BoundedScrollView? = null
     internal var liveTranscriptTextView: TextView? = null
+    internal var liveTranscriptEditText: EditText? = null
     internal var liveWindowFooter: LinearLayout? = null
     internal var liveWindowInlineStatusText: TextView? = null
     private var liveWindowActionsRow: LinearLayout? = null
     internal var liveWindowPrimaryActionButton: TextView? = null
+    internal var liveWindowEditActionButton: TextView? = null
     internal var liveWindowSecondaryActionButton: TextView? = null
     internal var liveWindowTertiaryActionButton: TextView? = null
     internal var liveWindowQuaternaryActionButton: TextView? = null
@@ -1860,6 +1866,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     // must be measured from where the animation is heading, not the peeked x.
                     val restoreTargetX = if (isPeeked) prePeekX else null
                     if (isPeeked) {
+                        UiTapHaptics.tick(v)
                         restoreFromPeek()
                         if (!SingleTapRestoreToggle.isEnabled(this)) {
                             consumedByPeekRestore = true
@@ -2673,6 +2680,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         stopCapsuleTimer()
         stopLiveWindowTimer()
         cancelLiveWindowScroll()
+        onEditFocusRequested(false)
         liveWindowState.onReset()
         liveWindowTemporarilyHidden = false
         capsuleExpanded = false
@@ -2731,10 +2739,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
         liveWindowCloseButton = null
         liveWindowBodyScroll = null
         liveTranscriptTextView = null
+        liveTranscriptEditText = null
         liveWindowFooter = null
         liveWindowInlineStatusText = null
         liveWindowActionsRow = null
         liveWindowPrimaryActionButton = null
+        liveWindowEditActionButton = null
         liveWindowSecondaryActionButton = null
         liveWindowTertiaryActionButton = null
         liveWindowQuaternaryActionButton = null
@@ -2928,6 +2938,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun detachLiveWindowOnly() {
+        onEditFocusRequested(false)
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         liveWindowView?.let {
             try { wm.removeView(it) } catch (_: IllegalArgumentException) {}
@@ -2939,6 +2950,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
         liveWindowParams = null
         liveReopenChipParams = null
+        liveTranscriptEditText = null
+        liveWindowEditActionButton = null
     }
 
     private fun liveWindowWidthPx(): Int {
@@ -3035,6 +3048,38 @@ open class WhisperAccessibilityService : AccessibilityService() {
             setTextColor(overlayPopupSecondaryText())
             setPadding((12 * dp).toInt(), (4 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
         }
+        val editText = EditText(this).apply {
+            textSize = 14f
+            setLineSpacing(2 * dp, 1f)
+            setTextColor(overlayPopupPrimaryText())
+            setHintTextColor(overlayPopupSecondaryText())
+            hint = "Edit transcript\u2026"
+            background = null
+            gravity = Gravity.TOP or Gravity.START
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            isSingleLine = false
+            setPadding((12 * dp).toInt(), (4 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
+            visibility = View.GONE
+        }
+        val bodyContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                transcriptView,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+            addView(
+                editText,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
         val bodyScroll = BoundedScrollView(
             this,
             maxWidthPx = liveWindowWidthPx(),
@@ -3042,7 +3087,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         ).apply {
             isVerticalScrollBarEnabled = true
             addView(
-                transcriptView,
+                bodyContent,
                 FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -3061,7 +3106,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
             textSize = 12f
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding((10 * dp).toInt(), (6 * dp).toInt(), (10 * dp).toInt(), (6 * dp).toInt())
+            setPadding((8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
             isClickable = true
             isFocusable = true
             visibility = View.GONE
@@ -3069,18 +3114,19 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
-                marginEnd = (6 * dp).toInt()
+                marginEnd = (5 * dp).toInt()
             }
             setOnClickListener {
                 UiTapHaptics.tick(this)
                 onLiveWindowPrimaryActionTapped()
             }
         }
-        val tertiaryAction = TextView(this).apply {
+        val editAction = TextView(this).apply {
+            text = "Edit"
             textSize = 12f
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding((10 * dp).toInt(), (6 * dp).toInt(), (10 * dp).toInt(), (6 * dp).toInt())
+            setPadding((8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
             isClickable = true
             isFocusable = true
             visibility = View.GONE
@@ -3088,7 +3134,26 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
-                marginEnd = (6 * dp).toInt()
+                marginEnd = (5 * dp).toInt()
+            }
+            setOnClickListener {
+                UiTapHaptics.tick(this)
+                onLiveWindowEditTapped()
+            }
+        }
+        val tertiaryAction = TextView(this).apply {
+            textSize = 12f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding((8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                marginEnd = (5 * dp).toInt()
             }
             setOnClickListener {
                 UiTapHaptics.tick(this)
@@ -3099,7 +3164,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
             textSize = 12f
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding((10 * dp).toInt(), (6 * dp).toInt(), (10 * dp).toInt(), (6 * dp).toInt())
+            setPadding((8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
             isClickable = true
             isFocusable = true
             visibility = View.GONE
@@ -3107,7 +3172,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
-                marginEnd = (6 * dp).toInt()
+                marginEnd = (5 * dp).toInt()
             }
             setOnClickListener {
                 UiTapHaptics.tick(this)
@@ -3118,7 +3183,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
             textSize = 12f
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
             gravity = Gravity.CENTER
-            setPadding((10 * dp).toInt(), (6 * dp).toInt(), (10 * dp).toInt(), (6 * dp).toInt())
+            setPadding((8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt())
             isClickable = true
             isFocusable = true
             visibility = View.GONE
@@ -3132,14 +3197,26 @@ open class WhisperAccessibilityService : AccessibilityService() {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
             setPadding((12 * dp).toInt(), (4 * dp).toInt(), (12 * dp).toInt(), (10 * dp).toInt())
             addView(primaryAction)
+            addView(editAction)
             addView(tertiaryAction)
             addView(quaternaryAction)
             addView(secondaryAction)
         }
+        val actionsScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = true
+            addView(
+                actionsRow,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
         val footer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(inlineStatus)
-            addView(actionsRow)
+            addView(actionsScroll)
         }
 
         liveWindowStatusDot = statusDot
@@ -3148,10 +3225,12 @@ open class WhisperAccessibilityService : AccessibilityService() {
         liveWindowCloseButton = closeBtn
         liveWindowBodyScroll = bodyScroll
         liveTranscriptTextView = transcriptView
+        liveTranscriptEditText = editText
         liveWindowFooter = footer
         liveWindowInlineStatusText = inlineStatus
         liveWindowActionsRow = actionsRow
         liveWindowPrimaryActionButton = primaryAction
+        liveWindowEditActionButton = editAction
         liveWindowTertiaryActionButton = tertiaryAction
         liveWindowQuaternaryActionButton = quaternaryAction
         liveWindowSecondaryActionButton = secondaryAction
@@ -3234,6 +3313,8 @@ open class WhisperAccessibilityService : AccessibilityService() {
         liveTranscriptTextView?.setTextColor(
             if (liveWindowState.transcript.isBlank()) overlayPopupSecondaryText() else overlayPopupPrimaryText()
         )
+        liveTranscriptEditText?.setTextColor(overlayPopupPrimaryText())
+        liveTranscriptEditText?.setHintTextColor(overlayPopupSecondaryText())
         styleLiveReopenChip()
         styleLiveWindowActionButtons()
     }
@@ -3276,11 +3357,32 @@ open class WhisperAccessibilityService : AccessibilityService() {
 
     private fun styleLiveWindowActionButtons() {
         val primaryBtn = liveWindowPrimaryActionButton ?: return
+        val editBtn = liveWindowEditActionButton
         val tertiaryBtn = liveWindowTertiaryActionButton
         val quaternaryBtn = liveWindowQuaternaryActionButton
         val secondaryBtn = liveWindowSecondaryActionButton ?: return
+        editBtn?.visibility = View.GONE
         tertiaryBtn?.visibility = View.GONE
         quaternaryBtn?.visibility = View.GONE
+        if (liveWindowState.isEditing) {
+            primaryBtn.visibility = View.VISIBLE
+            primaryBtn.text = "Speak here"
+            styleSwapChipButton(primaryBtn, primary = true)
+            if (tertiaryBtn != null) {
+                tertiaryBtn.visibility = View.VISIBLE
+                tertiaryBtn.text = "Done"
+                styleSwapChipButton(tertiaryBtn, primary = false)
+            }
+            if (quaternaryBtn != null) {
+                quaternaryBtn.visibility = View.VISIBLE
+                quaternaryBtn.text = "Insert"
+                styleSwapChipButton(quaternaryBtn, primary = false)
+            }
+            secondaryBtn.visibility = View.VISIBLE
+            secondaryBtn.text = "Discard"
+            styleSwapChipButton(secondaryBtn, primary = false)
+            return
+        }
         when (liveWindowState.phase) {
             LiveWindowPhase.LIVE_CONNECTING -> {
                 primaryBtn.visibility = View.GONE
@@ -3293,6 +3395,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     primaryBtn.visibility = View.VISIBLE
                     primaryBtn.text = "Insert"
                     styleSwapChipButton(primaryBtn, primary = true)
+                    if (editBtn != null) {
+                        editBtn.visibility = View.VISIBLE
+                        editBtn.text = "Edit"
+                        styleSwapChipButton(editBtn, primary = false)
+                    }
                 } else {
                     primaryBtn.visibility = View.GONE
                 }
@@ -3316,6 +3423,11 @@ open class WhisperAccessibilityService : AccessibilityService() {
                 primaryBtn.visibility = View.VISIBLE
                 primaryBtn.text = "Continue"
                 styleSwapChipButton(primaryBtn, primary = true)
+                if (liveWindowState.transcript.isNotBlank() && editBtn != null) {
+                    editBtn.visibility = View.VISIBLE
+                    editBtn.text = "Edit"
+                    styleSwapChipButton(editBtn, primary = false)
+                }
                 if (liveWindowState.postCleanupEnabled && liveWindowState.transcript.isNotBlank() && tertiaryBtn != null) {
                     tertiaryBtn.visibility = View.VISIBLE
                     tertiaryBtn.text = "Cleanup"
@@ -3554,12 +3666,96 @@ open class WhisperAccessibilityService : AccessibilityService() {
         renderLiveWindowUi()
     }
 
+    /**
+     * Toggles ONLY [WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE] on the Live window so inline
+     * editing can receive soft-keyboard input, preserving BLASTSyncEngine visibility invariants.
+     */
+    internal fun onEditFocusRequested(focusable: Boolean) {
+        val win = liveWindowView ?: return
+        val winParams = liveWindowParams ?: return
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        val edit = liveTranscriptEditText
+
+        if (focusable) {
+            val newFlags = winParams.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            val newSoftInput = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+            if (newFlags != winParams.flags || winParams.softInputMode != newSoftInput) {
+                winParams.flags = newFlags
+                winParams.softInputMode = newSoftInput
+                try {
+                    wm.updateViewLayout(win, winParams)
+                } catch (_: IllegalArgumentException) {
+                }
+            }
+            edit?.let { ed ->
+                ed.requestFocus()
+                imm?.showSoftInput(ed, InputMethodManager.SHOW_IMPLICIT)
+                ed.post {
+                    if (liveWindowState.isEditing && liveWindowView === win) {
+                        ed.requestFocus()
+                        imm?.showSoftInput(ed, InputMethodManager.SHOW_IMPLICIT)
+                    }
+                }
+            }
+        } else {
+            edit?.let { ed ->
+                imm?.hideSoftInputFromWindow(ed.windowToken, 0)
+                ed.clearFocus()
+            }
+            val newFlags = winParams.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            if (newFlags != winParams.flags) {
+                winParams.flags = newFlags
+                try {
+                    wm.updateViewLayout(win, winParams)
+                } catch (_: IllegalArgumentException) {
+                }
+            }
+        }
+    }
+
+    private fun onLiveWindowEditTapped() {
+        if (!liveWindowState.canEnterEditMode()) return
+        val allowed = feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff())
+        val initialText = if (runtime.currentState() == RecordingStateMachine.State.RECORDING) {
+            val paused = runtime.pauseLiveForEdit() ?: liveWindowState.transcript
+            stopLiveWindowTimer()
+            clearRecordingCountdownUi()
+            liveConnectedUi = false
+            liveDisconnectedUi = false
+            collapseRecordingCapsuleIfExpanded()
+            stopPulse()
+            bubbleSoundwave?.setActive(false)
+            refreshBubbleHaloMode()
+            setAppearance(COLOR_IDLE)
+            paused
+        } else {
+            liveWindowState.transcript
+        }
+        liveWindowState.onEnterEditMode(allowed, initialText = initialText)
+        val textForEdit = liveWindowState.transcript
+        liveTranscriptEditText?.let { ed ->
+            ed.setText(textForEdit)
+            ed.setSelection(textForEdit.length)
+        }
+        renderLiveWindowUi()
+        onEditFocusRequested(true)
+    }
+
     private fun onLiveWindowCloseTapped() {
         if (liveWindowState.isReconciliationActive()) {
             runtime.dismissReconciliation()
             return
         }
-        liveWindowState.onCollapseTapped(feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()))
+        val allowed = feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff())
+        if (liveWindowState.isEditing) {
+            val edited = liveTranscriptEditText?.text?.toString() ?: liveWindowState.transcript
+            onEditFocusRequested(false)
+            runtime.commitEditedLiveText(edited)
+            liveWindowState.onCommitEditDone(edited, allowed)
+        }
+        liveWindowState.onCollapseTapped(allowed)
         renderLiveWindowUi()
     }
 
@@ -3570,6 +3766,16 @@ open class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun onLiveWindowPrimaryActionTapped() {
+        if (liveWindowState.isEditing) {
+            val editText = liveTranscriptEditText
+            val fullText = editText?.text?.toString() ?: liveWindowState.transcript
+            val selStart = editText?.selectionStart?.takeIf { it >= 0 } ?: fullText.length
+            val selEnd = editText?.selectionEnd?.takeIf { it >= 0 } ?: selStart
+            onEditFocusRequested(false)
+            liveWindowState.onExitEditMode()
+            runtime.continueLiveAtCursor(fullText, selStart, selEnd)
+            return
+        }
         when (liveWindowState.phase) {
             LiveWindowPhase.LIVE_STREAMING,
             LiveWindowPhase.LIVE_DISCONNECTED_RECORDING -> runtime.finishWithCapturedLiveText()
@@ -3581,18 +3787,41 @@ open class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun onLiveWindowTertiaryActionTapped() {
+        if (liveWindowState.isEditing) {
+            val edited = liveTranscriptEditText?.text?.toString() ?: liveWindowState.transcript
+            onEditFocusRequested(false)
+            runtime.commitEditedLiveText(edited)
+            liveWindowState.onCommitEditDone(edited, feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()))
+            renderLiveWindowUi()
+            return
+        }
         if (liveWindowState.phase == LiveWindowPhase.LIVE_PAUSED_CONTINUE) {
             runtime.finishContinueWithPostCleanup()
         }
     }
 
     private fun onLiveWindowQuaternaryActionTapped() {
+        if (liveWindowState.isEditing) {
+            val edited = liveTranscriptEditText?.text?.toString() ?: liveWindowState.transcript
+            onEditFocusRequested(false)
+            runtime.commitEditedLiveText(edited)
+            liveWindowState.onCommitEditDone(edited, feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()))
+            renderLiveWindowUi()
+            handler.post { runtime.finishContinueFromEdit(edited) }
+            return
+        }
         if (liveWindowState.phase == LiveWindowPhase.LIVE_PAUSED_CONTINUE) {
             runtime.finishContinueInsertRaw()
         }
     }
 
     private fun onLiveWindowSecondaryActionTapped() {
+        if (liveWindowState.isEditing) {
+            onEditFocusRequested(false)
+            liveWindowState.onExitEditMode()
+            runtime.discardContinueSession()
+            return
+        }
         when (liveWindowState.phase) {
             LiveWindowPhase.LIVE_CONNECTING,
             LiveWindowPhase.LIVE_STREAMING,
@@ -3621,6 +3850,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
         }
         stopLiveWindowTimer()
         cancelLiveWindowScroll()
+        onEditFocusRequested(false)
         liveWindowTemporarilyHidden = false
         liveWindowStartedAtMs = 0L
         liveWindowState.onReset()
@@ -3765,7 +3995,14 @@ open class WhisperAccessibilityService : AccessibilityService() {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
 
         val allowed = feedbackBubbleAllowed(keyguardLocked, screenOff) && !liveWindowTemporarilyHidden
-        val mode = liveWindowState.effectiveMode(allowed)
+        var mode = liveWindowState.effectiveMode(allowed)
+        if (mode != LiveWindowDisplayMode.EXPANDED && liveWindowState.isEditing) {
+            val edited = liveTranscriptEditText?.text?.toString() ?: liveWindowState.transcript
+            runtimeInstance?.commitEditedLiveText(edited)
+            liveWindowState.onCommitEditDone(edited, allowed)
+            onEditFocusRequested(false)
+            mode = liveWindowState.effectiveMode(allowed)
+        }
         val dotColor = when (liveWindowState.phase) {
             LiveWindowPhase.LIVE_CONNECTING -> COLOR_GLYPH_DEFAULT
             LiveWindowPhase.LIVE_DISCONNECTED_RECORDING,
@@ -3784,16 +4021,21 @@ open class WhisperAccessibilityService : AccessibilityService() {
         liveWindowBodyScroll?.visibility = if (showBody) View.VISIBLE else View.GONE
         liveWindowFooter?.visibility = if (showBody) View.VISIBLE else View.GONE
         if (showBody) {
+            val editing = liveWindowState.isEditing
+            liveTranscriptTextView?.visibility = if (editing) View.GONE else View.VISIBLE
+            liveTranscriptEditText?.visibility = if (editing) View.VISIBLE else View.GONE
             val transcript = liveWindowState.transcript
-            val placeholder = when (liveWindowState.phase) {
-                LiveWindowPhase.LIVE_CONNECTING -> "Connecting\u2026"
-                LiveWindowPhase.LIVE_PAUSED_CONTINUE -> "Live paused"
-                else -> "Listening\u2026"
+            if (!editing) {
+                val placeholder = when (liveWindowState.phase) {
+                    LiveWindowPhase.LIVE_CONNECTING -> "Connecting\u2026"
+                    LiveWindowPhase.LIVE_PAUSED_CONTINUE -> "Live paused"
+                    else -> "Listening\u2026"
+                }
+                liveTranscriptTextView?.text = if (transcript.isBlank()) placeholder else transcript
+                liveTranscriptTextView?.setTextColor(
+                    if (transcript.isBlank()) overlayPopupSecondaryText() else overlayPopupPrimaryText()
+                )
             }
-            liveTranscriptTextView?.text = if (transcript.isBlank()) placeholder else transcript
-            liveTranscriptTextView?.setTextColor(
-                if (transcript.isBlank()) overlayPopupSecondaryText() else overlayPopupPrimaryText()
-            )
             val status = liveWindowState.inlineStatusText
             if (!status.isNullOrBlank()) {
                 liveWindowInlineStatusText?.text = status
@@ -4635,7 +4877,10 @@ open class WhisperAccessibilityService : AccessibilityService() {
             setPadding((10 * dp).toInt(), (6 * dp).toInt(), (10 * dp).toInt(), (6 * dp).toInt())
             isClickable = true
             isFocusable = true
-            setOnClickListener { dismissStyleMenu() }
+            setOnClickListener {
+                UiTapHaptics.tick(this)
+                dismissStyleMenu()
+            }
         })
     }
 
@@ -4832,6 +5077,7 @@ open class WhisperAccessibilityService : AccessibilityService() {
             icon = null,
             title = getString(R.string.ring_translate_menu_title),
             subtitle = getString(if (busy) R.string.ring_translate_menu_busy else R.string.ring_translate_menu_subtitle),
+            clickable = false,
         ) { /* section header: inert */ })
 
         // (code or null for Original, label, content description)
@@ -4872,7 +5118,10 @@ open class WhisperAccessibilityService : AccessibilityService() {
                     isEnabled = !busy
                     alpha = if (busy) 0.4f else 1f
                     isClickable = !busy
-                    if (!busy) setOnClickListener { onStyleMenuTranslateTapped(code) }
+                    if (!busy) setOnClickListener {
+                        UiTapHaptics.tick(this)
+                        onStyleMenuTranslateTapped(code)
+                    }
                 }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                     marginStart = (3 * dp).toInt(); marginEnd = (3 * dp).toInt()
                 })
@@ -4989,7 +5238,10 @@ open class WhisperAccessibilityService : AccessibilityService() {
             // all so they neither look nor act tappable.
             if (clickable) {
                 isClickable = true
-                setOnClickListener { onClick() }
+                setOnClickListener {
+                    UiTapHaptics.tick(this)
+                    onClick()
+                }
             }
         }
         if (icon != null) {
@@ -5199,6 +5451,15 @@ open class WhisperAccessibilityService : AccessibilityService() {
         // keyboard, never record for a password/PIN field; stop/cancel stay reachable.
         if (PasswordFieldGuard.shouldRefuseRecordingStart(runtime.currentState(), focusedInputIsPassword())) {
             toast(PASSWORD_FIELD_REFUSAL_MESSAGE)
+            return
+        }
+        if (liveWindowState.isEditing) {
+            val edited = liveTranscriptEditText?.text?.toString() ?: liveWindowState.transcript
+            onEditFocusRequested(false)
+            runtime.commitEditedLiveText(edited)
+            liveWindowState.onCommitEditDone(edited, feedbackBubbleAllowed(isKeyguardLocked(), isScreenOff()))
+            renderLiveWindowUi()
+            handler.post { runtime.finishContinueFromEdit(edited) }
             return
         }
         runtime.onTap()

@@ -56,6 +56,14 @@ class LiveWindowStateMachine {
         private set
     var postCleanupEnabled: Boolean = false
         private set
+    var isEditing: Boolean = false
+        private set
+
+    fun canEnterEditMode(): Boolean =
+        sessionActive &&
+            !isEditing &&
+            (phase == LiveWindowPhase.LIVE_STREAMING || phase == LiveWindowPhase.LIVE_PAUSED_CONTINUE) &&
+            transcript.isNotBlank()
 
     fun effectiveMode(overlayAllowed: Boolean): LiveWindowDisplayMode =
         if (!overlayAllowed || !sessionActive) LiveWindowDisplayMode.HIDDEN else rawMode
@@ -103,6 +111,7 @@ class LiveWindowStateMachine {
         queuedUseBatch = false
         this.recoveryMode = recoveryMode
         this.postCleanupEnabled = postCleanupEnabled
+        isEditing = false
         if (!windowEnabled) {
             sessionActive = false
             phase = LiveWindowPhase.INACTIVE
@@ -125,6 +134,7 @@ class LiveWindowStateMachine {
     ): LiveWindowDisplayMode {
         this.recoveryMode = recoveryMode
         this.postCleanupEnabled = postCleanupEnabled
+        isEditing = false
         val transitioningFromConnecting = sessionActive && phase == LiveWindowPhase.LIVE_CONNECTING
         if (!transitioningFromConnecting) {
             transcript = ""
@@ -164,6 +174,7 @@ class LiveWindowStateMachine {
         queuedUseBatch = false
         this.recoveryMode = LiveRecoveryMode.CONTINUE_LIVE_SESSION
         this.postCleanupEnabled = postCleanupEnabled
+        isEditing = false
         if (!windowEnabled) {
             sessionActive = false
             phase = LiveWindowPhase.INACTIVE
@@ -192,6 +203,7 @@ class LiveWindowStateMachine {
         queuedUseBatch = false
         this.recoveryMode = LiveRecoveryMode.CONTINUE_LIVE_SESSION
         this.postCleanupEnabled = postCleanupEnabled
+        isEditing = false
         inlineStatusText = inlineBanner
         if (!windowEnabled) {
             sessionActive = false
@@ -231,9 +243,39 @@ class LiveWindowStateMachine {
         transcript = trimmed
     }
 
+    /** Enters paused inline edit mode inside the expanded Live Window. */
+    fun onEnterEditMode(
+        overlayAllowed: Boolean,
+        initialText: String = transcript,
+    ): LiveWindowDisplayMode {
+        transcript = initialText.trim()
+        isEditing = true
+        phase = LiveWindowPhase.LIVE_PAUSED_CONTINUE
+        recoveryMode = LiveRecoveryMode.CONTINUE_LIVE_SESSION
+        rawMode = LiveWindowDisplayMode.EXPANDED
+        remainingCountdownMs = null
+        cutoffRemainingSec = null
+        inlineStatusText = "Tap text to edit or place cursor"
+        return effectiveMode(overlayAllowed)
+    }
+
+    /** Commits inline edit text and returns to the normal paused Live state. */
+    fun onCommitEditDone(editedText: String, overlayAllowed: Boolean): LiveWindowDisplayMode {
+        isEditing = false
+        transcript = editedText.trim()
+        phase = LiveWindowPhase.LIVE_PAUSED_CONTINUE
+        inlineStatusText = "Live paused \u00b7 tap Continue or Insert"
+        return effectiveMode(overlayAllowed)
+    }
+
+    fun onExitEditMode() {
+        isEditing = false
+    }
+
     /** Collapses without stopping recording (`EXPANDED` / `COUNTDOWN_PEEK` -> `COLLAPSED`). */
     fun onCollapseTapped(overlayAllowed: Boolean): LiveWindowDisplayMode {
         if (!sessionActive) return LiveWindowDisplayMode.HIDDEN
+        isEditing = false
         if (rawMode == LiveWindowDisplayMode.EXPANDED || rawMode == LiveWindowDisplayMode.COUNTDOWN_PEEK) {
             rawMode = LiveWindowDisplayMode.COLLAPSED
         }
@@ -298,6 +340,7 @@ class LiveWindowStateMachine {
         queuedUseBatch = false
         remainingCountdownMs = null
         cutoffRemainingSec = null
+        isEditing = false
         inlineStatusText = if (batchPending) {
             "Live stopped \u00b7 preparing Batch"
         } else {
@@ -345,9 +388,11 @@ class LiveWindowStateMachine {
         queuedUseBatch = false
         recoveryMode = LiveRecoveryMode.PARALLEL_BATCH_FALLBACK
         postCleanupEnabled = false
+        isEditing = false
     }
 
     fun formatHeaderStatus(elapsedSec: Int): String {
+        if (isEditing) return "LIVE \u00b7 Editing"
         val safeSec = elapsedSec.coerceAtLeast(0)
         return when (phase) {
             LiveWindowPhase.LIVE_CONNECTING -> "LIVE \u00b7 Connecting\u2026"

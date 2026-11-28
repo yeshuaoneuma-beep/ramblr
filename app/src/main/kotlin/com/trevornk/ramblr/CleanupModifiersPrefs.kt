@@ -36,6 +36,12 @@ object CleanupModifiersPrefs {
     fun isSpokenEmojiCommandsEnabled(context: Context): Boolean =
         isSpokenEmojiCommandsEnabled(prefs(context))
 
+    fun isSpokenEmojiEnabled(prefs: SharedPreferences): Boolean =
+        isSpokenEmojiCommandsEnabled(prefs)
+
+    fun isSpokenEmojiEnabled(context: Context): Boolean =
+        isSpokenEmojiCommandsEnabled(context)
+
     fun setSpokenEmojiCommandsEnabled(prefs: SharedPreferences, enabled: Boolean) {
         prefs.edit().putBoolean(KEY_SPOKEN_EMOJI_COMMANDS, enabled).apply()
     }

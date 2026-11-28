@@ -107,7 +107,7 @@ android {
         applicationId = "com.yeshua.rhemacadence"
         minSdk = 30
         targetSdk = 36
-        versionCode = 60
+        versionCode = 61
         versionName = "1.0.57"
 
         buildConfigField("String", "OMNIROUTE_BASE_URL", "\"$omniRouteBaseUrl\"")

@@ -135,6 +135,7 @@ class SettingsRegroupInventoryTest {
             "Ask me (Keep Live or Use Batch)",
             "Keep Live text only",
             "Off", "While recording", "Auto (until inserted)", "Custom timer",
+            "Light", "Medium", "Strong",
         )
 
         val BEFORE = listOf(
@@ -173,6 +174,7 @@ class SettingsRegroupInventoryTest {
             "Compact recording capsule", "Long-press cancels and undoes", "Idle long-press quick menu",
             "Auto-stop after silence", "Silence threshold", "Show the icon",
             "Vibrate on app taps & selections",
+            "Light", "Medium", "Strong",
             "Off", "While recording", "Auto (until inserted)", "Custom timer",
             // Overlay Appearance (Size and colors)
             "Icon size", "Border color", "Fill color (idle only)", "Microphone icon color",

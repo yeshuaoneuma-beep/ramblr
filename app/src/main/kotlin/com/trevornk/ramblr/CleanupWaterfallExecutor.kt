@@ -948,19 +948,20 @@ object CleanupWaterfallExecutor {
         skipSafetyGuard: Boolean = false,
     ): CleanupStepOutcome {
         if (outcome !is CleanupStepOutcome.Success || step.group == CleanupStepGroup.LOCAL_LLM) return outcome
+        val repairedText = CloudCleanupFidelityGuard.restoreCollapsedEmojiRuns(rawText, outcome.text)
         if (fidelityGuard) {
-            val fullVerdict = CloudCleanupFidelityGuard.check(rawText, outcome.text)
+            val fullVerdict = CloudCleanupFidelityGuard.check(rawText, repairedText)
             if (fullVerdict is FidelityVerdict.Rejected) {
                 return CleanupStepOutcome.Rejected(fullVerdict.reason)
             }
         }
         if (!skipSafetyGuard) {
-            val safetyVerdict = CloudCleanupFidelityGuard.checkSafety(rawText, outcome.text, vocabularyTerms)
+            val safetyVerdict = CloudCleanupFidelityGuard.checkSafety(rawText, repairedText, vocabularyTerms)
             if (safetyVerdict is FidelityVerdict.Rejected) {
                 return CleanupStepOutcome.Rejected(safetyVerdict.reason)
             }
         }
-        return outcome
+        return if (repairedText == outcome.text) outcome else outcome.copy(text = repairedText)
     }
 
     /**

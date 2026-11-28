@@ -79,6 +79,10 @@ class BehaviorActivity : BaseSettingsActivity() {
     private var keepAwakeCustomSub: TextView? = null
     internal var keepAwakeTimerSheet: com.google.android.material.bottomsheet.BottomSheetDialog? = null
 
+    // Phase 3B.5 configurable haptic strength selectors.
+    internal val uiTapStrengthDots = mutableMapOf<HapticStrength, android.widget.FrameLayout>()
+    internal val liveDisconnectStrengthDots = mutableMapOf<HapticStrength, android.widget.FrameLayout>()
+
     private fun keepAwakeCustomSubtitle(): String =
         "Keeps the screen awake during dictation for up to " +
             "${KeepScreenAwakePrefs.formatDuration(KeepScreenAwakePrefs.customDurationMs(this))} (tap to edit)"
@@ -87,6 +91,13 @@ class BehaviorActivity : BaseSettingsActivity() {
         val current = KeepScreenAwakePrefs.loadMode(this)
         keepAwakeDots.forEach { (mode, dot) -> OneUiComponents.setSelectionDotChecked(dot, mode == current) }
         keepAwakeCustomSub?.text = keepAwakeCustomSubtitle()
+    }
+
+    private fun refreshHapticStrengthRows() {
+        val tapStrength = HapticPrefs.uiTapStrength(this)
+        uiTapStrengthDots.forEach { (s, dot) -> OneUiComponents.setSelectionDotChecked(dot, s == tapStrength) }
+        val disconnectStrength = HapticPrefs.liveDisconnectStrength(this)
+        liveDisconnectStrengthDots.forEach { (s, dot) -> OneUiComponents.setSelectionDotChecked(dot, s == disconnectStrength) }
     }
 
     private fun place(section: Section, order: Int, view: View) {
@@ -365,9 +376,49 @@ class BehaviorActivity : BaseSettingsActivity() {
         }
         place(Section.DICTATION, 16, uiTapHapticsRow)
 
+        place(Section.DICTATION, 17, subsectionHeader("Tap feedback strength", indent = 0))
+        val uiTapStrengthOptions = listOf(
+            Triple(HapticStrength.LIGHT, "Light", "Subtle, crisp tap feedback"),
+            Triple(HapticStrength.MEDIUM, "Medium", "Balanced tactile tap feedback"),
+            Triple(HapticStrength.STRONG, "Strong", "Firm, pronounced tap feedback"),
+        )
+        uiTapStrengthOptions.forEachIndexed { idx, (strength, title, subtitle) ->
+            val dot = OneUiComponents.selectionDot(this, HapticPrefs.uiTapStrength(this) == strength, "$title tap feedback")
+            uiTapStrengthDots[strength] = dot
+            place(
+                Section.DICTATION,
+                18 + idx,
+                settingsRow(title, subtitle, dot, hapticOnTap = false) {
+                    HapticPrefs.setUiTapStrength(this, strength)
+                    refreshHapticStrengthRows()
+                    UiTapHaptics.playPreview(this, strength)
+                },
+            )
+        }
+
+        place(Section.DICTATION, 21, subsectionHeader("Disconnect alert strength", indent = 0))
+        val liveDisconnectStrengthOptions = listOf(
+            Triple(HapticStrength.LIGHT, "Light", "Gentle double pulse if Live disconnects"),
+            Triple(HapticStrength.MEDIUM, "Medium", "Firm double pulse if Live disconnects"),
+            Triple(HapticStrength.STRONG, "Strong", "Strong double pulse if Live disconnects"),
+        )
+        liveDisconnectStrengthOptions.forEachIndexed { idx, (strength, title, subtitle) ->
+            val dot = OneUiComponents.selectionDot(this, HapticPrefs.liveDisconnectStrength(this) == strength, "$title disconnect alert")
+            liveDisconnectStrengthDots[strength] = dot
+            place(
+                Section.DICTATION,
+                22 + idx,
+                settingsRow(title, subtitle, dot, hapticOnTap = false) {
+                    HapticPrefs.setLiveDisconnectStrength(this, strength)
+                    refreshHapticStrengthRows()
+                    DictationHaptics.forContext(this).onLiveDisconnected()
+                },
+            )
+        }
+
         // Phase 3B.4: "Keep screen awake" -- four flat selectionDot rows (zero RadioButtons). The
         // flag lives on the overlay window itself (FLAG_KEEP_SCREEN_ON), so it needs no permission.
-        place(Section.DICTATION, 20, subsectionHeader("Keep screen awake", indent = 0))
+        place(Section.DICTATION, 30, subsectionHeader("Keep screen awake", indent = 0))
         val keepAwakeOptions = listOf(
             Triple(KeepScreenAwakeMode.OFF, "Off", "Follow your phone's normal screen timeout"),
             Triple(KeepScreenAwakeMode.WHILE_RECORDING, "While recording", "Keeps the screen awake while you are speaking; releases on Stop"),
@@ -396,7 +447,7 @@ class BehaviorActivity : BaseSettingsActivity() {
                 }
             }
             if (mode == KeepScreenAwakeMode.CUSTOM_TIMER) keepAwakeCustomSub = row.findViewWithTag("subtitle")
-            place(Section.DICTATION, 21 + idx, row)
+            place(Section.DICTATION, 31 + idx, row)
         }
 
         // Fallback restore path (#Feature B): if the icon is currently hidden -- including for
@@ -523,6 +574,7 @@ class BehaviorActivity : BaseSettingsActivity() {
         silenceAutoStopSwitch.isChecked = SilenceAutoStopToggle.isEnabled(this)
         hapticsSwitch.isChecked = HapticPrefs.load(this).enabled
         uiTapHapticsSwitch.isChecked = HapticPrefs.isUiTapsEnabled(this)
+        refreshHapticStrengthRows()
         refreshKeepAwakeRows()
         hapticsStrengthRow.findViewWithTag<TextView>("subtitle").text = hapticsStrengthSummary()
         hapticsLengthRow.findViewWithTag<TextView>("subtitle").text = hapticsLengthSummary()

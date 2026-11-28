@@ -9,7 +9,6 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
-import android.view.HapticFeedbackConstants
 import android.view.View
 
 /** What the device's vibrator can do right now (#385). */
@@ -50,6 +49,32 @@ object HapticEffectPlanner {
                 }
             )
             else -> HapticEffectSpec.Duration(length)
+        }
+    }
+
+    fun planUiTap(strength: HapticStrength, caps: HapticCapabilities): HapticEffectSpec {
+        val (durationMs, amplitude) = when (strength) {
+            HapticStrength.LIGHT -> 10L to 70
+            HapticStrength.MEDIUM -> 18L to 155
+            HapticStrength.STRONG -> 28L to 255
+        }
+        return if (caps.hasAmplitudeControl) {
+            HapticEffectSpec.OneShot(durationMs, amplitude)
+        } else {
+            HapticEffectSpec.Duration(durationMs)
+        }
+    }
+
+    fun planLiveDisconnect(strength: HapticStrength, caps: HapticCapabilities): HapticEffectSpec {
+        val (timings, amplitudes) = when (strength) {
+            HapticStrength.LIGHT -> listOf(0L, 35L, 65L, 35L) to listOf(0, 90, 0, 90)
+            HapticStrength.MEDIUM -> listOf(0L, 55L, 70L, 55L) to listOf(0, 175, 0, 175)
+            HapticStrength.STRONG -> listOf(0L, 80L, 75L, 80L) to listOf(0, 255, 0, 255)
+        }
+        return if (caps.hasAmplitudeControl) {
+            HapticEffectSpec.Waveform(timings, amplitudes)
+        } else {
+            HapticEffectSpec.Waveform(timings, null)
         }
     }
 }
@@ -129,12 +154,7 @@ class DictationHaptics(
         try {
             val out = output()
             val caps = out.capabilities() ?: return
-            val spec = if (caps.hasAmplitudeControl) {
-                HapticEffectSpec.Waveform(listOf(0L, 35L, 65L, 35L), listOf(0, 190, 0, 190))
-            } else {
-                HapticEffectSpec.Waveform(listOf(0L, 35L, 65L, 35L), null)
-            }
-            out.play(spec)
+            out.play(HapticEffectPlanner.planLiveDisconnect(settings().liveDisconnectStrength, caps))
         } catch (e: Exception) {
             Log.w(TAG, "Live disconnect haptic failed; ignoring", e)
         }
@@ -212,13 +232,27 @@ class DictationHaptics(
 /** Crisp, lightweight haptic tick for in-app taps, toggles, and selections. */
 object UiTapHaptics {
     @Volatile internal var onTickForTest: ((View) -> Unit)? = null
+    @Volatile internal var outputFactoryForTest: ((Context) -> HapticOutput)? = null
 
     fun tick(view: View) {
         runCatching {
             if (!HapticPrefs.isUiTapsEnabled(view.context)) return
             onTickForTest?.invoke(view)
-            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            playStrength(view.context, HapticPrefs.uiTapStrength(view.context))
         }
+    }
+
+    fun playPreview(context: Context, strength: HapticStrength = HapticPrefs.uiTapStrength(context)) {
+        runCatching {
+            playStrength(context, strength)
+        }
+    }
+
+    private fun playStrength(context: Context, strength: HapticStrength) {
+        val app = context.applicationContext ?: context
+        val out = outputFactoryForTest?.invoke(app) ?: AndroidHapticOutput(app)
+        val caps = out.capabilities() ?: return
+        out.play(HapticEffectPlanner.planUiTap(strength, caps))
     }
 }
 

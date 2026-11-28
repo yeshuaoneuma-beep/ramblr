@@ -314,6 +314,7 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
         indent: Int = 0,
         icon: Int? = null,
         details: String? = null,
+        hapticOnTap: Boolean = true,
         onClick: (() -> Unit)? = null,
     ): LinearLayout {
         val row = LinearLayout(this).apply {
@@ -327,7 +328,7 @@ abstract class BaseSettingsActivity : AppCompatActivity() {
                 context.theme.resolveAttribute(android.R.attr.selectableItemBackground, outValue, true)
                 setBackgroundResource(outValue.resourceId)
                 setOnClickListener {
-                    UiTapHaptics.tick(this)
+                    if (hapticOnTap) UiTapHaptics.tick(this)
                     onClick()
                 }
             }
